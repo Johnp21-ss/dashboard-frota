@@ -6,8 +6,8 @@ import json
 HOST = "aws-0-sa-east-1.pooler.supabase.com"
 PORT = 5432
 DATABASE = "postgres"
-USER = "analista_bi.cuofycgznnbtpotybpuu"
-PASSWORD = "marvao#37m"
+USER = "analista_bi.cuofycgznnbtpotybpuu"  # Substitua pelo seu usuário
+PASSWORD = "marvao#37m"  # Substitua pela sua senha
 
 conn = psycopg2.connect(
     host=HOST,
@@ -27,13 +27,13 @@ SELECT
 """
 df_kpi = pd.read_sql(kpi_query, conn)
 
-# 2. Execução de Rotas por Motorista (Top 10 KM)
+# 2. Execução por Motorista (Top 10 KM Executado)
 rotas_query = """
 SELECT 
-    m.nome as motorista,
+    COALESCE(m.nome, 'Não informado') as motorista,
     COALESCE(SUM(e.km_executado), 0) as total_km
 FROM airbyte.rotas_escalarota e
-JOIN airbyte.motoristas_motorista m ON e.motorista_id = m.id
+LEFT JOIN airbyte.motoristas_motorista m ON e.motorista_id = m.id
 WHERE e.anulada = false
 GROUP BY m.nome
 ORDER BY total_km DESC
@@ -44,19 +44,49 @@ df_rotas = pd.read_sql(rotas_query, conn)
 # 3. Abastecimento por Veículo (Top 10 Litros)
 abs_query = """
 SELECT 
-    v.placa,
+    COALESCE(v.placa, 'Sem Placa') as placa,
     COALESCE(SUM(a.litros), 0) as total_litros
 FROM airbyte.abastecimentos_abastecimento a
-JOIN airbyte.veiculos_veiculo v ON a.veiculo_id = v.id
+LEFT JOIN airbyte.veiculos_veiculo v ON a.veiculo_id = v.id
 GROUP BY v.placa
 ORDER BY total_litros DESC
 LIMIT 10;
 """
 df_abs = pd.read_sql(abs_query, conn)
 
+# 4. Auditoria Eficiência (Litros por KM - Top Ofensores)
+ofensores_query = """
+WITH abs_30 AS (
+    SELECT veiculo_id, SUM(litros) as litros 
+    FROM airbyte.abastecimentos_abastecimento 
+    GROUP BY veiculo_id
+),
+km_30 AS (
+    SELECT veiculo_id, SUM(km_executado) as km 
+    FROM airbyte.rotas_escalarota 
+    WHERE anulada = false 
+    GROUP BY veiculo_id
+)
+SELECT 
+    v.placa,
+    COALESCE(a.litros, 0) as litros,
+    COALESCE(k.km, 0) as km_rodado,
+    CASE 
+        WHEN COALESCE(k.km, 0) > 0 THEN ROUND((COALESCE(a.litros, 0) / k.km)::numeric, 2) 
+        ELSE 0 
+    END as litros_por_km
+FROM airbyte.veiculos_veiculo v
+JOIN abs_30 a ON v.id = a.veiculo_id
+LEFT JOIN km_30 k ON v.id = k.veiculo_id
+WHERE a.litros > 0
+ORDER BY litros_por_km DESC
+LIMIT 10;
+"""
+df_ofensores = pd.read_sql(ofensores_query, conn)
+
 conn.close()
 
-# Dados para o HTML
+# Extração dos dados
 totais = {
     "veiculos": int(df_kpi['total_veiculos'].iloc[0]),
     "motoristas": int(df_kpi['total_motoristas'].iloc[0]),
@@ -70,12 +100,24 @@ rotas_valores = df_rotas['total_km'].tolist()
 abs_labels = df_abs['placa'].tolist()
 abs_valores = df_abs['total_litros'].tolist()
 
-# Template do Dashboard
+# Construção da tabela de ofensores
+linhas_ofensores = ""
+for _, row in df_ofensores.iterrows():
+    linhas_ofensores += f"""
+    <tr>
+        <td><b>{row['placa']}</b></td>
+        <td>{row['litros']:,.2f} L</td>
+        <td>{row['km_rodado']:,.2f} KM</td>
+        <td><span style="color:#f87171; font-weight: bold;">{row['litros_por_km']} L/KM</span></td>
+    </tr>
+    """
+
+# HTML Final
 html_content = f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <title>Dashboard de Operações de Frota</title>
+    <title>Painel Integrado de Governança de Frota</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -84,16 +126,20 @@ html_content = f"""<!DOCTYPE html>
         
         .grid-kpi {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }}
         .card-kpi {{ background: #1e293b; padding: 20px; border-radius: 12px; border: 1px solid #334155; }}
-        .card-kpi p {{ font-size: 13px; color: #94a3b8; text-transform: uppercase; font-weight: 600; }}
-        .card-kpi h2 {{ font-size: 28px; color: #f8fafc; margin-top: 8px; }}
+        .card-kpi p {{ font-size: 12px; color: #94a3b8; text-transform: uppercase; font-weight: 700; }}
+        .card-kpi h2 {{ font-size: 26px; color: #f8fafc; margin-top: 8px; }}
 
-        .grid-charts {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; }}
+        .grid-charts {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-bottom: 24px; }}
         .card-chart {{ background: #1e293b; padding: 20px; border-radius: 12px; border: 1px solid #334155; }}
         .card-chart h3 {{ font-size: 16px; margin-bottom: 16px; color: #cbd5e1; }}
+
+        table {{ width: 100%; border-collapse: collapse; text-align: left; font-size: 14px; margin-top: 8px; }}
+        th {{ background: #0f172a; color: #94a3b8; padding: 12px; border-bottom: 1px solid #334155; }}
+        td {{ padding: 12px; border-bottom: 1px solid #334155; }}
     </style>
 </head>
 <body>
-    <h1>Monitoramento Integrado de Frota & Operações</h1>
+    <h1>Torre de Controle & Governança de Frota</h1>
 
     <div class="grid-kpi">
         <div class="card-kpi">
@@ -105,11 +151,11 @@ html_content = f"""<!DOCTYPE html>
             <h2>{totais['motoristas']}</h2>
         </div>
         <div class="card-kpi">
-            <p>Total Litros Abastecidos</p>
+            <p>Total Abastecido</p>
             <h2>{totais['litros']:,} L</h2>
         </div>
         <div class="card-kpi">
-            <p>Total KM Executado</p>
+            <p>Total KM Rodado</p>
             <h2>{totais['km']:,} KM</h2>
         </div>
     </div>
@@ -125,8 +171,24 @@ html_content = f"""<!DOCTYPE html>
         </div>
     </div>
 
+    <div class="card-chart">
+        <h3>Auditoria de Consumo: Veículos com Maior Discrepância (Litros por KM)</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Placa</th>
+                    <th>Litros Abastecidos</th>
+                    <th>KM Executado</th>
+                    <th>Média (L/KM)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {linhas_ofensores}
+            </tbody>
+        </table>
+    </div>
+
     <script>
-        // Gráfico de Rotas
         new Chart(document.getElementById('chartRotas').getContext('2d'), {{
             type: 'bar',
             data: {{
@@ -140,7 +202,6 @@ html_content = f"""<!DOCTYPE html>
             options: {{ responsive: true, plugins: {{ legend: {{ display: false }} }} }}
         }});
 
-        // Gráfico de Abastecimentos
         new Chart(document.getElementById('chartAbastecimentos').getContext('2d'), {{
             type: 'bar',
             data: {{
