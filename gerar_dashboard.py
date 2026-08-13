@@ -1043,8 +1043,3 @@ C.line('c_gre',gmu,gns.map((g,i)=>{{
 </body>
 </html>"""
 
-with open("index.html","w",encoding="utf-8") as f:
-    f.write(html)
-print(f"✅ index.html gerado — {len(html):,} bytes")
-PYEOF
-echo "Script salvo."
