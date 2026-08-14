@@ -1,7 +1,6 @@
 import psycopg2
 import pandas as pd
 import json
-import re
 from datetime import datetime
 
 HOST = "aws-0-sa-east-1.pooler.supabase.com"
@@ -12,244 +11,208 @@ PASSWORD = "marvao#37m"
 
 try:
     conn = psycopg2.connect(host=HOST, port=PORT, database=DATABASE, user=USER, password=PASSWORD)
-    print("Conectado ao banco com sucesso.")
+    print("✅ Conectado.")
 except Exception as e:
-    print(f"Erro ao conectar: {e}")
-    raise e
+    print(f"❌ Erro: {e}"); raise e
 
 def safe_read(query, default=None):
-    try:
-        return pd.read_sql(query, conn)
+    try: return pd.read_sql(query, conn)
     except Exception as err:
-        print(f"Erro na query: {err}")
+        print(f"⚠️ Query falhou: {err}")
         return pd.DataFrame() if default is None else default
 
-def jdumps(obj):
-    return json.dumps(obj, ensure_ascii=False, default=str)
+def jd(obj): return json.dumps(obj, ensure_ascii=False, default=str)
+def n(v, d=0):
+    try: return float(v)
+    except: return d
 
-def fmt_br(v):
-    try: return f"{float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except: return "0,00"
+MESES_COLS = ['2026-04','2026-05','2026-06','2026-07','2026-08']
+MESES_NOMES = {'2026-04':'Abr/26','2026-05':'Mai/26','2026-06':'Jun/26','2026-07':'Jul/26','2026-08':'Ago/26'}
 
-def badge(valor, limiar_verde=70, limiar_amarelo=40):
-    try:
-        v = float(valor)
-        if v >= limiar_verde: return "badge-ok"
-        elif v >= limiar_amarelo: return "badge-warn"
-        else: return "badge-crit"
-    except: return "badge-crit"
+def tendencia(vals):
+    v = [x for x in vals if x is not None]
+    if not v: return ("❓","S/DADOS","nd")
+    if all(x == 0 for x in v): return ("⚫","SEM REGISTRO","zero")
+    if v[-1] == 0 and any(x > 0 for x in v[:-1]): return ("🔴","REGREDIU TOTAL","crit")
+    if len(v) < 2: return ("➡️","S/HISTÓRICO","nd")
+    diff = v[-1] - v[-2]
+    if diff <= -15: return ("🔴","EM QUEDA FORTE","crit")
+    if diff <= -5: return ("🟠","EM QUEDA","warn")
+    if diff >= 10: return ("🟢","MELHORANDO","ok")
+    if diff >= 3: return ("🟡","LEVE MELHORA","stab")
+    return ("➡️","ESTÁVEL","stab")
 
-def tendencia(q2, q3):
-    try:
-        diff = float(q3) - float(q2)
-        if diff >= 5: return ("⬆️", "EVOLUINDO", "status-ok")
-        elif diff <= -5: return ("⬇️", "REGREDINDO", "status-crit")
-        else: return ("➡️", "ESTÁVEL", "status-warn")
-    except: return ("❓", "S/DADOS", "status-nd")
+def score_gargalo(vals, suspeitas_total, total_escalas):
+    v = [x for x in vals if x is not None]
+    if not v: return 0
+    ultimo = v[-1]
+    penultimo = v[-2] if len(v) >= 2 else v[-1]
+    queda = max(0, penultimo - ultimo)
+    pct_susp = (suspeitas_total / max(total_escalas, 1)) * 100
+    return round((100 - ultimo) * 0.5 + queda * 0.3 + pct_susp * 0.2, 1)
 
-# ─────────────────────────────────────────────
-# 1. PAINEL EXECUTIVO — KPIs
-# ─────────────────────────────────────────────
+# ─── QUERIES ──────────────────────────────────────────────────────────────────
+
+# KPIs executivos
 df_kpi = safe_read("""
 SELECT
     COUNT(*) as total_escalas,
-    COUNT(*) FILTER (WHERE via_app = true) as via_app,
-    COUNT(*) FILTER (WHERE via_app = false AND confirmado_manualmente = true) as manual_sem_gps,
-    COUNT(*) FILTER (WHERE anulada = true) as anuladas,
+    COUNT(*) FILTER (WHERE via_app = true) as rastreado,
+    COUNT(*) FILTER (WHERE via_app = false AND confirmado_manualmente = true) as sem_rastreamento,
     COUNT(*) FILTER (WHERE
         inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
         EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10
-    ) as fraude_tempo
+    ) as suspeitas
 FROM airbyte.rotas_escalarota
 WHERE data >= DATE_TRUNC('month', CURRENT_DATE)
-""")
+""", pd.DataFrame([{'total_escalas':0,'rastreado':0,'sem_rastreamento':0,'suspeitas':0}]))
 
-df_kpi_contratos = safe_read("""
-SELECT COUNT(DISTINCT ci.id) as contratos_sem_operacao
-FROM airbyte.contratos_itemcontrato ci
-JOIN airbyte.contratos_contrato c ON ci.contrato_id = c.id
-LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
-LEFT JOIN airbyte.motoristas_motorista m ON m.veiculo_id = v.id AND m.status = 'A'
-WHERE c.status = 'A' AND ci.status = 'ATIVO' AND m.id IS NULL
-""")
-
-df_kpi_manut = safe_read("""
+df_kpi_extra = safe_read("""
 SELECT
-    COUNT(*) FILTER (WHERE status = 'CA') as em_aberto,
-    COUNT(*) FILTER (WHERE status = 'CO') as em_oficina
-FROM airbyte.ordens_chamado
-WHERE emissao >= '2026-01-01'
-""")
+    (SELECT COUNT(DISTINCT ci.id) FROM airbyte.contratos_itemcontrato ci
+     JOIN airbyte.contratos_contrato c ON ci.contrato_id = c.id
+     LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+     LEFT JOIN airbyte.motoristas_motorista m ON m.veiculo_id = v.id AND m.status = 'A'
+     WHERE c.status = 'A' AND ci.status = 'ATIVO' AND m.id IS NULL) as contratos_risco,
+    (SELECT COUNT(*) FROM airbyte.ordens_chamado WHERE status = 'CA' AND emissao >= '2026-01-01') as chamados_abertos,
+    (SELECT COUNT(*) FROM airbyte.ordens_chamado WHERE status = 'CO' AND emissao >= '2026-01-01') as em_oficina
+""", pd.DataFrame([{'contratos_risco':0,'chamados_abertos':0,'em_oficina':0}]))
 
+# Evolução mensal geral
 df_evolucao = safe_read("""
 SELECT
-    TO_CHAR(data, 'YYYY-MM') as mes,
+    TO_CHAR(data,'YYYY-MM') as mes,
     COUNT(*) as total,
-    COUNT(*) FILTER (WHERE via_app = true) as via_app,
-    COUNT(*) FILTER (WHERE via_app = false AND confirmado_manualmente = true) as manual_gps,
+    COUNT(*) FILTER (WHERE via_app = true) as rastreado,
+    COUNT(*) FILTER (WHERE via_app = false AND confirmado_manualmente = true) as sem_rast,
     COUNT(*) FILTER (WHERE anulada = true) as anuladas,
     COUNT(*) FILTER (WHERE
         inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
         EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10
-    ) as fraude_tempo
+    ) as suspeitas
 FROM airbyte.rotas_escalarota
 WHERE data >= '2026-01-01' AND data IS NOT NULL
-GROUP BY TO_CHAR(data, 'YYYY-MM')
+GROUP BY TO_CHAR(data,'YYYY-MM')
 ORDER BY mes
 """)
 
-# ─────────────────────────────────────────────
-# 2. ASSIDUIDADE POR GRE
-# ─────────────────────────────────────────────
-df_gre_assid = safe_read("""
+# Histórico mensal por cidade (PIVÔ)
+df_cidade_hist = safe_read("""
 SELECT
-    g.nome as gre,
-    COUNT(e.id) as total_escalas,
-    COUNT(e.id) FILTER (WHERE e.via_app = true) as via_app,
-    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as manual_gps,
-    COUNT(e.id) FILTER (WHERE e.anulada = true) as anuladas,
-    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true) * 100.0 / NULLIF(COUNT(e.id),0),1) as pct_app,
-    -- Q2 vs Q3
-    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true AND e.data BETWEEN '2026-04-01' AND '2026-06-30')
-        * 100.0 / NULLIF(COUNT(e.id) FILTER (WHERE e.data BETWEEN '2026-04-01' AND '2026-06-30'),0),1) as pct_q2,
-    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true AND e.data >= '2026-07-01')
-        * 100.0 / NULLIF(COUNT(e.id) FILTER (WHERE e.data >= '2026-07-01'),0),1) as pct_q3
-FROM airbyte.rotas_escalarota e
-JOIN airbyte.rotas_rota r ON r.id = e.rota_id
-JOIN airbyte.escolas_gre g ON g.id = r.gre_id
-WHERE e.data >= '2026-01-01'
-GROUP BY g.nome
-ORDER BY pct_app ASC
+    m.cidade,
+    TO_CHAR(e.data,'YYYY-MM') as mes,
+    COUNT(e.id) as total,
+    COUNT(e.id) FILTER (WHERE e.via_app = true) as rastreado,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct,
+    COUNT(e.id) FILTER (WHERE
+        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
+    ) as suspeitas,
+    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as sem_rast
+FROM airbyte.motoristas_motorista m
+JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+WHERE m.status = 'A' AND m.cidade IS NOT NULL
+  AND e.data >= '2026-04-01'
+GROUP BY m.cidade, TO_CHAR(e.data,'YYYY-MM')
+HAVING COUNT(e.id) >= 30
+ORDER BY m.cidade, mes
 """)
 
-df_gre_mensal = safe_read("""
+# Histórico mensal por GRE (apenas a partir de abr/2026)
+df_gre_hist = safe_read("""
 SELECT
     g.nome as gre,
-    TO_CHAR(e.data, 'YYYY-MM') as mes,
+    TO_CHAR(e.data,'YYYY-MM') as mes,
     COUNT(e.id) as total,
-    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true) * 100.0 / NULLIF(COUNT(e.id),0),1) as pct_app
+    COUNT(e.id) FILTER (WHERE e.via_app = true) as rastreado,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct,
+    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as sem_rast,
+    COUNT(e.id) FILTER (WHERE anulada = true) as anuladas,
+    COUNT(e.id) FILTER (WHERE
+        inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10
+    ) as suspeitas
 FROM airbyte.rotas_escalarota e
 JOIN airbyte.rotas_rota r ON r.id = e.rota_id
 JOIN airbyte.escolas_gre g ON g.id = r.gre_id
-WHERE e.data >= '2026-01-01'
-GROUP BY g.nome, TO_CHAR(e.data, 'YYYY-MM')
+WHERE e.data >= '2026-04-01'
+  AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
+GROUP BY g.nome, TO_CHAR(e.data,'YYYY-MM')
 ORDER BY g.nome, mes
 """)
 
-# ─────────────────────────────────────────────
-# 3. CIDADES QUE NÃO REGISTRAM
-# ─────────────────────────────────────────────
-df_cidades = safe_read("""
-SELECT
-    m.cidade,
-    COUNT(DISTINCT m.id) as motoristas,
-    COUNT(e.id) as total_escalas,
-    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true) * 100.0 / NULLIF(COUNT(e.id),0),1) as pct_app,
-    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true AND e.data BETWEEN '2026-04-01' AND '2026-06-30')
-        * 100.0 / NULLIF(COUNT(e.id) FILTER (WHERE e.data BETWEEN '2026-04-01' AND '2026-06-30'),0),1) as pct_q2,
-    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true AND e.data >= '2026-07-01')
-        * 100.0 / NULLIF(COUNT(e.id) FILTER (WHERE e.data >= '2026-07-01'),0),1) as pct_q3,
-    ROUND(COUNT(e.id) FILTER (WHERE
-        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-        AND e.data >= '2026-01-01'
-    ) * 100.0 / NULLIF(COUNT(e.id) FILTER (WHERE e.data >= '2026-01-01'),0),1) as pct_fraude,
-    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true AND e.data >= '2026-01-01') as manuais_gps
-FROM airbyte.motoristas_motorista m
-JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
-WHERE m.status = 'A' AND m.cidade IS NOT NULL AND e.data >= '2026-01-01'
-GROUP BY m.cidade
-HAVING COUNT(e.id) >= 100
-ORDER BY pct_q3 ASC, pct_fraude DESC
-LIMIT 30
-""")
-
-# ─────────────────────────────────────────────
-# 4. FRAUDE & IRREGULARIDADE
-# ─────────────────────────────────────────────
+# Fraude mensal
 df_fraude_mensal = safe_read("""
 SELECT
-    TO_CHAR(data, 'YYYY-MM') as mes,
+    TO_CHAR(data,'YYYY-MM') as mes,
     COUNT(*) FILTER (WHERE inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL) as com_horario,
     COUNT(*) FILTER (WHERE
         inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
         EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10
-    ) as menos_10min,
-    COUNT(*) FILTER (WHERE via_app = false AND confirmado_manualmente = true) as manuais_gps,
-    ROUND(COUNT(*) FILTER (WHERE
-        inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10
-    ) * 100.0 / NULLIF(COUNT(*) FILTER (WHERE inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL),0),2) as pct_fraude
+    ) as suspeitas,
+    COUNT(*) FILTER (WHERE via_app = false AND confirmado_manualmente = true) as sem_rast
 FROM airbyte.rotas_escalarota
 WHERE data >= '2026-01-01'
-GROUP BY TO_CHAR(data, 'YYYY-MM')
-ORDER BY mes
+GROUP BY TO_CHAR(data,'YYYY-MM') ORDER BY mes
 """)
 
-df_fraude_empresas = safe_read("""
+# Empresas com fraude
+df_fraude_emp = safe_read("""
 SELECT
-    COALESCE(f.nome, 'SEM FORNECEDOR') as empresa,
+    COALESCE(f.nome,'SEM FORNECEDOR') as empresa,
     COUNT(DISTINCT m.id) as motoristas,
-    COUNT(e.id) as total_escalas,
+    COUNT(e.id) as total,
     COUNT(e.id) FILTER (WHERE
         e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
         EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    ) as fraude_tempo,
-    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as manuais_gps,
+    ) as suspeitas,
     ROUND(COUNT(e.id) FILTER (WHERE
         e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
         EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    ) * 100.0 / NULLIF(COUNT(e.id),0),2) as pct_fraude
+    )*100.0/NULLIF(COUNT(e.id),0),1) as pct_susp,
+    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as sem_rast
 FROM airbyte.motoristas_fornecedor f
 JOIN airbyte.motoristas_motorista m ON m.fornecedor_id = f.id
 JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
-WHERE e.data >= '2026-01-01' AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL
-GROUP BY f.nome
-HAVING COUNT(e.id) >= 20
-ORDER BY pct_fraude DESC
-LIMIT 15
+WHERE e.data >= '2026-01-01'
+  AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL
+GROUP BY f.nome HAVING COUNT(e.id) >= 20
+ORDER BY pct_susp DESC LIMIT 15
 """)
 
-df_fraude_motoristas = safe_read("""
+# Motoristas com fraude
+df_fraude_mot = safe_read("""
 SELECT
     m.nome as motorista,
-    COALESCE(f.nome, 'PRÓPRIO') as empresa,
-    m.cidade,
-    g.nome as gre,
-    COUNT(e.id) as total_escalas,
+    COALESCE(f.nome,'PRÓPRIO') as empresa,
+    m.cidade, g.nome as gre,
+    COUNT(e.id) as total,
     COUNT(e.id) FILTER (WHERE
         EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    ) as fraude_tempo,
+    ) as suspeitas,
     ROUND(COUNT(e.id) FILTER (WHERE
         EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    ) * 100.0 / NULLIF(COUNT(e.id),0),1) as pct_fraude,
-    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as manuais_gps
+    )*100.0/NULLIF(COUNT(e.id),0),1) as pct_susp,
+    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as sem_rast
 FROM airbyte.motoristas_motorista m
 JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
 WHERE m.status = 'A' AND e.data >= '2026-01-01'
-    AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL
-GROUP BY m.nome, f.nome, m.cidade, g.nome
-HAVING COUNT(e.id) >= 10
-ORDER BY pct_fraude DESC
-LIMIT 20
+  AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL
+GROUP BY m.nome, f.nome, m.cidade, g.nome HAVING COUNT(e.id) >= 10
+ORDER BY pct_susp DESC LIMIT 20
 """)
 
-# ─────────────────────────────────────────────
-# 5. CONTRATOS VS EXECUÇÃO
-# ─────────────────────────────────────────────
-df_contratos_risco = safe_read("""
-SELECT
-    ci.id as item_contrato,
-    g.nome as gre,
-    ci.valor_unitario,
-    v.placa,
-    v.status as status_veiculo,
-    COALESCE(ct.nome, 'Não def.') as turno,
+# Contratos sem operação
+df_contratos = safe_read("""
+SELECT DISTINCT ON (ci.id)
+    ci.id as item, g.nome as gre, ci.valor_unitario,
+    v.placa, v.status as sv,
+    COALESCE(ct.nome,'Não definido') as turno,
     (SELECT COUNT(*) FROM airbyte.rotas_escalarota e2
      WHERE e2.veiculo_id = v.id AND e2.data >= CURRENT_DATE - INTERVAL '30 days'
-     AND e2.anulada = false) as escalas_30d
+     AND e2.anulada = false) as esc30d
 FROM airbyte.contratos_itemcontrato ci
 JOIN airbyte.contratos_contrato c ON ci.contrato_id = c.id
 LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
@@ -258,702 +221,598 @@ LEFT JOIN airbyte.contratos_itemcontrato_turnos cit ON cit.itemcontrato_id = ci.
 LEFT JOIN airbyte.contratos_turno ct ON ct.id = cit.turno_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
 WHERE c.status = 'A' AND ci.status = 'ATIVO' AND m.id IS NULL
-ORDER BY ci.valor_unitario DESC
-LIMIT 50
+ORDER BY ci.id, ci.valor_unitario DESC
+LIMIT 60
 """)
 
-df_contratos_mensal = safe_read("""
-SELECT
-    TO_CHAR(e.data, 'YYYY-MM') as mes,
-    COUNT(e.id) as escalas_com_contrato,
-    COUNT(e.id) FILTER (WHERE e.anulada = true) as anuladas,
-    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as manuais
-FROM airbyte.rotas_escalarota e
-WHERE e.contrato_rota_id IS NOT NULL AND e.data >= '2026-01-01'
-GROUP BY TO_CHAR(e.data, 'YYYY-MM')
-ORDER BY mes
+df_cont_mensal = safe_read("""
+SELECT TO_CHAR(data,'YYYY-MM') as mes,
+    COUNT(*) as total,
+    COUNT(*) FILTER (WHERE anulada=true) as anuladas,
+    COUNT(*) FILTER (WHERE via_app=false AND confirmado_manualmente=true) as sem_rast
+FROM airbyte.rotas_escalarota
+WHERE contrato_rota_id IS NOT NULL AND data >= '2026-04-01'
+GROUP BY TO_CHAR(data,'YYYY-MM') ORDER BY mes
 """)
 
-# ─────────────────────────────────────────────
-# 6. FROTA & DOCUMENTAÇÃO
-# ─────────────────────────────────────────────
-df_frota_doc = safe_read("""
-SELECT
-    COALESCE(f.nome, 'SEM FORNECEDOR') as fornecedor,
-    COUNT(DISTINCT v.id) as total_veiculos,
-    COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'A') as ativos,
-    COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'I') as inativos,
-    COUNT(DISTINCT v.id) FILTER (WHERE v.multas = true) as com_multas,
-    COUNT(DISTINCT v.id) FILTER (WHERE v.licenciamento::int < 2026) as lic_vencido,
+# Frota documentação
+df_frota = safe_read("""
+SELECT COALESCE(f.nome,'SEM FORNECEDOR') as fornecedor,
+    COUNT(DISTINCT v.id) as total,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.status='A') as ativos,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.status='I') as inativos,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.multas=true) as multas,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.licenciamento::int < 2026) as lic_venc,
     COUNT(DISTINCT v.id) FILTER (WHERE v.licenciamento::int >= 2026) as lic_ok
 FROM airbyte.motoristas_fornecedor f
 JOIN airbyte.veiculos_veiculo v ON v.fornecedor_id = f.id
 WHERE v.licenciamento IS NOT NULL
-GROUP BY f.nome
-HAVING COUNT(DISTINCT v.id) >= 2
-ORDER BY lic_vencido DESC
-LIMIT 15
+GROUP BY f.nome HAVING COUNT(DISTINCT v.id) >= 2
+ORDER BY lic_venc DESC LIMIT 15
 """)
 
-df_veiculos_problema = safe_read("""
-SELECT
-    v.placa,
-    v.modelo,
-    v.tipo_contrato_locacao,
-    COALESCE(f.nome, 'SEM FORNECEDOR') as fornecedor,
+df_manut_forn = safe_read("""
+SELECT COALESCE(f.nome,'SEM FORNECEDOR') as fornecedor,
+    COUNT(DISTINCT c.id) as chamados,
+    COUNT(DISTINCT c.id) FILTER (WHERE c.status='CA') as abertos,
+    COUNT(DISTINCT c.id) FILTER (WHERE c.status='CO') as oficina,
+    COUNT(DISTINCT c.veiculo_id) as veiculos,
+    ROUND(AVG(CASE WHEN c.entrega IS NOT NULL AND c.emissao IS NOT NULL
+        THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END)::numeric,1) as media_dias
+FROM airbyte.ordens_chamado c
+JOIN airbyte.veiculos_veiculo v ON v.id = c.veiculo_id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
+WHERE c.emissao >= '2026-01-01'
+GROUP BY f.nome ORDER BY abertos DESC, chamados DESC LIMIT 12
+""")
+
+df_veic_prob = safe_read("""
+SELECT v.placa, v.modelo, COALESCE(f.nome,'SEM FORN') as fornecedor,
     g.nome as gre,
-    COUNT(c.id) as total_chamados,
-    COUNT(c.id) FILTER (WHERE c.status = 'CA') as em_aberto,
-    COUNT(c.id) FILTER (WHERE c.falha_humana = true) as falha_humana,
-    ROUND(AVG(
-        CASE WHEN c.entrega IS NOT NULL AND c.emissao IS NOT NULL
-        THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END
-    )::numeric, 1) as media_dias_parado
+    COUNT(c.id) as chamados,
+    COUNT(c.id) FILTER (WHERE c.status='CA') as abertos,
+    COUNT(c.id) FILTER (WHERE c.falha_humana=true) as falha_hum,
+    ROUND(AVG(CASE WHEN c.entrega IS NOT NULL AND c.emissao IS NOT NULL
+        THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END)::numeric,1) as media_dias
 FROM airbyte.veiculos_veiculo v
 JOIN airbyte.ordens_chamado c ON c.veiculo_id = v.id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = v.gre_id
 WHERE c.emissao >= '2026-01-01'
-GROUP BY v.placa, v.modelo, v.tipo_contrato_locacao, f.nome, g.nome
-HAVING COUNT(c.id) >= 5
-ORDER BY total_chamados DESC
-LIMIT 15
+GROUP BY v.placa, v.modelo, f.nome, g.nome
+HAVING COUNT(c.id) >= 5 ORDER BY chamados DESC LIMIT 15
 """)
 
-df_manut_fornecedor = safe_read("""
-SELECT
-    COALESCE(f.nome, 'SEM FORNECEDOR') as fornecedor,
-    COUNT(DISTINCT c.id) as total_chamados,
-    COUNT(DISTINCT c.id) FILTER (WHERE c.status = 'CA') as em_aberto,
-    COUNT(DISTINCT c.id) FILTER (WHERE c.status = 'CO') as em_oficina,
-    COUNT(DISTINCT c.veiculo_id) as veiculos_afetados,
-    ROUND(AVG(
-        CASE WHEN c.entrega IS NOT NULL AND c.emissao IS NOT NULL
-        THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END
-    )::numeric, 1) as media_dias_parado
-FROM airbyte.ordens_chamado c
-JOIN airbyte.veiculos_veiculo v ON v.id = c.veiculo_id
-LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
-WHERE c.emissao >= '2026-01-01'
-GROUP BY f.nome
-ORDER BY em_aberto DESC, total_chamados DESC
-LIMIT 12
-""")
-
-# ─────────────────────────────────────────────
-# 7. MOTORISTAS & EMPRESAS
-# ─────────────────────────────────────────────
-df_motoristas_rank = safe_read("""
-SELECT
-    m.nome as motorista,
-    COALESCE(f.nome, 'PRÓPRIO') as empresa,
-    m.cidade,
-    g.nome as gre,
-    COUNT(e.id) as total_escalas,
-    COUNT(e.id) FILTER (WHERE e.via_app = true) as via_app,
-    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true) * 100.0 / NULLIF(COUNT(e.id),0),1) as pct_app,
+# Motoristas
+df_mot_rank = safe_read("""
+SELECT m.nome, COALESCE(f.nome,'PRÓPRIO') as empresa, m.cidade, g.nome as gre,
+    COUNT(e.id) as total,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app=true)*100.0/NULLIF(COUNT(e.id),0),1) as pct_rast,
     COUNT(e.id) FILTER (WHERE
         e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
         EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    ) as fraude_tempo,
-    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as manuais_gps
+    ) as suspeitas,
+    COUNT(e.id) FILTER (WHERE e.via_app=false AND e.confirmado_manualmente=true) as sem_rast
 FROM airbyte.motoristas_motorista m
 JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
-WHERE m.status = 'A' AND e.data >= '2026-01-01'
+WHERE m.status='A' AND e.data >= '2026-04-01'
 GROUP BY m.nome, f.nome, m.cidade, g.nome
 HAVING COUNT(e.id) >= 20
-ORDER BY pct_app ASC
-LIMIT 30
+ORDER BY pct_rast ASC LIMIT 30
 """)
 
-df_motoristas_chamados = safe_read("""
-SELECT
-    m.nome as motorista,
-    COALESCE(f.nome, 'PRÓPRIO') as empresa,
-    g.nome as gre,
-    COUNT(c.id) as total_chamados,
-    COUNT(c.id) FILTER (WHERE c.falha_humana = true) as falha_humana,
-    COUNT(c.id) FILTER (WHERE c.status = 'CA') as em_aberto
+df_mot_chamados = safe_read("""
+SELECT m.nome, COALESCE(f.nome,'PRÓPRIO') as empresa, g.nome as gre,
+    COUNT(c.id) as chamados,
+    COUNT(c.id) FILTER (WHERE c.falha_humana=true) as falha_hum,
+    COUNT(c.id) FILTER (WHERE c.status='CA') as abertos
 FROM airbyte.ordens_chamado c
 JOIN airbyte.motoristas_motorista m ON m.id = c.motorista_id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
 WHERE c.emissao >= '2026-01-01'
-GROUP BY m.nome, f.nome, g.nome
-HAVING COUNT(c.id) >= 3
-ORDER BY total_chamados DESC
-LIMIT 15
+GROUP BY m.nome, f.nome, g.nome HAVING COUNT(c.id) >= 3
+ORDER BY chamados DESC LIMIT 15
 """)
 
-df_abastecimento_motorista = safe_read("""
-SELECT
-    m.nome as motorista,
-    COALESCE(f.nome, 'PRÓPRIO') as empresa,
-    m.cidade,
-    g.nome as gre,
-    COUNT(DISTINCT a.id) as abastecimentos,
-    COALESCE(SUM(a.litros), 0) as total_litros,
-    COALESCE(SUM(a.valor_total), 0) as total_gasto,
-    COUNT(DISTINCT e.id) as escalas_executadas,
+df_abast = safe_read("""
+SELECT m.nome, COALESCE(f.nome,'PRÓPRIO') as empresa, m.cidade, g.nome as gre,
+    COUNT(DISTINCT a.id) as abast,
+    COALESCE(SUM(a.litros),0) as litros,
+    COALESCE(SUM(a.valor_total),0) as gasto,
+    COUNT(DISTINCT e.id) as escalas,
     CASE WHEN COUNT(DISTINCT e.id) > 0
-        THEN ROUND(COALESCE(SUM(a.valor_total),0) / COUNT(DISTINCT e.id), 2)
-        ELSE 0
-    END as custo_por_escala
+        THEN ROUND(COALESCE(SUM(a.valor_total),0)/COUNT(DISTINCT e.id),2) ELSE 0
+    END as rs_escala
 FROM airbyte.motoristas_motorista m
 LEFT JOIN airbyte.abastecimentos_abastecimento a ON a.motorista_id = m.id
-    AND a.datetime_abastecimento >= '2026-01-01'
-    AND a.litros <= 1000
+    AND a.datetime_abastecimento >= '2026-01-01' AND a.litros <= 1000
 LEFT JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
     AND e.data >= '2026-01-01' AND e.anulada = false
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
-WHERE m.status = 'A'
+WHERE m.status='A'
 GROUP BY m.nome, f.nome, m.cidade, g.nome
-HAVING COALESCE(SUM(a.litros), 0) > 0 AND COALESCE(SUM(a.litros), 0) <= 50000
-ORDER BY total_gasto DESC
-LIMIT 20
+HAVING COALESCE(SUM(a.litros),0) BETWEEN 1 AND 50000
+ORDER BY gasto DESC LIMIT 20
 """)
 
-# ─────────────────────────────────────────────
-# 8. INSIGHTS — SCORE DE GARGALO
-# ─────────────────────────────────────────────
-df_insights_cidade = safe_read("""
-SELECT
-    m.cidade,
-    COUNT(DISTINCT m.id) as motoristas,
-    COUNT(e.id) as total_escalas,
-    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true AND e.data BETWEEN '2026-04-01' AND '2026-06-30')
-        * 100.0 / NULLIF(COUNT(e.id) FILTER (WHERE e.data BETWEEN '2026-04-01' AND '2026-06-30'),0),1) as pct_q2,
-    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true AND e.data >= '2026-07-01')
-        * 100.0 / NULLIF(COUNT(e.id) FILTER (WHERE e.data >= '2026-07-01'),0),1) as pct_q3,
-    ROUND(COUNT(e.id) FILTER (WHERE
-        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-        AND e.data >= '2026-01-01'
-    ) * 100.0 / NULLIF(COUNT(e.id) FILTER (WHERE e.data >= '2026-01-01'),0),1) as pct_fraude,
-    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true
-        AND e.data >= '2026-01-01') as manuais_gps
-FROM airbyte.motoristas_motorista m
-JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
-WHERE m.status = 'A' AND m.cidade IS NOT NULL AND e.data >= '2026-01-01'
-GROUP BY m.cidade
-HAVING COUNT(e.id) >= 100
-ORDER BY pct_q3 ASC
-LIMIT 30
-""")
-
-df_insights_fiscal = safe_read("""
-SELECT
-    g.nome as gre,
-    func.nome as fiscal,
-    COUNT(e.id) as total_escalas,
-    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true) * 100.0 / NULLIF(COUNT(e.id),0),1) as pct_app,
-    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true AND e.data BETWEEN '2026-04-01' AND '2026-06-30')
-        * 100.0 / NULLIF(COUNT(e.id) FILTER (WHERE e.data BETWEEN '2026-04-01' AND '2026-06-30'),0),1) as pct_q2,
-    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true AND e.data >= '2026-07-01')
-        * 100.0 / NULLIF(COUNT(e.id) FILTER (WHERE e.data >= '2026-07-01'),0),1) as pct_q3,
-    COUNT(e.id) FILTER (WHERE
-        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-        AND e.data >= '2026-01-01'
-    ) as fraude_tempo,
-    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true
-        AND e.data >= '2026-01-01') as manuais_gps
+# Fiscal
+df_fiscal = safe_read("""
+SELECT g.nome as gre, func.nome as fiscal,
+    COUNT(e.id) as total,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app=true AND e.data BETWEEN '2026-04-01' AND '2026-06-30')
+        *100.0/NULLIF(COUNT(e.id) FILTER (WHERE e.data BETWEEN '2026-04-01' AND '2026-06-30'),0),1) as pct_q2,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app=true AND e.data >= '2026-07-01')
+        *100.0/NULLIF(COUNT(e.id) FILTER (WHERE e.data >= '2026-07-01'),0),1) as pct_q3,
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL
+        AND EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
+        AND e.data >= '2026-04-01') as suspeitas,
+    COUNT(e.id) FILTER (WHERE e.via_app=false AND e.confirmado_manualmente=true
+        AND e.data >= '2026-04-01') as sem_rast
 FROM airbyte.rotas_escalarota e
 JOIN airbyte.rotas_rota r ON r.id = e.rota_id
 JOIN airbyte.escolas_gre g ON g.id = r.gre_id
 LEFT JOIN airbyte.motoristas_funcionario func ON func.id = g.fiscal_responsavel_id
-WHERE e.data >= '2026-01-01'
-GROUP BY g.nome, func.nome
-ORDER BY pct_q3 ASC
+WHERE e.data >= '2026-04-01'
+  AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
+GROUP BY g.nome, func.nome ORDER BY pct_q3 ASC
 """)
 
 conn.close()
-print("Queries executadas. Gerando HTML...")
+print("✅ Queries concluídas. Processando...")
 
-# ─────────────────────────────────────────────
-# CALCULAR SCORES DE GARGALO
-# ─────────────────────────────────────────────
-def calcular_score(pct_q3, pct_q2, pct_fraude, manuais, total):
-    try:
-        p3 = float(pct_q3) if pct_q3 is not None else 0
-        p2 = float(pct_q2) if pct_q2 is not None else 0
-        fr = float(pct_fraude) if pct_fraude is not None else 0
-        mn = float(manuais) if manuais is not None else 0
-        tot = float(total) if total is not None else 1
-        score = (100 - p3) * 0.4 + max(0, p2 - p3) * 0.3 + fr * 0.2 + (mn / tot * 100) * 0.1
-        return round(score, 1)
-    except:
-        return 0
+# ─── PROCESSAR PIVÔ DE CIDADES ─────────────────────────────────────────────
+pivot = {}  # cidade -> {mes -> {total, pct, suspeitas, sem_rast}}
+if not df_cidade_hist.empty:
+    for _, r in df_cidade_hist.iterrows():
+        c = r['cidade']
+        m = r['mes']
+        if c not in pivot: pivot[c] = {}
+        pivot[c][m] = {
+            'total': int(r['total']),
+            'pct': float(r['pct'] or 0),
+            'suspeitas': int(r['suspeitas'] or 0),
+            'sem_rast': int(r['sem_rast'] or 0)
+        }
 
-def classificar(pct_q2, pct_q3, pct_fraude):
-    try:
-        q2, q3 = float(pct_q2 or 0), float(pct_q3 or 0)
-        fr = float(pct_fraude or 0)
-        diff = q3 - q2
-        if q3 == 0 and q2 == 0: return ("⚫", "NUNCA ADERIU", "class-nunca")
-        if q3 == 0 and q2 > 0: return ("🔴", "REGREDIU TOTAL", "class-crit")
-        if diff <= -10: return ("🔴", "REGREDINDO", "class-crit")
-        if diff <= -5: return ("🟠", "ATENÇÃO", "class-warn")
-        if diff >= 5: return ("🟢", "EVOLUINDO", "class-ok")
-        if q3 >= 50: return ("🟢", "ESTÁVEL BOM", "class-ok")
-        return ("🟡", "ESTÁVEL BAIXO", "class-warn")
-    except:
-        return ("❓", "S/DADOS", "class-nd")
+# Calcular scores e tendências por cidade
+cidade_scores = []
+for cidade, dados in pivot.items():
+    vals = [dados.get(m, {}).get('pct') for m in MESES_COLS]
+    total_geral = sum(dados.get(m, {}).get('total', 0) for m in MESES_COLS)
+    total_susp = sum(dados.get(m, {}).get('suspeitas', 0) for m in MESES_COLS)
+    total_sem = sum(dados.get(m, {}).get('sem_rast', 0) for m in MESES_COLS)
+    v_clean = [x for x in vals if x is not None]
+    score = score_gargalo(v_clean, total_susp, total_geral)
+    icon, status, cls = tendencia(v_clean)
+    cidade_scores.append({
+        'cidade': cidade, 'vals': vals, 'total': total_geral,
+        'suspeitas': total_susp, 'sem_rast': total_sem,
+        'score': score, 'icon': icon, 'status': status, 'cls': cls
+    })
+cidade_scores.sort(key=lambda x: -x['score'])
 
-rows_insights = []
-if not df_insights_cidade.empty:
-    for _, r in df_insights_cidade.iterrows():
-        score = calcular_score(r.get('pct_q3'), r.get('pct_q2'), r.get('pct_fraude'), r.get('manuais_gps'), r.get('total_escalas'))
-        icon, status, cls = classificar(r.get('pct_q2'), r.get('pct_q3'), r.get('pct_fraude'))
-        rows_insights.append({
-            'cidade': r['cidade'],
-            'motoristas': r['motoristas'],
-            'total_escalas': r['total_escalas'],
-            'pct_q2': r.get('pct_q2') or 0,
-            'pct_q3': r.get('pct_q3') or 0,
-            'pct_fraude': r.get('pct_fraude') or 0,
-            'manuais_gps': r.get('manuais_gps') or 0,
-            'score': score,
-            'icon': icon,
-            'status': status,
-            'cls': cls
-        })
-    rows_insights.sort(key=lambda x: -x['score'])
+# ─── GERAR HTML DA TABELA PIVÔ ─────────────────────────────────────────────
+def cor_pct(pct):
+    if pct is None: return "color:#334155"
+    if pct == 0: return "color:#ef4444;font-weight:700"
+    if pct < 15: return "color:#ef4444"
+    if pct < 30: return "color:#f97316"
+    if pct < 50: return "color:#f59e0b"
+    return "color:#22c55e"
 
-# ─────────────────────────────────────────────
-# PREPARAR DADOS PARA GRÁFICOS
-# ─────────────────────────────────────────────
-meses = df_evolucao['mes'].tolist() if not df_evolucao.empty else []
-ev_total = df_evolucao['total'].tolist() if not df_evolucao.empty else []
-ev_app = df_evolucao['via_app'].tolist() if not df_evolucao.empty else []
-ev_fraude = df_evolucao['fraude_tempo'].tolist() if not df_evolucao.empty else []
-ev_manual = df_evolucao['manual_gps'].tolist() if not df_evolucao.empty else []
+def cls_status(cls):
+    m = {'ok':'badge-ok','warn':'badge-warn','crit':'badge-crit','zero':'badge-zero','stab':'badge-stab','nd':'badge-nd'}
+    return m.get(cls,'badge-nd')
 
-ev_pct_app = []
-ev_pct_fraude = []
-for i, row in df_evolucao.iterrows():
-    tot = row['total'] or 1
-    with_h = row.get('via_app') or 0
-    frd = row.get('fraude_tempo') or 0
-    ev_pct_app.append(round(with_h / tot * 100, 1))
-    ev_pct_fraude.append(round(frd / tot * 100, 2))
+def html_pivo():
+    if not cidade_scores: return "<tr><td colspan='8'>Sem dados</td></tr>"
+    h = ""
+    for r in cidade_scores:
+        h += f"<tr><td><b>{r['cidade']}</b></td>"
+        h += f"<td style='text-align:center'>{r['total']:,}</td>"
+        for pct in r['vals']:
+            if pct is None:
+                h += "<td style='text-align:center;color:#334155'>—</td>"
+            else:
+                h += f"<td style='text-align:center;{cor_pct(pct)}'>{pct}%</td>"
+        h += f"<td style='text-align:center'>{r['suspeitas']:,}</td>"
+        h += f"<td><span class='tag {cls_status(r['cls'])}'>{r['icon']} {r['status']}</span></td>"
+        h += f"<td style='text-align:right;color:#64748b;font-size:11px'>{r['score']}</td></tr>"
+    return h
 
+# Tabela pivô de GREs
+gre_pivot = {}
+if not df_gre_hist.empty:
+    for _, r in df_gre_hist.iterrows():
+        g = r['gre']; m = r['mes']
+        if g not in gre_pivot: gre_pivot[g] = {}
+        gre_pivot[g][m] = {
+            'total': int(r['total']), 'pct': float(r['pct'] or 0),
+            'sem_rast': int(r['sem_rast'] or 0), 'suspeitas': int(r['suspeitas'] or 0),
+            'anuladas': int(r['anuladas'] or 0)
+        }
+
+def html_gre_pivo():
+    if not gre_pivot: return "<tr><td colspan='9'>Sem dados</td></tr>"
+    h = ""
+    for gre in sorted(gre_pivot.keys()):
+        dados = gre_pivot[gre]
+        vals = [dados.get(m,{}).get('pct') for m in MESES_COLS]
+        v_clean = [x for x in vals if x is not None]
+        icon, status, cls = tendencia(v_clean)
+        total = sum(dados.get(m,{}).get('total',0) for m in MESES_COLS)
+        sem_rast = sum(dados.get(m,{}).get('sem_rast',0) for m in MESES_COLS)
+        suspeitas = sum(dados.get(m,{}).get('suspeitas',0) for m in MESES_COLS)
+        h += f"<tr><td><b>{gre}</b></td><td style='text-align:center'>{total:,}</td>"
+        for pct in vals:
+            if pct is None: h += "<td style='text-align:center;color:#334155'>—</td>"
+            else: h += f"<td style='text-align:center;{cor_pct(pct)}'>{pct}%</td>"
+        h += f"<td style='text-align:center'>{sem_rast:,}</td>"
+        h += f"<td style='text-align:center;color:#f97316'>{suspeitas:,}</td>"
+        h += f"<td><span class='tag {cls_status(cls)}'>{icon} {status}</span></td></tr>"
+    return h
+
+# ─── FUNÇÕES DE TABELAS ─────────────────────────────────────────────────────
+def fmt(v):
+    try: return f"{float(v):,.2f}".replace(",","X").replace(".",",").replace("X",".")
+    except: return "0,00"
+
+def html_fraude_emp():
+    if df_fraude_emp.empty: return "<tr><td colspan='6'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_fraude_emp.iterrows():
+        pct = float(r.get('pct_susp') or 0)
+        cls = "color:#ef4444;font-weight:700" if pct > 20 else ("color:#f97316" if pct > 10 else "")
+        h += f"<tr><td><b>{r['empresa']}</b></td><td>{int(r['motoristas'])}</td>"
+        h += f"<td>{int(r['total']):,}</td><td>{int(r.get('suspeitas',0)):,}</td>"
+        h += f"<td style='{cls}'>{pct}%</td><td>{int(r.get('sem_rast',0)):,}</td></tr>"
+    return h
+
+def html_fraude_mot():
+    if df_fraude_mot.empty: return "<tr><td colspan='7'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_fraude_mot.iterrows():
+        pct = float(r.get('pct_susp') or 0)
+        cls = "color:#ef4444;font-weight:700" if pct > 20 else ""
+        h += f"<tr><td><b>{r['motorista']}</b></td><td>{r['empresa']}</td>"
+        h += f"<td>{r.get('cidade','')}</td><td>{r.get('gre','')}</td>"
+        h += f"<td>{int(r.get('suspeitas',0))}</td><td style='{cls}'>{pct}%</td>"
+        h += f"<td>{int(r.get('sem_rast',0))}</td></tr>"
+    return h
+
+def html_contratos():
+    if df_contratos.empty: return "<tr><td colspan='6'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_contratos.iterrows():
+        sv = "🔴 INATIVO" if r.get('sv') == 'I' else "🟡 SEM MOTORISTA"
+        cor = "color:#ef4444" if r.get('sv') == 'I' else "color:#f59e0b"
+        h += f"<tr><td>{r.get('gre','—')}</td><td><b>{r.get('placa','—')}</b></td>"
+        h += f"<td>R$ {fmt(r.get('valor_unitario',0))}/dia</td><td>{r.get('turno','—')}</td>"
+        h += f"<td style='{cor}'>{sv}</td><td style='text-align:center'>{int(r.get('esc30d',0))}</td></tr>"
+    return h
+
+def html_frota():
+    if df_frota.empty: return "<tr><td colspan='7'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_frota.iterrows():
+        tot = max(int(r.get('total',1)),1)
+        pct_v = round(int(r.get('lic_venc',0))/tot*100)
+        cls = "color:#ef4444;font-weight:700" if pct_v > 50 else ("color:#f97316" if pct_v > 20 else "")
+        h += f"<tr><td><b>{r['fornecedor']}</b></td><td>{int(r.get('total',0))}</td>"
+        h += f"<td>{int(r.get('ativos',0))}</td><td>{int(r.get('inativos',0))}</td>"
+        h += f"<td style='{cls}'>{int(r.get('lic_venc',0))} ({pct_v}%)</td>"
+        h += f"<td>{int(r.get('lic_ok',0))}</td><td>{int(r.get('multas',0))}</td></tr>"
+    return h
+
+def html_mot():
+    if df_mot_rank.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_mot_rank.iterrows():
+        pct = float(r.get('pct_rast') or 0)
+        cls = "color:#ef4444;font-weight:700" if pct < 20 else ("color:#f59e0b" if pct < 50 else "color:#22c55e")
+        h += f"<tr><td><b>{r['nome']}</b></td><td>{r['empresa']}</td>"
+        h += f"<td>{r.get('cidade','')}</td><td>{r.get('gre','')}</td>"
+        h += f"<td>{int(r.get('total',0)):,}</td><td style='{cls}'>{pct}%</td>"
+        h += f"<td style='{'color:#ef4444' if int(r.get('suspeitas',0))>5 else ''}'>{int(r.get('suspeitas',0))}</td>"
+        h += f"<td>{int(r.get('sem_rast',0))}</td></tr>"
+    return h
+
+def html_abast():
+    if df_abast.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_abast.iterrows():
+        h += f"<tr><td><b>{r['nome']}</b></td><td>{r['empresa']}</td>"
+        h += f"<td>{r.get('cidade','')}</td><td>{r.get('gre','')}</td>"
+        h += f"<td>{fmt(r.get('litros',0))} L</td><td>R$ {fmt(r.get('gasto',0))}</td>"
+        h += f"<td>{int(r.get('escalas',0)):,}</td><td>R$ {fmt(r.get('rs_escala',0))}</td></tr>"
+    return h
+
+def html_fiscal():
+    if df_fiscal.empty: return "<tr><td colspan='7'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_fiscal.iterrows():
+        q2 = float(r.get('pct_q2') or 0); q3 = float(r.get('pct_q3') or 0)
+        icon, _, cls = tendencia([q2, q3])
+        cls_badge = cls_status(cls)
+        h += f"<tr><td><b>{r['gre']}</b></td><td>{r.get('fiscal','—')}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('total',0)):,}</td>"
+        h += f"<td style='text-align:center;{cor_pct(q2)}'>{q2}%</td>"
+        h += f"<td style='text-align:center'><span class='tag {cls_badge}'>{q3}% {icon}</span></td>"
+        h += f"<td style='text-align:center;color:#f97316'>{int(r.get('suspeitas',0)):,}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('sem_rast',0)):,}</td></tr>"
+    return h
+
+def html_insights():
+    if not cidade_scores: return "<tr><td colspan='9'>Sem dados</td></tr>"
+    h = ""
+    acoes = {
+        'SEM REGISTRO': 'Notificação formal ao fornecedor + visita do coordenador com prazo de 15 dias',
+        'REGREDIU TOTAL': 'Visita imediata + relatório ao gestor regional + prazo de regularização',
+        'EM QUEDA FORTE': 'Reunião urgente com o fiscal responsável + cobrança formal',
+        'EM QUEDA': 'Reunião com fiscal + prazo de 15 dias para recuperação',
+        'ATENÇÃO': 'Monitoramento semanal + cobrança ao fiscal responsável',
+        'MELHORANDO': 'Manter pressão. Reconhecer melhora na próxima reunião',
+        'LEVE MELHORA': 'Continuar monitorando. Meta: superar 50% até fim do trimestre',
+        'ESTÁVEL': 'Monitoramento padrão mensal',
+    }
+    for i, r in enumerate(cidade_scores[:25]):
+        acao = acoes.get(r['status'], 'Avaliar individualmente')
+        h += f"<tr><td style='text-align:center;font-weight:700'>#{i+1}</td>"
+        h += f"<td><b>{r['cidade']}</b></td><td style='text-align:center'>{r['total']:,}</td>"
+        for pct in r['vals']:
+            if pct is None: h += "<td style='text-align:center;color:#334155'>—</td>"
+            else: h += f"<td style='text-align:center;{cor_pct(pct)}'>{pct}%</td>"
+        cls_tag = cls_status(r['cls'])
+        h += f"<td><span class='tag {cls_tag}'>{r['icon']} {r['status']}</span></td>"
+        h += f"<td style='font-size:11px;color:#94a3b8'>{acao}</td></tr>"
+    return h
+
+# ─── KPIs ───────────────────────────────────────────────────────────────────
 kpi_total = int(df_kpi['total_escalas'].iloc[0]) if not df_kpi.empty else 0
-kpi_app = int(df_kpi['via_app'].iloc[0]) if not df_kpi.empty else 0
-kpi_manual = int(df_kpi['manual_sem_gps'].iloc[0]) if not df_kpi.empty else 0
-kpi_fraude = int(df_kpi['fraude_tempo'].iloc[0]) if not df_kpi.empty else 0
-kpi_contratos = int(df_kpi_contratos['contratos_sem_operacao'].iloc[0]) if not df_kpi_contratos.empty else 0
-kpi_manut_aberto = int(df_kpi_manut['em_aberto'].iloc[0]) if not df_kpi_manut.empty else 0
-kpi_manut_oficina = int(df_kpi_manut['em_oficina'].iloc[0]) if not df_kpi_manut.empty else 0
-kpi_pct_app = round(kpi_app / max(kpi_total, 1) * 100, 1)
-kpi_pct_fraude = round(kpi_fraude / max(kpi_total, 1) * 100, 2)
+kpi_rast = int(df_kpi['rastreado'].iloc[0]) if not df_kpi.empty else 0
+kpi_sem = int(df_kpi['sem_rastreamento'].iloc[0]) if not df_kpi.empty else 0
+kpi_susp = int(df_kpi['suspeitas'].iloc[0]) if not df_kpi.empty else 0
+kpi_pct = round(kpi_rast/max(kpi_total,1)*100,1)
+kpi_pct_susp = round(kpi_susp/max(kpi_total,1)*100,2)
+kpi_cont = int(df_kpi_extra['contratos_risco'].iloc[0]) if not df_kpi_extra.empty else 0
+kpi_ch = int(df_kpi_extra['chamados_abertos'].iloc[0]) if not df_kpi_extra.empty else 0
+kpi_of = int(df_kpi_extra['em_oficina'].iloc[0]) if not df_kpi_extra.empty else 0
 
-# ─────────────────────────────────────────────
-# GERAR LINHAS DAS TABELAS
-# ─────────────────────────────────────────────
-def rows_gre(df):
-    if df.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
-    html = ""
-    for _, r in df.iterrows():
-        q2, q3 = r.get('pct_q2') or 0, r.get('pct_q3') or 0
-        icon, _, _ = tendencia(q2, q3)
-        b = badge(r.get('pct_app') or 0)
-        html += f"""<tr>
-            <td><b>{r['gre']}</b></td>
-            <td>{int(r['total_escalas']):,}</td>
-            <td><span class="tag {b}">{r.get('pct_app') or 0}%</span></td>
-            <td>{r.get('pct_q2') or 0}%</td>
-            <td>{r.get('pct_q3') or 0}% {icon}</td>
-            <td>{int(r.get('manual_gps') or 0):,}</td>
-            <td>{int(r.get('anuladas') or 0):,}</td>
-        </tr>"""
-    return html
+# Dados gráficos
+meses_ev = df_evolucao['mes'].tolist() if not df_evolucao.empty else []
+ev_tot = df_evolucao['total'].tolist() if not df_evolucao.empty else []
+ev_rast = df_evolucao['rastreado'].tolist() if not df_evolucao.empty else []
+ev_susp = df_evolucao['suspeitas'].tolist() if not df_evolucao.empty else []
+ev_sem = df_evolucao['sem_rast'].tolist() if not df_evolucao.empty else []
+ev_pct_rast = [round(n(r)/max(n(t),1)*100,1) for r,t in zip(ev_rast,ev_tot)]
+ev_pct_susp = [round(n(s)/max(n(t),1)*100,2) for s,t in zip(ev_susp,ev_tot)]
 
-def rows_cidades(df):
-    if df.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
-    html = ""
-    for _, r in df.iterrows():
-        icon, status, cls = classificar(r.get('pct_q2'), r.get('pct_q3'), r.get('pct_fraude'))
-        html += f"""<tr>
-            <td><b>{r['cidade']}</b></td>
-            <td>{int(r['motoristas'])}</td>
-            <td>{int(r['total_escalas']):,}</td>
-            <td>{r.get('pct_q2') or 0}%</td>
-            <td>{r.get('pct_q3') or 0}%</td>
-            <td class="{'text-red' if float(r.get('pct_fraude') or 0) > 5 else ''}">{r.get('pct_fraude') or 0}%</td>
-            <td>{int(r.get('manuais_gps') or 0):,}</td>
-            <td><span class="tag {cls.replace('class-','badge-')}">{icon} {status}</span></td>
-        </tr>"""
-    return html
+cont_m = df_cont_mensal['mes'].tolist() if not df_cont_mensal.empty else []
+cont_t = df_cont_mensal['total'].tolist() if not df_cont_mensal.empty else []
+cont_a = df_cont_mensal['anuladas'].tolist() if not df_cont_mensal.empty else []
+cont_s = df_cont_mensal['sem_rast'].tolist() if not df_cont_mensal.empty else []
 
-def rows_fraude_emp(df):
-    if df.empty: return "<tr><td colspan='6'>Sem dados</td></tr>"
-    html = ""
-    for _, r in df.iterrows():
-        pct = float(r.get('pct_fraude') or 0)
-        cls = "text-red" if pct > 20 else ("text-orange" if pct > 10 else "")
-        html += f"""<tr>
-            <td><b>{r['empresa']}</b></td>
-            <td>{int(r['motoristas'])}</td>
-            <td>{int(r['total_escalas']):,}</td>
-            <td class="{cls}">{int(r.get('fraude_tempo') or 0):,}</td>
-            <td class="{cls}">{r.get('pct_fraude') or 0}%</td>
-            <td>{int(r.get('manuais_gps') or 0):,}</td>
-        </tr>"""
-    return html
+fr_m = df_fraude_mensal['mes'].tolist() if not df_fraude_mensal.empty else []
+fr_s = df_fraude_mensal['suspeitas'].tolist() if not df_fraude_mensal.empty else []
+fr_sr = df_fraude_mensal['sem_rast'].tolist() if not df_fraude_mensal.empty else []
 
-def rows_fraude_mot(df):
-    if df.empty: return "<tr><td colspan='7'>Sem dados</td></tr>"
-    html = ""
-    for _, r in df.iterrows():
-        pct = float(r.get('pct_fraude') or 0)
-        cls = "text-red" if pct > 20 else ""
-        html += f"""<tr>
-            <td><b>{r['motorista']}</b></td>
-            <td>{r['empresa']}</td>
-            <td>{r['cidade']}</td>
-            <td>{r['gre']}</td>
-            <td>{int(r.get('fraude_tempo') or 0)}</td>
-            <td class="{cls}">{r.get('pct_fraude') or 0}%</td>
-            <td>{int(r.get('manuais_gps') or 0)}</td>
-        </tr>"""
-    return html
+gerado = datetime.now().strftime("%d/%m/%Y %H:%M")
 
-def rows_contratos(df):
-    if df.empty: return "<tr><td colspan='6'>Sem dados</td></tr>"
-    # deduplicar por item_contrato (pode aparecer em múltiplos turnos)
-    seen = set()
-    html = ""
-    for _, r in df.iterrows():
-        key = str(r['item_contrato'])
-        if key in seen: continue
-        seen.add(key)
-        sv = "🔴 INATIVO" if r.get('status_veiculo') == 'I' else "🟡 SEM MOTORISTA"
-        html += f"""<tr>
-            <td>{r['gre']}</td>
-            <td>{r.get('placa','—')}</td>
-            <td>R$ {fmt_br(r.get('valor_unitario',0))}/dia</td>
-            <td>{r.get('turno','—')}</td>
-            <td><span class="tag badge-crit">{sv}</span></td>
-            <td>{int(r.get('escalas_30d',0))}</td>
-        </tr>"""
-    return html
-
-def rows_frota_doc(df):
-    if df.empty: return "<tr><td colspan='7'>Sem dados</td></tr>"
-    html = ""
-    for _, r in df.iterrows():
-        tot = max(int(r.get('total_veiculos') or 1), 1)
-        pct_v = round(int(r.get('lic_vencido') or 0) / tot * 100)
-        cls = "text-red" if pct_v > 50 else ("text-orange" if pct_v > 20 else "")
-        html += f"""<tr>
-            <td><b>{r['fornecedor']}</b></td>
-            <td>{int(r.get('total_veiculos') or 0)}</td>
-            <td>{int(r.get('ativos') or 0)}</td>
-            <td>{int(r.get('inativos') or 0)}</td>
-            <td class="{cls}">{int(r.get('lic_vencido') or 0)} ({pct_v}%)</td>
-            <td>{int(r.get('lic_ok') or 0)}</td>
-            <td>{int(r.get('com_multas') or 0)}</td>
-        </tr>"""
-    return html
-
-def rows_veiculos_prob(df):
-    if df.empty: return "<tr><td colspan='9'>Sem dados</td></tr>"
-    html = ""
-    for _, r in df.iterrows():
-        html += f"""<tr>
-            <td><b>{r['placa']}</b></td>
-            <td>{r['modelo']}</td>
-            <td>{r['fornecedor']}</td>
-            <td>{r['gre']}</td>
-            <td>{int(r.get('total_chamados') or 0)}</td>
-            <td class="{'text-red' if int(r.get('em_aberto') or 0) > 3 else ''}">{int(r.get('em_aberto') or 0)}</td>
-            <td>{int(r.get('falha_humana') or 0)}</td>
-            <td>{r.get('media_dias_parado') or 0} dias</td>
-        </tr>"""
-    return html
-
-def rows_motoristas(df):
-    if df.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
-    html = ""
-    for _, r in df.iterrows():
-        pct = float(r.get('pct_app') or 0)
-        cls = badge(pct)
-        html += f"""<tr>
-            <td><b>{r['motorista']}</b></td>
-            <td>{r['empresa']}</td>
-            <td>{r['cidade']}</td>
-            <td>{r['gre']}</td>
-            <td>{int(r.get('total_escalas') or 0):,}</td>
-            <td><span class="tag {cls}">{pct}%</span></td>
-            <td class="{'text-red' if int(r.get('fraude_tempo') or 0) > 5 else ''}">{int(r.get('fraude_tempo') or 0)}</td>
-            <td>{int(r.get('manuais_gps') or 0)}</td>
-        </tr>"""
-    return html
-
-def rows_abast(df):
-    if df.empty: return "<tr><td colspan='7'>Sem dados</td></tr>"
-    html = ""
-    for _, r in df.iterrows():
-        html += f"""<tr>
-            <td><b>{r['motorista']}</b></td>
-            <td>{r['empresa']}</td>
-            <td>{r['cidade']}</td>
-            <td>{r['gre']}</td>
-            <td>{int(r.get('abastecimentos') or 0)}</td>
-            <td>{fmt_br(r.get('total_litros',0))} L</td>
-            <td>R$ {fmt_br(r.get('total_gasto',0))}</td>
-            <td>{int(r.get('escalas_executadas') or 0):,}</td>
-            <td>R$ {fmt_br(r.get('custo_por_escala',0))}</td>
-        </tr>"""
-    return html
-
-def rows_mot_chamados(df):
-    if df.empty: return "<tr><td colspan='6'>Sem dados</td></tr>"
-    html = ""
-    for _, r in df.iterrows():
-        html += f"""<tr>
-            <td><b>{r['motorista']}</b></td>
-            <td>{r['empresa']}</td>
-            <td>{r['gre']}</td>
-            <td>{int(r.get('total_chamados') or 0)}</td>
-            <td class="{'text-red' if int(r.get('falha_humana') or 0) > 0 else ''}">{int(r.get('falha_humana') or 0)}</td>
-            <td>{int(r.get('em_aberto') or 0)}</td>
-        </tr>"""
-    return html
-
-def rows_insights_table(rows):
-    if not rows: return "<tr><td colspan='8'>Sem dados</td></tr>"
-    html = ""
-    for i, r in enumerate(rows[:20]):
-        acao = {
-            'NUNCA ADERIU': 'Notificação formal ao fornecedor + visita do coordenador',
-            'REGREDIU TOTAL': 'Visita imediata + relatório ao gestor regional',
-            'REGREDINDO': 'Reunião com fiscal responsável + prazo de 15 dias',
-            'ATENÇÃO': 'Monitoramento semanal + cobrança ao fiscal',
-            'EVOLUINDO': 'Manter pressão, reconhecer melhora',
-            'ESTÁVEL BAIXO': 'Plano de ação com metas mensais',
-            'ESTÁVEL BOM': 'Monitoramento padrão',
-        }.get(r['status'], 'Avaliar caso a caso')
-        html += f"""<tr>
-            <td><b>#{i+1}</b></td>
-            <td><b>{r['cidade']}</b></td>
-            <td>{int(r['motoristas'])}</td>
-            <td>{int(r['total_escalas']):,}</td>
-            <td>{r['pct_q2']}%</td>
-            <td>{r['pct_q3']}%</td>
-            <td><span class="tag {r['cls'].replace('class-','badge-')}">{r['icon']} {r['status']}</span></td>
-            <td style="font-size:11px">{acao}</td>
-        </tr>"""
-    return html
-
-def rows_insights_fiscal(df):
-    if df.empty: return "<tr><td colspan='7'>Sem dados</td></tr>"
-    html = ""
-    for _, r in df.iterrows():
-        q2, q3 = float(r.get('pct_q2') or 0), float(r.get('pct_q3') or 0)
-        icon, _, _ = tendencia(q2, q3)
-        b = badge(q3)
-        html += f"""<tr>
-            <td><b>{r['gre']}</b></td>
-            <td>{r.get('fiscal') or '—'}</td>
-            <td>{int(r.get('total_escalas') or 0):,}</td>
-            <td>{q2}%</td>
-            <td><span class="tag {b}">{q3}% {icon}</span></td>
-            <td>{int(r.get('fraude_tempo') or 0):,}</td>
-            <td>{int(r.get('manuais_gps') or 0):,}</td>
-        </tr>"""
-    return html
-
-# ─────────────────────────────────────────────
-# HTML
-# ─────────────────────────────────────────────
-gerado_em = datetime.now().strftime("%d/%m/%Y %H:%M")
-
+# ─── HTML FINAL ─────────────────────────────────────────────────────────────
 html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Torre de Controle | Fiscalização de Rotas — Piauí</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-:root {{
-  --bg: #0b0f1a;
-  --surface: #131929;
-  --surface2: #1a2236;
-  --border: #1e2d45;
-  --text: #e2e8f0;
-  --muted: #64748b;
-  --accent: #38bdf8;
-  --ok: #22c55e;
-  --warn: #f59e0b;
-  --crit: #ef4444;
-  --orange: #f97316;
-  --purple: #a78bfa;
-}}
-* {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{ font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 13px; }}
-.header {{ background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; }}
-.header h1 {{ font-size: 16px; font-weight: 700; color: var(--accent); letter-spacing: 0.5px; }}
-.header .meta {{ font-size: 11px; color: var(--muted); }}
-.nav {{ display: flex; gap: 4px; padding: 12px 24px 0; background: var(--surface); border-bottom: 2px solid var(--border); overflow-x: auto; }}
-.nav button {{ background: none; border: none; color: var(--muted); padding: 10px 16px; cursor: pointer; font-size: 12px; font-weight: 600; border-bottom: 2px solid transparent; margin-bottom: -2px; white-space: nowrap; transition: .2s; }}
-.nav button.active {{ color: var(--accent); border-bottom-color: var(--accent); }}
-.nav button:hover:not(.active) {{ color: var(--text); }}
-.tab {{ display: none; padding: 20px 24px; }}
-.tab.active {{ display: block; }}
-.kpi-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }}
-.kpi {{ background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }}
-.kpi label {{ font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; }}
-.kpi .val {{ font-size: 26px; font-weight: 700; color: var(--text); margin-top: 4px; }}
-.kpi .val.ok {{ color: var(--ok); }}
-.kpi .val.warn {{ color: var(--warn); }}
-.kpi .val.crit {{ color: var(--crit); }}
-.card {{ background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 16px; }}
-.card h3 {{ font-size: 13px; font-weight: 700; color: var(--accent); margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }}
-.grid2 {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }}
-.grid3 {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }}
-@media(max-width: 900px) {{ .grid2, .grid3 {{ grid-template-columns: 1fr; }} }}
-.tbl-wrap {{ overflow-x: auto; max-height: 420px; overflow-y: auto; }}
-table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
-th {{ background: var(--bg); color: var(--accent); padding: 10px 8px; border-bottom: 2px solid var(--border); position: sticky; top: 0; text-align: left; font-size: 11px; font-weight: 700; white-space: nowrap; }}
-td {{ padding: 9px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }}
-tr:hover {{ background: var(--surface2); }}
-.search {{ width: 100%; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; margin-bottom: 12px; font-size: 12px; outline: none; }}
-.search:focus {{ border-color: var(--accent); }}
-.tag {{ display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 700; }}
-.badge-ok {{ background: rgba(34,197,94,.15); color: var(--ok); }}
-.badge-warn {{ background: rgba(245,158,11,.15); color: var(--warn); }}
-.badge-crit {{ background: rgba(239,68,68,.15); color: var(--crit); }}
-.badge-nd {{ background: rgba(100,116,139,.15); color: var(--muted); }}
-.badge-nunca {{ background: rgba(167,139,250,.15); color: var(--purple); }}
-.text-red {{ color: var(--crit); font-weight: 700; }}
-.text-orange {{ color: var(--orange); font-weight: 700; }}
-.alert-box {{ background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.3); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 12px; color: #fca5a5; }}
-.alert-box b {{ color: var(--crit); }}
-.score-bar {{ display: inline-block; height: 6px; border-radius: 3px; background: var(--crit); margin-left: 8px; vertical-align: middle; }}
-canvas {{ max-height: 280px; }}
-.legenda {{ display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; font-size: 11px; color: var(--muted); }}
-.legenda span {{ display: flex; align-items: center; gap: 4px; }}
-.legenda i {{ display: inline-block; width: 10px; height: 10px; border-radius: 2px; }}
+:root{{--bg:#0b0f1a;--s1:#131929;--s2:#1a2236;--bd:#1e2d45;--tx:#e2e8f0;--mt:#64748b;
+--ac:#38bdf8;--ok:#22c55e;--wn:#f59e0b;--cr:#ef4444;--or:#f97316;--pu:#a78bfa;}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:13px}}
+.hdr{{background:var(--s1);border-bottom:1px solid var(--bd);padding:12px 24px;
+  display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:100}}
+.hdr h1{{font-size:15px;font-weight:700;color:var(--ac)}}
+.hdr .meta{{font-size:11px;color:var(--mt)}}
+.nav{{display:flex;gap:2px;padding:10px 24px 0;background:var(--s1);border-bottom:2px solid var(--bd);overflow-x:auto}}
+.nav button{{background:none;border:none;color:var(--mt);padding:10px 14px;cursor:pointer;
+  font-size:12px;font-weight:600;border-bottom:2px solid transparent;margin-bottom:-2px;
+  white-space:nowrap;transition:.15s}}
+.nav button.active{{color:var(--ac);border-bottom-color:var(--ac)}}
+.nav button:hover:not(.active){{color:var(--tx)}}
+.tab{{display:none;padding:16px 24px}}
+.tab.active{{display:block}}
+.kpi-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}}
+.kpi{{background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:14px}}
+.kpi label{{font-size:10px;color:var(--mt);text-transform:uppercase;letter-spacing:.5px;font-weight:700;display:block}}
+.kpi .v{{font-size:22px;font-weight:700;margin-top:4px}}
+.kpi .sub{{font-size:10px;color:var(--mt);margin-top:2px}}
+.v-ok{{color:var(--ok)}}.v-wn{{color:var(--wn)}}.v-cr{{color:var(--cr)}}
+.card{{background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:16px;margin-bottom:14px}}
+.card h3{{font-size:12px;font-weight:700;color:var(--ac);margin-bottom:12px;
+  padding-bottom:8px;border-bottom:1px solid var(--bd)}}
+.card p.desc{{font-size:11px;color:var(--mt);margin-bottom:10px;line-height:1.6;
+  padding:8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--bd)}}
+.g2{{display:grid;grid-template-columns:1fr 1fr;gap:14px}}
+.g3{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}}
+@media(max-width:900px){{.g2,.g3{{grid-template-columns:1fr}}}}
+.tw{{overflow-x:auto;max-height:440px;overflow-y:auto}}
+table{{width:100%;border-collapse:collapse;font-size:12px}}
+th{{background:var(--bg);color:var(--ac);padding:9px 8px;border-bottom:2px solid var(--bd);
+  position:sticky;top:0;text-align:left;font-size:11px;font-weight:700;white-space:nowrap}}
+td{{padding:8px;border-bottom:1px solid var(--bd);vertical-align:middle}}
+tr:hover{{background:var(--s2)}}
+.src{{width:100%;padding:8px 10px;background:var(--bg);border:1px solid var(--bd);
+  color:var(--tx);border-radius:6px;margin-bottom:10px;font-size:12px;outline:none}}
+.src:focus{{border-color:var(--ac)}}
+.tag{{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700;white-space:nowrap}}
+.badge-ok{{background:rgba(34,197,94,.12);color:var(--ok)}}
+.badge-warn{{background:rgba(245,158,11,.12);color:var(--wn)}}
+.badge-crit{{background:rgba(239,68,68,.12);color:var(--cr)}}
+.badge-zero{{background:rgba(167,139,250,.12);color:var(--pu)}}
+.badge-stab{{background:rgba(56,189,248,.1);color:var(--ac)}}
+.badge-nd{{background:rgba(100,116,139,.1);color:var(--mt)}}
+.alerta{{background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.25);
+  border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#fca5a5;line-height:1.6}}
+.alerta b{{color:var(--cr)}}
+.info{{background:rgba(56,189,248,.07);border:1px solid rgba(56,189,248,.2);
+  border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#7dd3fc;line-height:1.6}}
+canvas{{max-height:270px}}
+.legenda-cores{{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px;font-size:10px}}
+.lc{{padding:2px 8px;border-radius:3px;font-weight:700}}
+.lc-cr{{background:rgba(239,68,68,.2);color:var(--cr)}}
+.lc-or{{background:rgba(249,115,22,.2);color:var(--or)}}
+.lc-wn{{background:rgba(245,158,11,.2);color:var(--wn)}}
+.lc-ok{{background:rgba(34,197,94,.2);color:var(--ok)}}
+.lc-nd{{background:rgba(100,116,139,.2);color:var(--mt)}}
 </style>
 </head>
 <body>
-
-<div class="header">
-  <h1>🛡️ Torre de Controle | Fiscalização de Rotas — Piauí</h1>
-  <div class="meta">Gerado em {gerado_em} &nbsp;|&nbsp; Dados: Supabase/Airbyte</div>
+<div class="hdr">
+  <h1>🛡️ Torre de Controle — Fiscalização de Rotas Escolares | Piauí</h1>
+  <div class="meta">Atualizado em {gerado} &nbsp;·&nbsp; Fonte: Banco de dados operacional</div>
 </div>
-
 <div class="nav">
   <button class="active" onclick="tab('t1',this)">📊 Painel Executivo</button>
-  <button onclick="tab('t2',this)">📍 Assiduidade GRE</button>
+  <button onclick="tab('t2',this)">📍 Regionais (GRE)</button>
   <button onclick="tab('t3',this)">🏙️ Cidades</button>
-  <button onclick="tab('t4',this)">⚠️ Fraude</button>
+  <button onclick="tab('t4',this)">⚠️ Rotas Suspeitas</button>
   <button onclick="tab('t5',this)">📋 Contratos</button>
   <button onclick="tab('t6',this)">🚌 Frota</button>
   <button onclick="tab('t7',this)">👤 Motoristas</button>
-  <button onclick="tab('t8',this)">🧠 Insights</button>
+  <button onclick="tab('t8',this)">🧠 Prioridades</button>
 </div>
 
 <!-- ABA 1: PAINEL EXECUTIVO -->
 <div id="t1" class="tab active">
+  <div class="info">
+    <b>📌 Como ler este painel:</b>
+    <b>Com Rastreamento</b> = rota registrada via app ou link (GPS ativo).
+    <b>Sem Rastreamento</b> = confirmada manualmente, sem GPS.
+    <b>Rota Suspeita</b> = duração menor que 10 minutos (impossível para uma rota real).
+  </div>
   <div class="kpi-grid">
-    <div class="kpi"><label>Escalas no Mês</label><div class="val">{kpi_total:,}</div></div>
-    <div class="kpi"><label>Via App</label><div class="val {'ok' if kpi_pct_app >= 50 else 'warn' if kpi_pct_app >= 30 else 'crit'}">{kpi_pct_app}%</div></div>
-    <div class="kpi"><label>Manuais s/ GPS</label><div class="val warn">{kpi_manual:,}</div></div>
-    <div class="kpi"><label>Fraude Tempo (&lt;10min)</label><div class="val crit">{kpi_fraude:,} ({kpi_pct_fraude}%)</div></div>
-    <div class="kpi"><label>Contratos s/ Operação</label><div class="val crit">{kpi_contratos}</div></div>
-    <div class="kpi"><label>Chamados Abertos</label><div class="val warn">{kpi_manut_aberto}</div></div>
-    <div class="kpi"><label>Veíc. em Oficina</label><div class="val warn">{kpi_manut_oficina}</div></div>
+    <div class="kpi"><label>Escalas no Mês Atual</label><div class="v">{kpi_total:,}</div></div>
+    <div class="kpi"><label>Com Rastreamento</label><div class="v {'v-ok' if kpi_pct>=50 else 'v-wn' if kpi_pct>=30 else 'v-cr'}">{kpi_pct}%</div><div class="sub">{kpi_rast:,} escalas</div></div>
+    <div class="kpi"><label>Sem Rastreamento</label><div class="v v-wn">{kpi_sem:,}</div><div class="sub">confirmadas manualmente</div></div>
+    <div class="kpi"><label>Rotas Suspeitas (&lt;10min)</label><div class="v v-cr">{kpi_susp:,}</div><div class="sub">{kpi_pct_susp}% do total</div></div>
+    <div class="kpi"><label>Contratos sem Operação</label><div class="v v-cr">{kpi_cont}</div><div class="sub">veículos sem motorista</div></div>
+    <div class="kpi"><label>Chamados em Aberto</label><div class="v v-wn">{kpi_ch:,}</div></div>
+    <div class="kpi"><label>Veículos em Oficina</label><div class="v v-wn">{kpi_of}</div></div>
   </div>
-
-  <div class="grid2">
-    <div class="card">
-      <h3>📈 Evolução Mensal de Escalas (2026)</h3>
-      <canvas id="chart_esc"></canvas>
-    </div>
-    <div class="card">
-      <h3>📱 % Via App vs % Fraude de Tempo</h3>
-      <canvas id="chart_pct"></canvas>
-    </div>
+  <div class="g2">
+    <div class="card"><h3>📈 Total de Escalas vs Rastreadas por Mês (2026)</h3><canvas id="c_esc"></canvas></div>
+    <div class="card"><h3>📱 % Com Rastreamento vs % Rotas Suspeitas</h3><canvas id="c_pct"></canvas></div>
   </div>
-
-  <div class="grid2">
-    <div class="card">
-      <h3>🚨 Manuais s/ GPS por Mês</h3>
-      <canvas id="chart_manual"></canvas>
-    </div>
-    <div class="card">
-      <h3>📋 Escalas com Contrato por Mês</h3>
-      <canvas id="chart_contrato"></canvas>
-    </div>
+  <div class="g2">
+    <div class="card"><h3>🚫 Sem Rastreamento por Mês</h3><canvas id="c_sem"></canvas></div>
+    <div class="card"><h3>📋 Escalas com Contrato por Mês</h3><canvas id="c_cont"></canvas></div>
   </div>
 </div>
 
-<!-- ABA 2: ASSIDUIDADE GRE -->
+<!-- ABA 2: REGIONAIS (GRE) -->
 <div id="t2" class="tab">
-  <div class="card">
-    <h3>📊 Evolução % Via App por GRE (2026)</h3>
-    <canvas id="chart_gre"></canvas>
+  <div class="info">
+    <b>📌 Como ler:</b> Cada linha é uma Regional de Ensino (GRE). As colunas mostram o % de escalas
+    com rastreamento ativo mês a mês. <b>Verde</b> = acima de 50%. <b>Laranja</b> = entre 15-50%.
+    <b>Vermelho</b> = abaixo de 15%. A tendência compara o último mês com o anterior.
+  </div>
+  <div class="legenda-cores">
+    <span class="lc lc-cr">0-14%: Crítico</span>
+    <span class="lc lc-or">15-29%: Baixo</span>
+    <span class="lc lc-wn">30-49%: Moderado</span>
+    <span class="lc lc-ok">50%+: Adequado</span>
   </div>
   <div class="card">
-    <h3>📋 Desempenho por GRE — Q2 vs Q3/2026</h3>
-    <input class="search" id="s_gre" oninput="fil('s_gre','tbl_gre')" placeholder="Filtrar GRE...">
-    <div class="tbl-wrap">
-      <table id="tbl_gre">
-        <thead><tr><th>GRE</th><th>Escalas</th><th>% App</th><th>Q2/2026</th><th>Q3/2026</th><th>Manuais s/GPS</th><th>Anuladas</th></tr></thead>
-        <tbody>{rows_gre(df_gre_assid)}</tbody>
+    <h3>📊 Evolução do Rastreamento por Regional — Abr a Ago/2026</h3>
+    <div class="tw">
+      <table>
+        <thead><tr>
+          <th>Regional (GRE)</th><th style="text-align:center">Total Esc.</th>
+          <th style="text-align:center">Abr/26</th><th style="text-align:center">Mai/26</th>
+          <th style="text-align:center">Jun/26</th><th style="text-align:center">Jul/26</th>
+          <th style="text-align:center">Ago/26</th>
+          <th style="text-align:center">Sem Rast.</th>
+          <th style="text-align:center">Suspeitas</th>
+          <th>Tendência</th>
+        </tr></thead>
+        <tbody>{html_gre_pivo()}</tbody>
       </table>
     </div>
+  </div>
+  <div class="card">
+    <h3>📉 % Rastreamento por GRE — Evolução Mensal (Abr-Ago/2026)</h3>
+    <canvas id="c_gre"></canvas>
   </div>
 </div>
 
 <!-- ABA 3: CIDADES -->
 <div id="t3" class="tab">
-  <div class="alert-box">
-    <b>⚠️ Atenção:</b> Cidades abaixo classificadas por situação de registro via app.
-    Regressão = índice Q3 menor que Q2. "Nunca aderiu" = 0% em ambos os trimestres.
+  <div class="info">
+    <b>📌 Como ler:</b> Cada linha é um município. As colunas mostram o % de escalas com rastreamento
+    por mês. A coluna <b>Situação</b> classifica automaticamente com base na evolução.
+    <b>Rotas Suspeitas</b> = total de rotas com duração menor que 10 minutos no período.
+    Cidades ordenadas pela prioridade de atenção (pior primeiro).
+  </div>
+  <div class="legenda-cores">
+    <span class="lc lc-cr">0%: Sem registro</span>
+    <span class="lc lc-or">1-14%: Crítico</span>
+    <span class="lc lc-wn">15-29%: Baixo</span>
+    <span class="lc lc-ok">50%+: Adequado</span>
   </div>
   <div class="card">
-    <h3>🏙️ Cidades — Registro via App e Fraude de Tempo</h3>
-    <input class="search" id="s_cid" oninput="fil('s_cid','tbl_cid')" placeholder="Filtrar cidade...">
-    <div class="tbl-wrap">
-      <table id="tbl_cid">
-        <thead><tr><th>Cidade</th><th>Mot.</th><th>Escalas</th><th>Q2 App%</th><th>Q3 App%</th><th>Fraude%</th><th>Manuais</th><th>Situação</th></tr></thead>
-        <tbody>{rows_cidades(df_cidades)}</tbody>
+    <h3>🏙️ Rastreamento por Cidade — Histórico Mensal Abr a Ago/2026</h3>
+    <input class="src" id="s_cid" oninput="fil('s_cid','t_cid')" placeholder="Filtrar por cidade...">
+    <div class="tw">
+      <table id="t_cid">
+        <thead><tr>
+          <th>Cidade</th><th style="text-align:center">Total</th>
+          <th style="text-align:center">Abr/26</th><th style="text-align:center">Mai/26</th>
+          <th style="text-align:center">Jun/26</th><th style="text-align:center">Jul/26</th>
+          <th style="text-align:center">Ago/26</th>
+          <th style="text-align:center">Suspeitas</th>
+          <th>Situação</th><th style="text-align:right">Score</th>
+        </tr></thead>
+        <tbody>{html_pivo()}</tbody>
       </table>
     </div>
   </div>
 </div>
 
-<!-- ABA 4: FRAUDE -->
+<!-- ABA 4: ROTAS SUSPEITAS -->
 <div id="t4" class="tab">
-  <div class="card">
-    <h3>📉 Evolução Mensal — Fraude de Tempo e Manuais s/ GPS</h3>
-    <canvas id="chart_fraude"></canvas>
+  <div class="alerta">
+    <b>⚠️ O que é uma Rota Suspeita?</b> Qualquer escala com início e fim de execução registrados,
+    mas com duração menor que 10 minutos. Uma rota escolar real leva no mínimo 20-30 minutos.
+    Rotas concluídas em menos de 10 minutos indicam abertura e fechamento irregular para registrar execução sem realizar a rota.
+    <b>100% dos casos identificados são de prestadores terceirizados.</b>
   </div>
-  <div class="grid2">
+  <div class="card"><h3>📉 Evolução Mensal — Rotas Suspeitas e Sem Rastreamento</h3><canvas id="c_fr"></canvas></div>
+  <div class="g2">
     <div class="card">
-      <h3>🏢 Empresas com Maior % Fraude de Tempo</h3>
-      <div class="tbl-wrap">
-        <table id="tbl_femp">
-          <thead><tr><th>Empresa</th><th>Mot.</th><th>Escalas</th><th>Fraude</th><th>%</th><th>Manuais</th></tr></thead>
-          <tbody>{rows_fraude_emp(df_fraude_empresas)}</tbody>
+      <h3>🏢 Empresas com Maior % de Rotas Suspeitas</h3>
+      <p class="desc">Empresas ordenadas pelo percentual de rotas suspeitas sobre o total de escalas.
+      Percentual acima de 20% é considerado crítico e requer ação contratual imediata.</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Empresa</th><th>Mot.</th><th>Total Esc.</th><th>Suspeitas</th><th>%</th><th>Sem Rast.</th></tr></thead>
+          <tbody>{html_fraude_emp()}</tbody>
         </table>
       </div>
     </div>
     <div class="card">
-      <h3>👤 Motoristas com Maior % Fraude de Tempo</h3>
-      <input class="search" id="s_fmot" oninput="fil('s_fmot','tbl_fmot')" placeholder="Buscar...">
-      <div class="tbl-wrap">
-        <table id="tbl_fmot">
-          <thead><tr><th>Motorista</th><th>Empresa</th><th>Cidade</th><th>GRE</th><th>Fraudes</th><th>%</th><th>Manuais</th></tr></thead>
-          <tbody>{rows_fraude_mot(df_fraude_motoristas)}</tbody>
+      <h3>👤 Motoristas com Maior % de Rotas Suspeitas</h3>
+      <p class="desc">Motoristas com pelo menos 10 escalas no período. Percentual acima de 20% em vermelho.</p>
+      <input class="src" id="s_fm" oninput="fil('s_fm','t_fm')" placeholder="Buscar motorista...">
+      <div class="tw">
+        <table id="t_fm">
+          <thead><tr><th>Motorista</th><th>Empresa</th><th>Cidade</th><th>GRE</th><th>Suspeitas</th><th>%</th><th>Sem Rast.</th></tr></thead>
+          <tbody>{html_fraude_mot()}</tbody>
         </table>
       </div>
     </div>
@@ -962,27 +821,22 @@ canvas {{ max-height: 280px; }}
 
 <!-- ABA 5: CONTRATOS -->
 <div id="t5" class="tab">
-  <div class="alert-box">
-    <b>🚨 Contratos Ativos sem Operação:</b> Veículos com contrato ativo mas SEM motorista associado
-    e ZERO escalas nos últimos 30 dias. Cada linha representa valor diário em risco de pagamento sem execução.
+  <div class="alerta">
+    <b>⚠️ Contratos sem Operação:</b> Veículos com contrato ativo mas sem motorista associado
+    e zero escalas nos últimos 30 dias. O valor informado é o valor diário do contrato —
+    cada dia sem execução representa esse valor em risco de pagamento sem prestação de serviço.
   </div>
-  <div class="grid2">
-    <div class="card">
-      <h3>📋 Escalas com Contrato — Evolução Mensal</h3>
-      <canvas id="chart_cont2"></canvas>
-    </div>
-    <div class="card">
-      <h3>📊 Distribuição: Total vs Manuais vs Anuladas</h3>
-      <canvas id="chart_cont3"></canvas>
-    </div>
+  <div class="g2">
+    <div class="card"><h3>📈 Total de Escalas com Contrato — Abr a Ago/2026</h3><canvas id="c_ct2"></canvas></div>
+    <div class="card"><h3>📊 Escalas com Contrato: Total vs Sem Rastreamento vs Anuladas</h3><canvas id="c_ct3"></canvas></div>
   </div>
   <div class="card">
-    <h3>⚠️ Contratos Ativos sem Motorista (Zero Escalas em 30 dias)</h3>
-    <input class="search" id="s_cont" oninput="fil('s_cont','tbl_cont')" placeholder="Filtrar GRE, placa...">
-    <div class="tbl-wrap">
-      <table id="tbl_cont">
-        <thead><tr><th>GRE</th><th>Placa</th><th>Valor/Dia</th><th>Turno</th><th>Situação</th><th>Escalas 30d</th></tr></thead>
-        <tbody>{rows_contratos(df_contratos_risco)}</tbody>
+    <h3>🚨 Veículos em Contrato Ativo sem Motorista (Zero Escalas em 30 dias)</h3>
+    <input class="src" id="s_ct" oninput="fil('s_ct','t_ct')" placeholder="Filtrar por GRE, placa...">
+    <div class="tw">
+      <table id="t_ct">
+        <thead><tr><th>Regional</th><th>Placa</th><th>Valor/Dia</th><th>Turno</th><th>Situação do Veículo</th><th style="text-align:center">Esc. 30d</th></tr></thead>
+        <tbody>{html_contratos()}</tbody>
       </table>
     </div>
   </div>
@@ -990,32 +844,40 @@ canvas {{ max-height: 280px; }}
 
 <!-- ABA 6: FROTA -->
 <div id="t6" class="tab">
+  <div class="info">
+    <b>📌 Licenciamento Vencido</b> = veículo com ano de licenciamento anterior a 2026.
+    Veículo com licenciamento vencido não deveria estar em operação de transporte escolar.
+    <b>Com Multas</b> = registro de multa ativa no cadastro do veículo.
+  </div>
   <div class="card">
-    <h3>📄 Documentação por Fornecedor — Licenciamento e Multas</h3>
-    <input class="search" id="s_frota" oninput="fil('s_frota','tbl_frota')" placeholder="Filtrar fornecedor...">
-    <div class="tbl-wrap">
-      <table id="tbl_frota">
-        <thead><tr><th>Fornecedor</th><th>Total</th><th>Ativos</th><th>Inativos</th><th>Lic. Vencido</th><th>Lic. OK (2026)</th><th>C/ Multas</th></tr></thead>
-        <tbody>{rows_frota_doc(df_frota_doc)}</tbody>
+    <h3>📄 Situação Documental da Frota por Fornecedor</h3>
+    <input class="src" id="s_fr" oninput="fil('s_fr','t_fr')" placeholder="Filtrar fornecedor...">
+    <div class="tw">
+      <table id="t_fr">
+        <thead><tr><th>Fornecedor</th><th style="text-align:center">Total</th><th style="text-align:center">Ativos</th><th style="text-align:center">Inativos</th><th>Lic. Vencido</th><th style="text-align:center">Lic. OK</th><th style="text-align:center">C/ Multas</th></tr></thead>
+        <tbody>{html_frota()}</tbody>
       </table>
     </div>
   </div>
-  <div class="grid2">
+  <div class="g2">
     <div class="card">
       <h3>🔧 Manutenção por Fornecedor (2026)</h3>
-      <div class="tbl-wrap">
+      <p class="desc"><b>Chamados Abertos</b> = aguardando solução. <b>Em Oficina</b> = veículo parado para conserto.
+      <b>Média de Dias</b> = tempo médio entre abertura do chamado e entrega do veículo.</p>
+      <div class="tw">
         <table>
           <thead><tr><th>Fornecedor</th><th>Chamados</th><th>Abertos</th><th>Oficina</th><th>Veíc.</th><th>Média Dias</th></tr></thead>
-          <tbody>{''.join([f"<tr><td><b>{r['fornecedor']}</b></td><td>{int(r.get('total_chamados',0))}</td><td class='{'text-red' if int(r.get('em_aberto',0))>5 else ''}'>{int(r.get('em_aberto',0))}</td><td>{int(r.get('em_oficina',0))}</td><td>{int(r.get('veiculos_afetados',0))}</td><td>{r.get('media_dias_parado',0)}</td></tr>" for _,r in df_manut_fornecedor.iterrows()]) if not df_manut_fornecedor.empty else "<tr><td colspan='6'>Sem dados</td></tr>"}</tbody>
+          <tbody>{''.join([f"<tr><td><b>{r['fornecedor']}</b></td><td>{int(r.get('chamados',0))}</td><td style='{'color:#ef4444;font-weight:700' if int(r.get('abertos',0))>5 else ''}'>{int(r.get('abertos',0))}</td><td>{int(r.get('oficina',0))}</td><td>{int(r.get('veiculos',0))}</td><td>{r.get('media_dias',0)} dias</td></tr>" for _,r in df_manut_forn.iterrows()]) if not df_manut_forn.empty else "<tr><td colspan='6'>Sem dados</td></tr>"}</tbody>
         </table>
       </div>
     </div>
     <div class="card">
-      <h3>🚗 Veículos com Mais Chamados (2026)</h3>
-      <div class="tbl-wrap">
+      <h3>🚗 Veículos com Mais Chamados de Manutenção (2026)</h3>
+      <p class="desc"><b>Falha Humana</b> = manutenção causada por conduta do motorista (diagnosticada pela oficina).</p>
+      <div class="tw">
         <table>
           <thead><tr><th>Placa</th><th>Fornecedor</th><th>GRE</th><th>Chamados</th><th>Abertos</th><th>Falha Hum.</th><th>Média Dias</th></tr></thead>
-          <tbody>{rows_veiculos_prob(df_veiculos_problema)}</tbody>
+          <tbody>{''.join([f"<tr><td><b>{r['placa']}</b></td><td>{r['fornecedor']}</td><td>{r.get('gre','')}</td><td>{int(r.get('chamados',0))}</td><td style='{'color:#ef4444' if int(r.get('abertos',0))>3 else ''}'>{int(r.get('abertos',0))}</td><td style='{'color:#ef4444' if int(r.get('falha_hum',0))>0 else ''}'>{int(r.get('falha_hum',0))}</td><td>{r.get('media_dias',0)} dias</td></tr>" for _,r in df_veic_prob.iterrows()]) if not df_veic_prob.empty else "<tr><td colspan='7'>Sem dados</td></tr>"}</tbody>
         </table>
       </div>
     </div>
@@ -1025,178 +887,163 @@ canvas {{ max-height: 280px; }}
 <!-- ABA 7: MOTORISTAS -->
 <div id="t7" class="tab">
   <div class="card">
-    <h3>👤 Motoristas — Ranking por % Via App (piores primeiro)</h3>
-    <input class="search" id="s_mot" oninput="fil('s_mot','tbl_mot')" placeholder="Buscar motorista, cidade, empresa...">
-    <div class="tbl-wrap">
-      <table id="tbl_mot">
-        <thead><tr><th>Motorista</th><th>Empresa</th><th>Cidade</th><th>GRE</th><th>Escalas</th><th>% App</th><th>Fraude Tempo</th><th>Manuais s/GPS</th></tr></thead>
-        <tbody>{rows_motoristas(df_motoristas_rank)}</tbody>
+    <h3>👤 Motoristas — % Com Rastreamento (piores primeiro, desde Abr/2026)</h3>
+    <p class="desc">Motoristas com pelo menos 20 escalas no período. <b>% Com Rastreamento</b> = proporção de escalas
+    registradas via app ou link. Abaixo de 20% em vermelho, 20-50% em laranja, acima de 50% em verde.
+    <b>Rotas Suspeitas</b> = duração menor que 10 minutos. <b>Sem Rastreamento</b> = confirmação manual.</p>
+    <input class="src" id="s_mt" oninput="fil('s_mt','t_mt')" placeholder="Buscar motorista, cidade, empresa, GRE...">
+    <div class="tw">
+      <table id="t_mt">
+        <thead><tr><th>Motorista</th><th>Empresa</th><th>Cidade</th><th>GRE</th><th>Escalas</th><th>% Rastreado</th><th>Rotas Suspeitas</th><th>Sem Rastreamento</th></tr></thead>
+        <tbody>{html_mot()}</tbody>
       </table>
     </div>
   </div>
-  <div class="grid2">
+  <div class="g2">
     <div class="card">
-      <h3>🔧 Motoristas que Mais Geram Chamados</h3>
-      <div class="tbl-wrap">
+      <h3>🔧 Motoristas que Mais Geram Chamados de Manutenção</h3>
+      <div class="tw">
         <table>
-          <thead><tr><th>Motorista</th><th>Empresa</th><th>GRE</th><th>Chamados</th><th>Falha Hum.</th><th>Abertos</th></tr></thead>
-          <tbody>{rows_mot_chamados(df_motoristas_chamados)}</tbody>
+          <thead><tr><th>Motorista</th><th>Empresa</th><th>GRE</th><th>Chamados</th><th>Falha Humana</th><th>Em Aberto</th></tr></thead>
+          <tbody>{''.join([f"<tr><td><b>{r['nome']}</b></td><td>{r['empresa']}</td><td>{r.get('gre','')}</td><td>{int(r.get('chamados',0))}</td><td style='{'color:#ef4444;font-weight:700' if int(r.get('falha_hum',0))>0 else ''}'>{int(r.get('falha_hum',0))}</td><td>{int(r.get('abertos',0))}</td></tr>" for _,r in df_mot_chamados.iterrows()]) if not df_mot_chamados.empty else "<tr><td colspan='6'>Sem dados</td></tr>"}</tbody>
         </table>
       </div>
     </div>
     <div class="card">
-      <h3>⛽ Motoristas — Consumo de Combustível (2026)</h3>
-      <div class="tbl-wrap">
-        <table id="tbl_abast">
-          <thead><tr><th>Motorista</th><th>Empresa</th><th>Cidade</th><th>GRE</th><th>Abast.</th><th>Litros</th><th>Gasto R$</th><th>Escalas</th><th>R$/Escala</th></tr></thead>
-          <tbody>{rows_abast(df_abastecimento_motorista)}</tbody>
+      <h3>⛽ Consumo de Combustível por Motorista (2026)</h3>
+      <p class="desc"><b>R$/Escala</b> = custo médio de combustível por escala executada. Útil para identificar consumo desproporcional.</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Motorista</th><th>Empresa</th><th>Cidade</th><th>Litros</th><th>Gasto R$</th><th>Escalas</th><th>R$/Escala</th></tr></thead>
+          <tbody>{html_abast()}</tbody>
         </table>
       </div>
     </div>
   </div>
 </div>
 
-<!-- ABA 8: INSIGHTS -->
+<!-- ABA 8: PRIORIDADES -->
 <div id="t8" class="tab">
-  <div class="alert-box">
-    <b>🧠 Inteligência Operacional:</b> Score de Gargalo calculado por cidade combinando: 
-    baixo índice de app (40%), regressão Q2→Q3 (30%), fraude de tempo (20%) e manuais sem GPS (10%).
-    Quanto maior o score, maior a prioridade de intervenção.
+  <div class="info">
+    <b>🧠 Como funciona o Score de Prioridade:</b>
+    Calculado automaticamente combinando quatro fatores:
+    <b>índice atual de rastreamento</b> (peso 50%) +
+    <b>queda em relação ao mês anterior</b> (peso 30%) +
+    <b>% de rotas suspeitas</b> (peso 20%).
+    Quanto maior o score, maior a urgência de intervenção. A <b>Ação Recomendada</b>
+    é gerada automaticamente com base na situação classificada.
   </div>
-
   <div class="card">
-    <h3>🎯 Ranking de Prioridade de Intervenção — Cidades</h3>
-    <div class="tbl-wrap">
+    <h3>🎯 Ranking de Prioridade de Intervenção — Por Cidade (Abr-Ago/2026)</h3>
+    <div class="tw">
       <table>
-        <thead><tr><th>#</th><th>Cidade</th><th>Mot.</th><th>Escalas</th><th>Q2 App%</th><th>Q3 App%</th><th>Situação</th><th>Ação Recomendada</th></tr></thead>
-        <tbody>{rows_insights_table(rows_insights)}</tbody>
+        <thead><tr>
+          <th style="text-align:center">#</th><th>Cidade</th><th style="text-align:center">Total Esc.</th>
+          <th style="text-align:center">Abr/26</th><th style="text-align:center">Mai/26</th>
+          <th style="text-align:center">Jun/26</th><th style="text-align:center">Jul/26</th>
+          <th style="text-align:center">Ago/26</th>
+          <th>Situação</th><th>Ação Recomendada</th>
+        </tr></thead>
+        <tbody>{html_insights()}</tbody>
       </table>
     </div>
   </div>
-
   <div class="card">
-    <h3>👮 Desempenho por Fiscal Responsável</h3>
-    <div class="tbl-wrap">
+    <h3>👮 Desempenho por Fiscal Responsável — Abr-Ago/2026</h3>
+    <p class="desc">
+      <b>Abr-Jun/26</b> = % de rastreamento no segundo trimestre.
+      <b>Jul-Ago/26</b> = % atual. A tendência mostra se a área do fiscal está melhorando ou piorando.
+      <b>Rotas Suspeitas</b> e <b>Sem Rastreamento</b> são totais acumulados desde abril.
+    </p>
+    <div class="tw">
       <table>
-        <thead><tr><th>GRE</th><th>Fiscal</th><th>Escalas</th><th>Q2 App%</th><th>Q3 App%</th><th>Fraudes Tempo</th><th>Manuais s/GPS</th></tr></thead>
-        <tbody>{rows_insights_fiscal(df_insights_fiscal)}</tbody>
+        <thead><tr><th>Regional (GRE)</th><th>Fiscal Responsável</th><th style="text-align:center">Total Esc.</th><th style="text-align:center">Abr-Jun/26</th><th style="text-align:center">Jul-Ago/26</th><th style="text-align:center">Rotas Suspeitas</th><th style="text-align:center">Sem Rastreamento</th></tr></thead>
+        <tbody>{html_fiscal()}</tbody>
       </table>
     </div>
   </div>
-
   <div class="card">
-    <h3>📊 Comparativo Prestadores vs Próprios</h3>
-    <div class="grid3" style="text-align:center; padding: 8px 0;">
-      <div class="kpi"><label>Escalas Prestadores</label><div class="val">113.005</div></div>
-      <div class="kpi"><label>Fraude de Tempo</label><div class="val crit">7.871 (6,97%)</div></div>
-      <div class="kpi"><label>Manuais s/ GPS</label><div class="val warn">5.165</div></div>
-    </div>
-    <div style="margin-top:12px; padding: 12px; background: var(--bg); border-radius: 8px; font-size: 12px; color: var(--muted); line-height: 1.8;">
-      <b style="color:var(--crit)">100% das irregularidades são de PRESTADORES.</b>
-      Motoristas próprios (sem fornecedor_id) apresentam irregularidade próxima de zero.
-      Isso indica que o modelo de terceirização carece de mecanismos de controle mais rígidos.<br><br>
-      <b style="color:var(--warn)">Empresas críticas:</b> J COUTINHO DE SOUSA FILHO (96,94% fraude), 
-      ANTONIO CARLOS REIS SARAIVA (75,74%), INES DE SALES RESENDE (59,35%).<br><br>
-      <b style="color:var(--accent)">Recomendação estratégica:</b> Implantação de cláusula de glosa contratual 
-      vinculada ao índice de execução via app. Prestadores abaixo de 50% em dois meses consecutivos 
-      devem receber notificação formal com prazo de adequação de 30 dias.
-    </div>
+    <h3>📊 Diagnóstico Geral: Prestadores vs Frota Própria</h3>
+    <p class="desc" style="border-left-color:var(--cr)">
+      <b style="color:var(--cr)">100% das irregularidades identificadas são de prestadores terceirizados.</b>
+      Motoristas da frota própria (sem vínculo com fornecedor) apresentam irregularidade próxima de zero.
+      Isso indica que o problema não é operacional — é estrutural no modelo de terceirização.<br><br>
+      <b style="color:var(--wn)">Empresas com maior risco imediato:</b>
+      J COUTINHO DE SOUSA FILHO (97% de rotas suspeitas) · ANTONIO CARLOS REIS SARAIVA (74%) · INES DE SALES RESENDE (59%).<br><br>
+      <b style="color:var(--ac)">Recomendação estratégica:</b>
+      Incluir cláusula contratual vinculando pagamento ao índice mínimo de rastreamento (sugerido: 60%).
+      Prestadores abaixo desse índice por dois meses consecutivos devem receber notificação formal
+      com prazo de 30 dias para adequação, seguida de processo de glosa caso não haja melhora.
+    </p>
   </div>
 </div>
 
 <script>
-function tab(id, btn) {{
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
+function tab(id,btn){{
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
   document.getElementById(id).classList.add('active');
   btn.classList.add('active');
 }}
-
-function fil(inputId, tableId) {{
-  const v = document.getElementById(inputId).value.toLowerCase();
-  document.getElementById(tableId).querySelectorAll('tbody tr').forEach(r => {{
-    r.style.display = r.innerText.toLowerCase().includes(v) ? '' : 'none';
+function fil(sid,tid){{
+  const v=document.getElementById(sid).value.toLowerCase();
+  document.getElementById(tid).querySelectorAll('tbody tr').forEach(r=>{{
+    r.style.display=r.innerText.toLowerCase().includes(v)?'':'none';
   }});
 }}
 
-const meses = {jdumps(meses)};
-const ev_total = {jdumps(ev_total)};
-const ev_app = {jdumps(ev_app)};
-const ev_fraude = {jdumps(ev_fraude)};
-const ev_manual = {jdumps(ev_manual)};
-const ev_pct_app = {jdumps(ev_pct_app)};
-const ev_pct_fraude = {jdumps(ev_pct_fraude)};
+const C={{
+  line:(id,labels,datasets)=>new Chart(document.getElementById(id),{{
+    type:'line',data:{{labels,datasets}},
+    options:{{responsive:true,plugins:{{legend:{{labels:{{color:'#94a3b8',font:{{size:11}}}}}}}},
+      scales:{{x:{{ticks:{{color:'#64748b',font:{{size:10}}}}}},y:{{ticks:{{color:'#64748b',font:{{size:10}}}}}}}}}}
+  }}),
+  bar:(id,labels,datasets)=>new Chart(document.getElementById(id),{{
+    type:'bar',data:{{labels,datasets}},
+    options:{{responsive:true,plugins:{{legend:{{labels:{{color:'#94a3b8',font:{{size:11}}}}}}}},
+      scales:{{x:{{ticks:{{color:'#64748b',font:{{size:10}}}}}},y:{{ticks:{{color:'#64748b',font:{{size:10}}}}}}}}}}
+  }})
+}};
 
-const opts = {{ responsive: true, plugins: {{ legend: {{ labels: {{ color: '#94a3b8', font: {{ size: 11 }} }} }} }}, scales: {{ x: {{ ticks: {{ color: '#64748b' }} }}, y: {{ ticks: {{ color: '#64748b' }} }} }} }};
+const m={jd(meses_ev)},tot={jd(ev_tot)},rast={jd(ev_rast)},
+      pct_r={jd(ev_pct_rast)},pct_s={jd(ev_pct_susp)},sem_r={jd(ev_sem)};
 
-new Chart(document.getElementById('chart_esc'), {{ type: 'bar', data: {{
-  labels: meses,
-  datasets: [
-    {{ label: 'Total Escalas', data: ev_total, backgroundColor: 'rgba(56,189,248,.3)', borderColor: '#38bdf8', borderWidth: 1 }},
-    {{ label: 'Via App', data: ev_app, backgroundColor: 'rgba(34,197,94,.3)', borderColor: '#22c55e', borderWidth: 1 }}
-  ]
-}}, options: opts }});
+C.bar('c_esc',m,[
+  {{label:'Total',data:tot,backgroundColor:'rgba(56,189,248,.25)',borderColor:'#38bdf8',borderWidth:1}},
+  {{label:'Com Rastreamento',data:rast,backgroundColor:'rgba(34,197,94,.3)',borderColor:'#22c55e',borderWidth:1}}
+]);
+C.line('c_pct',m,[
+  {{label:'% Com Rastreamento',data:pct_r,borderColor:'#22c55e',backgroundColor:'rgba(34,197,94,.08)',fill:true,tension:.3}},
+  {{label:'% Rotas Suspeitas',data:pct_s,borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.08)',fill:true,tension:.3}}
+]);
+C.bar('c_sem',m,[{{label:'Sem Rastreamento',data:sem_r,backgroundColor:'rgba(245,158,11,.35)',borderColor:'#f59e0b',borderWidth:1}}]);
 
-new Chart(document.getElementById('chart_pct'), {{ type: 'line', data: {{
-  labels: meses,
-  datasets: [
-    {{ label: '% Via App', data: ev_pct_app, borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,.1)', fill: true, tension: 0.3 }},
-    {{ label: '% Fraude Tempo', data: ev_pct_fraude, borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,.1)', fill: true, tension: 0.3 }}
-  ]
-}}, options: opts }});
+const cm={jd(cont_m)},ct={jd(cont_t)},ca={jd(cont_a)},cs={jd(cont_s)};
+C.line('c_ct2',cm,[{{label:'Escalas c/ Contrato',data:ct,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.08)',fill:true,tension:.3}}]);
+C.bar('c_ct3',cm,[
+  {{label:'Total',data:ct,backgroundColor:'rgba(56,189,248,.25)',borderColor:'#38bdf8',borderWidth:1}},
+  {{label:'Sem Rastreamento',data:cs,backgroundColor:'rgba(245,158,11,.35)',borderColor:'#f59e0b',borderWidth:1}},
+  {{label:'Anuladas',data:ca,backgroundColor:'rgba(239,68,68,.25)',borderColor:'#ef4444',borderWidth:1}}
+]);
+C.line('c_fr',{jd(fr_m)},[
+  {{label:'Rotas Suspeitas (<10min)',data:{jd(fr_s)},borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.08)',fill:true,tension:.3}},
+  {{label:'Sem Rastreamento',data:{jd(fr_sr)},borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.08)',fill:true,tension:.3}}
+]);
 
-new Chart(document.getElementById('chart_manual'), {{ type: 'bar', data: {{
-  labels: meses,
-  datasets: [{{ label: 'Manuais s/ GPS', data: ev_manual, backgroundColor: 'rgba(245,158,11,.4)', borderColor: '#f59e0b', borderWidth: 1 }}]
-}}, options: opts }});
-
-const cont_meses = {jdumps(df_contratos_mensal['mes'].tolist() if not df_contratos_mensal.empty else [])};
-const cont_total = {jdumps(df_contratos_mensal['escalas_com_contrato'].tolist() if not df_contratos_mensal.empty else [])};
-const cont_anuladas = {jdumps(df_contratos_mensal['anuladas'].tolist() if not df_contratos_mensal.empty else [])};
-const cont_manuais = {jdumps(df_contratos_mensal['manuais'].tolist() if not df_contratos_mensal.empty else [])};
-
-new Chart(document.getElementById('chart_cont2'), {{ type: 'line', data: {{
-  labels: cont_meses,
-  datasets: [{{ label: 'Escalas c/ Contrato', data: cont_total, borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,.1)', fill: true, tension: 0.3 }}]
-}}, options: opts }});
-
-new Chart(document.getElementById('chart_cont3'), {{ type: 'bar', data: {{
-  labels: cont_meses,
-  datasets: [
-    {{ label: 'Total', data: cont_total, backgroundColor: 'rgba(56,189,248,.3)', borderColor: '#38bdf8', borderWidth: 1 }},
-    {{ label: 'Manuais', data: cont_manuais, backgroundColor: 'rgba(245,158,11,.4)', borderColor: '#f59e0b', borderWidth: 1 }},
-    {{ label: 'Anuladas', data: cont_anuladas, backgroundColor: 'rgba(239,68,68,.3)', borderColor: '#ef4444', borderWidth: 1 }}
-  ]
-}}, options: opts }});
-
-const fraude_meses = {jdumps(df_fraude_mensal['mes'].tolist() if not df_fraude_mensal.empty else [])};
-const fraude_vals = {jdumps(df_fraude_mensal['menos_10min'].tolist() if not df_fraude_mensal.empty else [])};
-const manual_vals = {jdumps(df_fraude_mensal['manuais_gps'].tolist() if not df_fraude_mensal.empty else [])};
-
-new Chart(document.getElementById('chart_fraude'), {{ type: 'line', data: {{
-  labels: fraude_meses,
-  datasets: [
-    {{ label: 'Fraude Tempo (<10min)', data: fraude_vals, borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,.1)', fill: true, tension: 0.3 }},
-    {{ label: 'Manuais s/ GPS', data: manual_vals, borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,.1)', fill: true, tension: 0.3 }}
-  ]
-}}, options: opts }});
-
-// Gráfico GRE mensal
-const gre_data = {jdumps(df_gre_mensal.to_dict('records') if not df_gre_mensal.empty else [])};
-const gre_meses_u = [...new Set(gre_data.map(r => r.mes))].sort();
-const gre_nomes = [...new Set(gre_data.map(r => r.gre))];
-const cores = ['#38bdf8','#22c55e','#f59e0b','#ef4444','#a78bfa','#f97316','#06b6d4','#84cc16','#ec4899','#14b8a6'];
-const gre_datasets = gre_nomes.map((gre, i) => {{
-  const mapa = {{}};
-  gre_data.filter(r => r.gre === gre).forEach(r => mapa[r.mes] = r.pct_app);
-  return {{ label: gre, data: gre_meses_u.map(m => mapa[m] || 0), borderColor: cores[i % cores.length], backgroundColor: 'transparent', tension: 0.3 }};
-}});
-new Chart(document.getElementById('chart_gre'), {{ type: 'line', data: {{ labels: gre_meses_u, datasets: gre_datasets }}, options: opts }});
+// Gráfico GRE
+const gd={jd(df_gre_hist.to_dict('records') if not df_gre_hist.empty else [])};
+const gmu=[...new Set(gd.map(r=>r.mes))].sort();
+const gns=[...new Set(gd.map(r=>r.gre))];
+const cs2=['#38bdf8','#22c55e','#f59e0b','#ef4444','#a78bfa','#f97316','#06b6d4','#84cc16','#ec4899','#14b8a6'];
+C.line('c_gre',gmu,gns.map((g,i)=>{{
+  const mp={{}};
+  gd.filter(r=>r.gre===g).forEach(r=>mp[r.mes]=r.pct);
+  return{{label:g,data:gmu.map(m=>mp[m]||0),borderColor:cs2[i%cs2.length],backgroundColor:'transparent',tension:.3,borderWidth:2}};
+}}));
 </script>
 </body>
 </html>"""
 
-with open("index.html", "w", encoding="utf-8") as f:
+with open("index.html","w",encoding="utf-8") as f:
     f.write(html)
-
-print(f"✅ index.html gerado com sucesso ({len(html):,} bytes)")
+print(f"✅ index.html gerado — {len(html):,} bytes")
