@@ -211,7 +211,7 @@ SELECT DISTINCT ON (ci.id)
     v.placa, v.status as sv,
     COALESCE(ct.nome,'Não definido') as turno,
     (SELECT COUNT(*) FROM airbyte.rotas_escalarota e2
-     WHERE e2.veiculo_id = v.id AND e2.data >= CURRENT_DATE - INTERVAL '30 days'
+     WHERE e2.veiculo_execucao_id = v.id AND e2.data >= CURRENT_DATE - INTERVAL '30 days'
      AND e2.anulada = false) as esc30d
 FROM airbyte.contratos_itemcontrato ci
 JOIN airbyte.contratos_contrato c ON ci.contrato_id = c.id
@@ -303,7 +303,7 @@ FROM (
             ELSE 'Ativo (últimos 30 dias)'
         END as situacao
     FROM airbyte.veiculos_veiculo v
-    LEFT JOIN airbyte.rotas_escalarota e ON e.veiculo_id = v.id
+    LEFT JOIN airbyte.rotas_escalarota e ON e.veiculo_execucao_id = v.id
     WHERE v.status = 'A'
     GROUP BY v.id, v.tipo_contrato_locacao
 ) sub
@@ -326,7 +326,7 @@ LEFT JOIN airbyte.escolas_gre g ON g.id = v.gre_id
 WHERE v.status = 'A'
   AND c.status = 'A' AND ci.status = 'ATIVO'
   AND NOT EXISTS (
-    SELECT 1 FROM airbyte.rotas_escalarota e WHERE e.veiculo_id = v.id
+    SELECT 1 FROM airbyte.rotas_escalarota e WHERE e.veiculo_execucao_id = v.id
   )
 ORDER BY v.id, ci.valor_unitario DESC
 LIMIT 30
