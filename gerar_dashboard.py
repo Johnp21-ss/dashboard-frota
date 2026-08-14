@@ -273,14 +273,63 @@ SELECT v.placa, v.modelo, COALESCE(f.nome,'SEM FORN') as fornecedor,
     COUNT(c.id) FILTER (WHERE c.status='CA') as abertos,
     COUNT(c.id) FILTER (WHERE c.falha_humana=true) as falha_hum,
     ROUND(AVG(CASE WHEN c.entrega IS NOT NULL AND c.emissao IS NOT NULL
-        THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END)::numeric,1) as media_dias
+        THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END)::numeric,1) as media_dias,
+    ROUND(SUM(CASE WHEN c.entrega IS NOT NULL AND c.emissao IS NOT NULL
+        THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END)::numeric,0) as total_dias
 FROM airbyte.veiculos_veiculo v
 JOIN airbyte.ordens_chamado c ON c.veiculo_id = v.id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = v.gre_id
 WHERE c.emissao >= '2026-01-01'
 GROUP BY v.placa, v.modelo, f.nome, g.nome
-HAVING COUNT(c.id) >= 5 ORDER BY chamados DESC LIMIT 15
+HAVING COUNT(c.id) >= 5
+ORDER BY total_dias DESC NULLS LAST, chamados DESC
+LIMIT 15
+""")
+
+# Frota parada — visão geral por faixa de tempo
+df_frota_parada = safe_read("""
+SELECT situacao, COUNT(*) as veiculos,
+    COUNT(*) FILTER (WHERE tipo_contrato_locacao = 'FROTA_PROPRIA') as propria,
+    COUNT(*) FILTER (WHERE tipo_contrato_locacao = 'FROTA_TERCEIRIZADA') as terceirizada,
+    COUNT(*) FILTER (WHERE tipo_contrato_locacao = 'FROTA_PARCEIRO') as parceiro
+FROM (
+    SELECT v.id, v.tipo_contrato_locacao,
+        CASE
+            WHEN MAX(e.data) IS NULL THEN 'Nunca registrou rota'
+            WHEN MAX(e.data)::date < CURRENT_DATE - INTERVAL '90 days' THEN 'Parado há +90 dias'
+            WHEN MAX(e.data)::date < CURRENT_DATE - INTERVAL '60 days' THEN 'Parado há 60-90 dias'
+            WHEN MAX(e.data)::date < CURRENT_DATE - INTERVAL '30 days' THEN 'Parado há 30-60 dias'
+            ELSE 'Ativo (últimos 30 dias)'
+        END as situacao
+    FROM airbyte.veiculos_veiculo v
+    LEFT JOIN airbyte.rotas_escalarota e ON e.veiculo_id = v.id
+    WHERE v.status = 'A'
+    GROUP BY v.id, v.tipo_contrato_locacao
+) sub
+GROUP BY situacao
+ORDER BY veiculos DESC
+""")
+
+# Veículos com contrato ativo que nunca registraram rota
+df_frota_nunca = safe_read("""
+SELECT DISTINCT ON (v.id) v.placa, v.modelo, v.tipo_contrato_locacao,
+    COALESCE(f.nome,'SEM FORNECEDOR') as fornecedor,
+    g.nome as gre,
+    ci.valor_unitario,
+    c.data_inicio, c.data_fim
+FROM airbyte.veiculos_veiculo v
+JOIN airbyte.contratos_itemcontrato ci ON ci.veiculo_id = v.id
+JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = v.gre_id
+WHERE v.status = 'A'
+  AND c.status = 'A' AND ci.status = 'ATIVO'
+  AND NOT EXISTS (
+    SELECT 1 FROM airbyte.rotas_escalarota e WHERE e.veiculo_id = v.id
+  )
+ORDER BY v.id, ci.valor_unitario DESC
+LIMIT 30
 """)
 
 # Motoristas
@@ -493,6 +542,41 @@ def html_contratos():
         h += f"<tr><td>{r.get('gre','—')}</td><td><b>{r.get('placa','—')}</b></td>"
         h += f"<td>R$ {fmt(r.get('valor_unitario',0))}/dia</td><td>{r.get('turno','—')}</td>"
         h += f"<td style='{cor}'>{sv}</td><td style='text-align:center'>{int(r.get('esc30d',0))}</td></tr>"
+    return h
+
+def html_frota_parada():
+    if df_frota_parada.empty: return "<tr><td colspan='5'>Sem dados</td></tr>"
+    h = ""
+    cores = {
+        'Ativo (últimos 30 dias)': 'color:#22c55e;font-weight:700',
+        'Parado há 30-60 dias': 'color:#f59e0b',
+        'Parado há 60-90 dias': 'color:#f97316;font-weight:700',
+        'Parado há +90 dias': 'color:#ef4444;font-weight:700',
+        'Nunca registrou rota': 'color:#a78bfa;font-weight:700',
+    }
+    for _, r in df_frota_parada.iterrows():
+        sit = r['situacao']
+        cor = cores.get(sit, '')
+        h += f"<tr><td style='{cor}'>{sit}</td>"
+        h += f"<td style='text-align:center;font-weight:700'>{int(r.get('veiculos',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('propria',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('terceirizada',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('parceiro',0))}</td></tr>"
+    return h
+
+def html_frota_nunca():
+    if df_frota_nunca.empty: return "<tr><td colspan='6'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_frota_nunca.iterrows():
+        val = float(r.get('valor_unitario') or 0)
+        cor = 'color:#ef4444;font-weight:700' if val >= 1000 else 'color:#f59e0b'
+        inicio = str(r.get('data_inicio','—'))[:10] if r.get('data_inicio') else '—'
+        h += f"<tr><td><b>{r.get('placa','—')}</b></td>"
+        h += f"<td>{r.get('modelo','—')}</td>"
+        h += f"<td>{r.get('fornecedor','—')}</td>"
+        h += f"<td>{r.get('gre','—')}</td>"
+        h += f"<td style='{cor}'>R$ {fmt(val)}/dia</td>"
+        h += f"<td>{inicio}</td></tr>"
     return h
 
 def html_frota():
@@ -844,6 +928,40 @@ canvas{{max-height:270px}}
 
 <!-- ABA 6: FROTA -->
 <div id="t6" class="tab">
+  <div class="alerta">
+    <b>🚨 Frota sem operação com contrato ativo:</b>
+    338 veículos nunca registraram rota = <b>R$ 184.493/dia em risco</b>.
+    359 veículos parados há +90 dias com contrato ativo = <b>R$ 199.506/dia em risco</b>.
+    Total: <b>R$ 383.999/dia</b> — aproximadamente <b>R$ 8,4 milhões/mês</b> em contratos sem execução correspondente.
+  </div>
+  <div class="g3">
+    <div class="kpi"><label>Nunca Registraram Rota</label><div class="v v-cr">511 veíc.</div><div class="sub">77% frota terceirizada</div></div>
+    <div class="kpi"><label>Parados há +90 dias</label><div class="v v-cr">268 veíc.</div><div class="sub">64% frota própria</div></div>
+    <div class="kpi"><label>Valor Diário em Risco</label><div class="v v-cr">R$ 383.999</div><div class="sub">~R$ 8,4M/mês</div></div>
+  </div>
+  <div class="g2">
+    <div class="card">
+      <h3>🅿️ Situação da Frota Ativa por Tempo sem Operação</h3>
+      <p class="desc">Classificação de todos os veículos com status ativo pelo tempo desde a última rota registrada.</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Situação</th><th style="text-align:center">Total</th><th style="text-align:center">Própria</th><th style="text-align:center">Terceirizada</th><th style="text-align:center">Parceiro</th></tr></thead>
+          <tbody>{html_frota_parada()}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h3>💸 Veículos c/ Contrato Ativo que Nunca Registraram Rota</h3>
+      <p class="desc">Veículos em contrato ativo sem nenhuma escala no histórico. Valor diário sendo pago sem prestação de serviço.</p>
+      <input class="src" id="s_fn" oninput="fil('s_fn','t_fn')" placeholder="Filtrar placa, fornecedor...">
+      <div class="tw">
+        <table id="t_fn">
+          <thead><tr><th>Placa</th><th>Modelo</th><th>Fornecedor</th><th>GRE</th><th>Valor/Dia</th><th>Contrato Início</th></tr></thead>
+          <tbody>{html_frota_nunca()}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>
   <div class="info">
     <b>📌 Licenciamento Vencido</b> = veículo com ano de licenciamento anterior a 2026.
     Veículo com licenciamento vencido não deveria estar em operação de transporte escolar.
