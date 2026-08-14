@@ -267,24 +267,69 @@ GROUP BY f.nome ORDER BY abertos DESC, chamados DESC LIMIT 12
 """)
 
 df_veic_prob = safe_read("""
-SELECT v.placa, v.modelo, COALESCE(f.nome,'SEM FORN') as fornecedor,
+SELECT v.placa, v.modelo, v.ano,
+    COALESCE(f.nome,'SEM FORN') as fornecedor,
     g.nome as gre,
-    COUNT(c.id) as chamados,
-    COUNT(c.id) FILTER (WHERE c.status='CA') as abertos,
-    COUNT(c.id) FILTER (WHERE c.falha_humana=true) as falha_hum,
+    COUNT(DISTINCT c.id) as chamados,
+    COUNT(DISTINCT c.id) FILTER (WHERE c.status='CA') as abertos,
+    COUNT(DISTINCT c.id) FILTER (WHERE c.falha_humana=true) as falha_hum,
     ROUND(AVG(CASE WHEN c.entrega IS NOT NULL AND c.emissao IS NOT NULL
         THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END)::numeric,1) as media_dias,
     ROUND(SUM(CASE WHEN c.entrega IS NOT NULL AND c.emissao IS NOT NULL
-        THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END)::numeric,0) as total_dias
+        THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END)::numeric,0) as total_dias,
+    COALESCE(SUM(p.valor * p.quantidade), 0) as custo_pecas,
+    COALESCE(SUM(s.valor * s.quantidade), 0) as custo_servicos,
+    COALESCE(SUM(p.valor * p.quantidade), 0) + COALESCE(SUM(s.valor * s.quantidade), 0) as custo_total
 FROM airbyte.veiculos_veiculo v
 JOIN airbyte.ordens_chamado c ON c.veiculo_id = v.id
+LEFT JOIN airbyte.ordens_ordemservico os ON os.chamado_id = c.id
+LEFT JOIN airbyte.ordens_peca p ON p.os_id = os.id
+LEFT JOIN airbyte.ordens_servico s ON s.os_id = os.id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = v.gre_id
 WHERE c.emissao >= '2026-01-01'
-GROUP BY v.placa, v.modelo, f.nome, g.nome
-HAVING COUNT(c.id) >= 5
-ORDER BY total_dias DESC NULLS LAST, chamados DESC
+GROUP BY v.placa, v.modelo, v.ano, f.nome, g.nome
+HAVING COUNT(DISTINCT c.id) >= 5
+ORDER BY custo_total DESC NULLS LAST, chamados DESC
 LIMIT 15
+""")
+
+# Contratos noturnos de sábado — risco financeiro
+df_contratos_noite_sabado = safe_read("""
+SELECT
+    g.nome as gre,
+    ci.id as item_contrato,
+    v.placa,
+    COALESCE(f.nome,'SEM FORN') as fornecedor,
+    ci.valor_unitario,
+    ct.nome as turno,
+    -- Todos os turnos do mesmo item de contrato
+    STRING_AGG(DISTINCT ct2.nome, ' + ' ORDER BY ct2.nome) as todos_turnos,
+    -- Sábados noturnos executados em 2026
+    COUNT(e.id) as escalas_sabado_noite,
+    COUNT(e.id) FILTER (WHERE e.anulada = false) as executadas,
+    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as manuais_sem_gps,
+    -- Valor total pago nesses sábados (estimado)
+    COUNT(e.id) FILTER (WHERE e.anulada = false) * ci.valor_unitario as valor_pago_estimado
+FROM airbyte.contratos_itemcontrato ci
+JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+JOIN airbyte.contratos_itemcontrato_turnos cit ON cit.itemcontrato_id = ci.id
+JOIN airbyte.contratos_turno ct ON ct.id = cit.turno_id
+-- Todos os turnos do item para mostrar combinações
+JOIN airbyte.contratos_itemcontrato_turnos cit2 ON cit2.itemcontrato_id = ci.id
+JOIN airbyte.contratos_turno ct2 ON ct2.id = cit2.turno_id
+LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
+LEFT JOIN airbyte.rotas_escalarota e ON e.contrato_rota_id = ci.id
+    AND EXTRACT(DOW FROM e.data) = 6
+    AND e.data >= '2026-01-01'
+WHERE c.status = 'A'
+  AND ci.status = 'ATIVO'
+  AND ct.nome ILIKE '%noite%'
+GROUP BY g.nome, ci.id, v.placa, f.nome, ci.valor_unitario, ct.nome
+ORDER BY executadas DESC, ci.valor_unitario DESC
+LIMIT 25
 """)
 
 # Frota parada — visão geral por faixa de tempo
@@ -531,6 +576,30 @@ def html_fraude_mot():
         h += f"<td>{r.get('cidade','')}</td><td>{r.get('gre','')}</td>"
         h += f"<td>{int(r.get('suspeitas',0))}</td><td style='{cls}'>{pct}%</td>"
         h += f"<td>{int(r.get('sem_rast',0))}</td></tr>"
+    return h
+
+def html_contratos_noite():
+    if df_contratos_noite_sabado.empty: return "<tr><td colspan='9'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_contratos_noite_sabado.iterrows():
+        exec_ = int(r.get('executadas') or 0)
+        manuais = int(r.get('manuais_sem_gps') or 0)
+        val = float(r.get('valor_unitario') or 0)
+        pago = float(r.get('valor_pago_estimado') or 0)
+        turnos = str(r.get('todos_turnos') or r.get('turno','Noite'))
+        tem_combo = '+' in turnos
+        cor_turnos = "color:#ef4444;font-weight:700" if tem_combo else "color:#f59e0b"
+        h += f"<tr>"
+        h += f"<td>{r.get('gre','—')}</td>"
+        h += f"<td><b>{r.get('placa','—')}</b></td>"
+        h += f"<td>{r.get('fornecedor','—')}</td>"
+        h += f"<td style='text-align:right'>R$ {fmt(val)}/dia</td>"
+        h += f"<td style='{cor_turnos}'>{turnos}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('escalas_sabado_noite') or 0)}</td>"
+        h += f"<td style='text-align:center;color:#f59e0b;font-weight:700'>{exec_}</td>"
+        h += f"<td style='text-align:center;{'color:#ef4444' if manuais > 0 else ''}'>{manuais}</td>"
+        h += f"<td style='text-align:right;color:#ef4444;font-weight:700'>R$ {fmt(pago)}</td>"
+        h += f"</tr>"
     return h
 
 def html_contratos():
@@ -915,6 +984,31 @@ canvas{{max-height:270px}}
     <div class="card"><h3>📊 Escalas com Contrato: Total vs Sem Rastreamento vs Anuladas</h3><canvas id="c_ct3"></canvas></div>
   </div>
   <div class="card">
+    <h3>🌙 Contratos com Turno Noite — Risco de Pagamento em Sábado sem Aula</h3>
+    <p class="desc">
+      <b>Sábado à noite é excepcionalmente raro ter aulas.</b> Contratos com turno Noite
+      ativo em sábados representam risco de pagamento indevido — especialmente quando o mesmo
+      contrato cobre Noite + outro turno, pois o prestador recebe a diária completa ao executar
+      qualquer turno. A coluna <b>Turnos do Contrato</b> mostra todas as combinações do item.
+      <b>Valor Pago Est.</b> = sábados executados × valor diário do contrato.
+      Solução: rever contratos com turno Noite para excluir sábados ou exigir comprovação de aula.
+    </p>
+    <div class="tw">
+      <table>
+        <thead><tr>
+          <th>GRE</th><th>Placa</th><th>Fornecedor</th>
+          <th style="text-align:right">Valor/Dia</th>
+          <th>Turnos do Contrato</th>
+          <th style="text-align:center">Sáb. Noite 2026</th>
+          <th style="text-align:center">Executados</th>
+          <th style="text-align:center">Manuais s/GPS</th>
+          <th style="text-align:right">Valor Pago Est.</th>
+        </tr></thead>
+        <tbody>{html_contratos_noite()}</tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
     <h3>🚨 Veículos em Contrato Ativo sem Motorista (Zero Escalas em 30 dias)</h3>
     <input class="src" id="s_ct" oninput="fil('s_ct','t_ct')" placeholder="Filtrar por GRE, placa...">
     <div class="tw">
@@ -994,8 +1088,8 @@ canvas{{max-height:270px}}
       <p class="desc"><b>Falha Humana</b> = manutenção causada por conduta do motorista (diagnosticada pela oficina).</p>
       <div class="tw">
         <table>
-          <thead><tr><th>Placa</th><th>Fornecedor</th><th>GRE</th><th>Chamados</th><th>Abertos</th><th>Falha Hum.</th><th>Média Dias</th></tr></thead>
-          <tbody>{''.join([f"<tr><td><b>{r['placa']}</b></td><td>{r['fornecedor']}</td><td>{r.get('gre','')}</td><td>{int(r.get('chamados',0))}</td><td style='{'color:#ef4444' if int(r.get('abertos',0))>3 else ''}'>{int(r.get('abertos',0))}</td><td style='{'color:#ef4444' if int(r.get('falha_hum',0))>0 else ''}'>{int(r.get('falha_hum',0))}</td><td>{r.get('media_dias',0)} dias</td></tr>" for _,r in df_veic_prob.iterrows()]) if not df_veic_prob.empty else "<tr><td colspan='7'>Sem dados</td></tr>"}</tbody>
+          <thead><tr><th>Placa</th><th>Modelo</th><th style="text-align:center">Ano</th><th>Fornecedor</th><th>GRE</th><th style="text-align:center">Chamados</th><th style="text-align:center">Abertos</th><th style="text-align:center">Falha Hum.</th><th style="text-align:center">Média Dias</th><th style="text-align:right">Custo Total 2026</th></tr></thead>
+          <tbody>{''.join([f"<tr><td><b>{r['placa']}</b></td><td>{r.get('modelo','')}</td><td style='text-align:center'>{int(r.get('ano',0)) if r.get('ano') else '—'}</td><td>{r['fornecedor']}</td><td>{r.get('gre','')}</td><td style='text-align:center'>{int(r.get('chamados',0))}</td><td style='text-align:center;{'color:#ef4444' if int(r.get('abertos',0))>3 else ''}'>{int(r.get('abertos',0))}</td><td style='text-align:center;{'color:#ef4444' if int(r.get('falha_hum',0))>0 else ''}'>{int(r.get('falha_hum',0))}</td><td style='text-align:center'>{r.get('media_dias',0)}d</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ {fmt(r.get('custo_total',0))}</td></tr>" for _,r in df_veic_prob.iterrows()]) if not df_veic_prob.empty else "<tr><td colspan='10'>Sem dados</td></tr>"}</tbody>
         </table>
       </div>
     </div>
