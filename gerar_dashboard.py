@@ -566,7 +566,8 @@ def html_insights():
         for pct in r['vals']:
             if pct is None: h += "<td style='text-align:center;color:#334155'>—</td>"
             else: h += f"<td style='text-align:center;{cor_pct(pct)}'>{pct}%</td>"
-        h += f"<td><span class='tag {cls_status(r[\"cls\"])}'>{r['icon']} {r['status']}</span></td>"
+        cls_tag = cls_status(r['cls'])
+        h += f"<td><span class='tag {cls_tag}'>{r['icon']} {r['status']}</span></td>"
         h += f"<td style='font-size:11px;color:#94a3b8'>{acao}</td></tr>"
     return h
 
