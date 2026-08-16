@@ -70,7 +70,7 @@ canvas{max-height:270px}
 <body>
 <div class="hdr">
   <h1>🛡️ Torre de Controle — Fiscalização de Rotas Escolares | Piauí</h1>
-  <div class="meta">Atualizado em 16/08/2026 10:24 &nbsp;·&nbsp; Fonte: Banco de dados operacional</div>
+  <div class="meta">Atualizado em 16/08/2026 12:29 &nbsp;·&nbsp; Fonte: Banco de dados operacional</div>
 </div>
 <div class="nav">
   <button class="active" onclick="tab('t1',this)">📊 Painel Executivo</button>
@@ -82,6 +82,7 @@ canvas{max-height:270px}
   <button onclick="tab('t7',this)">👤 Motoristas</button>
   <button onclick="tab('t8',this)">🧠 Prioridades</button>
   <button onclick="tab('t9',this)">🏆 Bonificação</button>
+  <button onclick="tab('t10',this)">⛽ Combustível</button>
 </div>
 
 <!-- ABA 1: PAINEL EXECUTIVO -->
@@ -126,6 +127,7 @@ canvas{max-height:270px}
   </div>
   <div class="card">
     <h3>📊 Evolução do Rastreamento por Regional — Abr a Ago/2026</h3>
+    <p class="desc" style="border-left-color:var(--ac)">Melhor índice atual: <b>5ª GRE</b> com 62.2% de rastreamento. Pior índice atual: <b>12ª GRE</b> com 26.8%. A tendência de queda no Q3/2026 é generalizada — investigar causas comuns (calendário escolar, resistência ou problema técnico).</p>
     <div class="tw">
       <table>
         <thead><tr>
@@ -163,6 +165,7 @@ canvas{max-height:270px}
   </div>
   <div class="card">
     <h3>🏙️ Rastreamento por Cidade — Histórico Mensal Abr a Ago/2026</h3>
+    <p class="desc" style="border-left-color:var(--cr)"><b>João Costa</b> (0 motoristas, 572 escalas): regrediu para zero após ter iniciado o registro — ação imediata necessária. Índice atual: 0.0%. &nbsp;·&nbsp; <b>Nova Santa Rita</b> (0 motoristas, 2,429 escalas): regrediu para zero após ter iniciado o registro — ação imediata necessária. Índice atual: 0.0%. &nbsp;·&nbsp; <b>Paes Landim</b> (0 motoristas, 1,446 escalas): nunca registrou via rastreamento — resistência deliberada. Índice atual: 0.0%.</p>
     <input class="src" id="s_cid" oninput="fil('s_cid','t_cid')" placeholder="Filtrar por cidade...">
     <div class="tw">
       <table id="t_cid">
@@ -188,7 +191,7 @@ canvas{max-height:270px}
     Rotas concluídas em menos de 10 minutos indicam abertura e fechamento irregular para registrar execução sem realizar a rota.
     <b>100% dos casos identificados são de prestadores terceirizados.</b>
   </div>
-  <div class="card"><h3>📉 Evolução Mensal — Rotas Suspeitas e Sem Rastreamento</h3><canvas id="c_fr"></canvas></div>
+  <div class="card"><h3>📉 Evolução Mensal — Rotas Suspeitas e Sem Rastreamento</h3><p class="desc" style="border-left-color:var(--cr)">Rotas suspeitas em 2026-07: <b>1,021</b> <span style='color:#22c55e'>▼ 47.4% vs mês anterior</span>. Confirmações sem rastreamento: <b>67</b> <span style='color:#22c55e'>▼ 93.0%</span>. <b>100% dos casos são de prestadores terceirizados.</b></p><canvas id="c_fr"></canvas></div>
   <div class="g2">
     <div class="card">
       <h3>🏢 Empresas com Maior % de Rotas Suspeitas</h3>
@@ -253,6 +256,7 @@ canvas{max-height:270px}
   </div>
   <div class="card">
     <h3>🚨 Veículos em Contrato Ativo sem Motorista (Zero Escalas em 30 dias)</h3>
+    <p class="desc" style="border-left-color:var(--cr)"><b>31 contratos ativos sem operação nos últimos 30 dias.</b> Valor diário estimado em risco: <b>R$ 383.999,00</b> (veículos que nunca rodaram + parados há +90 dias com contrato ativo). Recomendação: solicitar comprovação de operação ou suspender pagamento até regularização.</p>
     <input class="src" id="s_ct" oninput="fil('s_ct','t_ct')" placeholder="Filtrar por GRE, placa...">
     <div class="tw">
       <table id="t_ct">
@@ -430,6 +434,58 @@ canvas{max-height:270px}
       Prestadores abaixo desse índice por dois meses consecutivos devem receber notificação formal
       com prazo de 30 dias para adequação, seguida de processo de glosa caso não haja melhora.
     </p>
+  </div>
+</div>
+
+<!-- ABA 10: COMBUSTÍVEL -->
+<div id="t10" class="tab">
+  <div class="info">
+    <b>📌 Como ler:</b> Gasto de combustível cruzado com escalas executadas no mesmo mês.
+    <b>R$/Escala</b> = eficiência real do combustível por rota executada.
+    Valores altos de R$/Escala em meses com poucas escalas indicam abastecimento sem operação proporcional.
+    <b>Dados validados:</b> filtro de 0-500 litros e R$ 0-5.000 por abastecimento.
+  </div>
+  <div class="card">
+    <h3>📊 Análise Automática</h3>
+    <p class="desc" style="border-left-color:var(--ac)">GRE com maior gasto de combustível: <b>19ª GRE</b> — R$ 164.601.108,14 no período. Pico em Jun: R$ 44.077.539,22. Verificar se o volume de escalas justifica o consumo ou se há abastecimentos sem execução de rota.</p>
+  </div>
+  <div class="card">
+    <h3>⛽ Gasto de Combustível por Regional — Mensal (2026)</h3>
+    <p class="desc">Valores em vermelho = acima de R$ 20 milhões/mês · Laranja = R$ 10-20 milhões · Verde = abaixo de R$ 10 milhões.</p>
+    <div class="tw">
+      <table>
+        <thead><tr>
+          <th>Regional (GRE)</th><th>Fiscal</th>
+          <th style="text-align:right">Fev/26</th>
+          <th style="text-align:right">Mar/26</th>
+          <th style="text-align:right">Abr/26</th>
+          <th style="text-align:right">Mai/26</th>
+          <th style="text-align:right">Jun/26</th>
+          <th style="text-align:right">Jul/26</th>
+          <th style="text-align:right">Ago/26</th>
+          <th style="text-align:right;color:#38bdf8">Total</th>
+        </tr></thead>
+        <tbody><tr><td><b>12ª GRE</b></td><td style='font-size:11px;color:#64748b'>LUIS PEREIRA DA SILVA JUNIOR</td><td style='text-align:right;color:#22c55e'>R$ 421.229,64</td><td style='text-align:right;color:#22c55e'>R$ 3.043.968,28</td><td style='text-align:right;color:#22c55e'>R$ 3.076.759,44</td><td style='text-align:right;color:#22c55e'>R$ 4.225.605,00</td><td style='text-align:right;color:#22c55e'>R$ 5.154.985,72</td><td style='text-align:right;color:#22c55e'>R$ 1.856.074,84</td><td style='text-align:right;color:#22c55e'>R$ 1.059.305,94</td><td style='text-align:right;font-weight:700;color:#38bdf8'>R$ 18.837.928,86</td></tr><tr><td><b>16ª GRE</b></td><td style='font-size:11px;color:#64748b'>MANOEL DEAVILLA</td><td style='text-align:right;color:#22c55e'>R$ 254.150,00</td><td style='text-align:right;color:#334155'>—</td><td style='text-align:right;color:#334155'>—</td><td style='text-align:right;color:#22c55e'>R$ 8.460,56</td><td style='text-align:right;color:#22c55e'>R$ 22.590,92</td><td style='text-align:right;color:#22c55e'>R$ 10.738,64</td><td style='text-align:right;color:#334155'>—</td><td style='text-align:right;font-weight:700;color:#38bdf8'>R$ 295.940,12</td></tr><tr><td><b>18ª GRE</b></td><td style='font-size:11px;color:#64748b'>JUNIEL DE SOUSA</td><td style='text-align:right;color:#22c55e'>R$ 1.899.231,88</td><td style='text-align:right;color:#f59e0b'>R$ 14.242.358,80</td><td style='text-align:right;color:#f59e0b'>R$ 13.672.471,37</td><td style='text-align:right;color:#f59e0b'>R$ 15.626.820,23</td><td style='text-align:right;color:#f59e0b'>R$ 17.824.518,59</td><td style='text-align:right;color:#22c55e'>R$ 7.141.635,69</td><td style='text-align:right;color:#22c55e'>R$ 3.063.195,08</td><td style='text-align:right;font-weight:700;color:#38bdf8'>R$ 73.470.231,64</td></tr><tr><td><b>19ª GRE</b></td><td style='font-size:11px;color:#64748b'>LUCAS GABRIEL MENDES FERREIRA DE JESUS</td><td style='text-align:right;color:#22c55e'>R$ 4.773.420,37</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 30.466.175,04</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 26.272.682,30</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 33.986.045,68</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 44.077.539,22</td><td style='text-align:right;color:#f59e0b'>R$ 16.420.545,77</td><td style='text-align:right;color:#22c55e'>R$ 8.604.699,76</td><td style='text-align:right;font-weight:700;color:#38bdf8'>R$ 164.601.108,14</td></tr><tr><td><b>20ª GRE</b></td><td style='font-size:11px;color:#64748b'>ANDRE PEREIRA COSTA</td><td style='text-align:right;color:#22c55e'>R$ 5.497.361,00</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 27.781.847,34</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 23.293.550,70</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 29.674.014,41</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 32.083.911,54</td><td style='text-align:right;color:#f59e0b'>R$ 14.954.287,40</td><td style='text-align:right;color:#22c55e'>R$ 7.010.645,08</td><td style='text-align:right;font-weight:700;color:#38bdf8'>R$ 140.295.617,47</td></tr><tr><td><b>21ª GRE</b></td><td style='font-size:11px;color:#64748b'>JONATHAS ERNESTO DA SILVA</td><td style='text-align:right;color:#22c55e'>R$ 3.067.442,36</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 20.257.331,38</td><td style='text-align:right;color:#f59e0b'>R$ 14.047.353,34</td><td style='text-align:right;color:#f59e0b'>R$ 18.994.948,99</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 21.292.751,55</td><td style='text-align:right;color:#22c55e'>R$ 8.336.478,73</td><td style='text-align:right;color:#22c55e'>R$ 3.815.477,43</td><td style='text-align:right;font-weight:700;color:#38bdf8'>R$ 89.811.783,78</td></tr><tr><td><b>4ª GRE</b></td><td style='font-size:11px;color:#64748b'>JONATHAS ERNESTO DA SILVA</td><td style='text-align:right;color:#22c55e'>R$ 5.623.251,85</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 28.591.878,27</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 24.461.758,05</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 29.947.999,17</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 30.522.857,96</td><td style='text-align:right;color:#f59e0b'>R$ 14.982.486,42</td><td style='text-align:right;color:#22c55e'>R$ 6.436.939,82</td><td style='text-align:right;font-weight:700;color:#38bdf8'>R$ 140.567.171,54</td></tr><tr><td><b>5ª GRE</b></td><td style='font-size:11px;color:#64748b'>JUNIEL DE SOUSA</td><td style='text-align:right;color:#22c55e'>R$ 1.112.539,38</td><td style='text-align:right;color:#22c55e'>R$ 8.304.564,05</td><td style='text-align:right;color:#22c55e'>R$ 6.945.191,90</td><td style='text-align:right;color:#22c55e'>R$ 7.869.302,15</td><td style='text-align:right;color:#22c55e'>R$ 8.804.747,24</td><td style='text-align:right;color:#22c55e'>R$ 3.079.262,84</td><td style='text-align:right;color:#22c55e'>R$ 1.905.953,45</td><td style='text-align:right;font-weight:700;color:#38bdf8'>R$ 38.021.561,01</td></tr><tr><td><b>7ª GRE</b></td><td style='font-size:11px;color:#64748b'>MANOEL DEAVILLA</td><td style='text-align:right;color:#22c55e'>R$ 532.412,61</td><td style='text-align:right;color:#22c55e'>R$ 3.193.580,50</td><td style='text-align:right;color:#22c55e'>R$ 2.603.234,33</td><td style='text-align:right;color:#22c55e'>R$ 3.630.962,54</td><td style='text-align:right;color:#22c55e'>R$ 2.684.364,02</td><td style='text-align:right;color:#22c55e'>R$ 978.524,04</td><td style='text-align:right;color:#22c55e'>R$ 571.350,00</td><td style='text-align:right;font-weight:700;color:#38bdf8'>R$ 14.194.428,04</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <h3>👤 Top 20 Motoristas por Gasto de Combustível (2026)</h3>
+    <p class="desc">Ranking acumulado Jan-Ago/2026. <b>R$/Escala</b> = custo médio de combustível por rota executada — quanto menor, mais eficiente.</p>
+    <input class="src" id="s_cm" oninput="fil('s_cm','t_cm')" placeholder="Buscar motorista, GRE, cidade...">
+    <div class="tw">
+      <table id="t_cm">
+        <thead><tr>
+          <th style="text-align:center">#</th><th>Motorista</th><th>Empresa</th>
+          <th>Cidade</th><th>GRE</th>
+          <th style="text-align:right">Total Litros</th>
+          <th style="text-align:right">Gasto Total</th>
+          <th style="text-align:center">Escalas</th>
+          <th style="text-align:right">R$/Escala</th>
+        </tr></thead>
+        <tbody><tr><td style='text-align:center;font-weight:700'>#1</td><td><b>EDSON RODRIGUES DE OLIVEIRA DO NASCIMENTO</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>21ª GRE</td><td style='text-align:right'>858.865,90 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 6.499.665,90</td><td style='text-align:center'>646</td><td style='text-align:right'>R$ 10.061,40</td></tr><tr><td style='text-align:center;font-weight:700'>#2</td><td><b>JOSE RENATO NASCIMENTO DE OLIVEIRA</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>21ª GRE</td><td style='text-align:right'>749.218,10 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 5.715.468,54</td><td style='text-align:center'>495</td><td style='text-align:right'>R$ 11.546,40</td></tr><tr><td style='text-align:center;font-weight:700'>#3</td><td><b>MARCELO FERREIRA DOS SANTOS</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>21ª GRE</td><td style='text-align:right'>741.173,90 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 5.708.437,00</td><td style='text-align:center'>528</td><td style='text-align:right'>R$ 10.811,43</td></tr><tr><td style='text-align:center;font-weight:700'>#4</td><td><b>ISMAEL DA SILVA OLIVEIRA</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>19ª GRE</td><td style='text-align:right'>625.599,10 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 4.564.462,22</td><td style='text-align:center'>428</td><td style='text-align:right'>R$ 10.664,63</td></tr><tr><td style='text-align:center;font-weight:700'>#5</td><td><b>VALMILSON VIEIRA DOS SANTOS</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>19ª GRE</td><td style='text-align:right'>508.760,00 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 3.720.350,40</td><td style='text-align:center'>462</td><td style='text-align:right'>R$ 8.052,71</td></tr><tr><td style='text-align:center;font-weight:700'>#6</td><td><b>ADAO ALVES DE LIMA</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>4ª GRE</td><td style='text-align:right'>533.982,80 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 3.631.252,40</td><td style='text-align:center'>404</td><td style='text-align:right'>R$ 8.988,25</td></tr><tr><td style='text-align:center;font-weight:700'>#7</td><td><b>ANDRE DA SILVA RODRIGUES</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>20ª GRE</td><td style='text-align:right'>478.245,10 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 3.571.415,38</td><td style='text-align:center'>393</td><td style='text-align:right'>R$ 9.087,57</td></tr><tr><td style='text-align:center;font-weight:700'>#8</td><td><b>WILSON PEREIRA RODRIGUES</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>19ª GRE</td><td style='text-align:right'>475.295,90 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 3.467.016,05</td><td style='text-align:center'>365</td><td style='text-align:right'>R$ 9.498,67</td></tr><tr><td style='text-align:center;font-weight:700'>#9</td><td><b>LEONILSON MOREIRA DA SILVA</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>4ª GRE</td><td style='text-align:right'>500.520,00 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 3.462.097,80</td><td style='text-align:center'>391</td><td style='text-align:right'>R$ 8.854,47</td></tr><tr><td style='text-align:center;font-weight:700'>#10</td><td><b>FRANCISCO DAS CHAGAS DA SILVA MESQUITA</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>21ª GRE</td><td style='text-align:right'>446.735,00 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 3.424.805,34</td><td style='text-align:center'>359</td><td style='text-align:right'>R$ 9.539,85</td></tr><tr><td style='text-align:center;font-weight:700'>#11</td><td><b>PAULO CESAR DE SOUSA</b></td><td>FRANCISCO RAFAEL FERNANDES DO CARMO</td><td>Demerval Lobão</td><td>18ª GRE</td><td style='text-align:right'>427.856,00 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 3.135.214,31</td><td style='text-align:center'>342</td><td style='text-align:right'>R$ 9.167,29</td></tr><tr><td style='text-align:center;font-weight:700'>#12</td><td><b>ROBERTH YURY BANDEIRA DE CARVALHO</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>19ª GRE</td><td style='text-align:right'>393.753,00 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 2.757.145,77</td><td style='text-align:center'>282</td><td style='text-align:right'>R$ 9.777,11</td></tr><tr><td style='text-align:center;font-weight:700'>#13</td><td><b>EDILSON FERNANDES DE MOURA FILHO</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>19ª GRE</td><td style='text-align:right'>321.000,00 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 2.444.310,00</td><td style='text-align:center'>275</td><td style='text-align:right'>R$ 8.888,40</td></tr><tr><td style='text-align:center;font-weight:700'>#14</td><td><b>WEVERT CLAUDIO SOARES DE LIRA CARVALHO</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>4ª GRE</td><td style='text-align:right'>327.600,00 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 2.402.776,60</td><td style='text-align:center'>217</td><td style='text-align:right'>R$ 11.072,70</td></tr><tr><td style='text-align:center;font-weight:700'>#15</td><td><b>FRANCISCO MARCELO DOURADO DA SILVA</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>4ª GRE</td><td style='text-align:right'>320.543,50 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 2.236.799,79</td><td style='text-align:center'>291</td><td style='text-align:right'>R$ 7.686,60</td></tr><tr><td style='text-align:center;font-weight:700'>#16</td><td><b>LEVI GOMES DE OLIVEIRA SEREJO LIMA</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>19ª GRE</td><td style='text-align:right'>203.060,00 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 1.551.492,80</td><td style='text-align:center'>143</td><td style='text-align:right'>R$ 10.849,60</td></tr><tr><td style='text-align:center;font-weight:700'>#17</td><td><b>EDUARDO KESSIO CARVALHO COSTA</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>19ª GRE</td><td style='text-align:right'>196.040,00 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 1.467.527,60</td><td style='text-align:center'>116</td><td style='text-align:right'>R$ 12.651,10</td></tr><tr><td style='text-align:center;font-weight:700'>#18</td><td><b>WELLISSON OLIVEIRA SANTANA</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>21ª GRE</td><td style='text-align:right'>182.400,00 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 1.395.572,80</td><td style='text-align:center'>152</td><td style='text-align:right'>R$ 9.181,40</td></tr><tr><td style='text-align:center;font-weight:700'>#19</td><td><b>BENEDITO MACHADO DE MIRANDA</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>21ª GRE</td><td style='text-align:right'>175.985,70 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 1.374.231,92</td><td style='text-align:center'>131</td><td style='text-align:right'>R$ 10.490,32</td></tr><tr><td style='text-align:center;font-weight:700'>#20</td><td><b>WANDERSON TALLYS GALVÃO DE LIMA</b></td><td>MARVÃO SERVIÇOS</td><td>Teresina</td><td>19ª GRE</td><td style='text-align:right'>181.090,00 L</td><td style='text-align:right;color:#f59e0b;font-weight:700'>R$ 1.371.488,10</td><td style='text-align:center'>199</td><td style='text-align:right'>R$ 6.891,90</td></tr></tbody>
+      </table>
+    </div>
   </div>
 </div>
 
