@@ -455,6 +455,61 @@ WHERE e.data >= '2026-04-01'
 GROUP BY g.nome, func.nome ORDER BY pct_q3 ASC
 """)
 
+# Combustível mensal por GRE e fiscal
+df_combust_gre = safe_read("""
+SELECT
+    g.nome as gre,
+    func.nome as fiscal,
+    TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
+    COUNT(DISTINCT m.id) as motoristas,
+    COUNT(DISTINCT a.id) as abastecimentos,
+    ROUND(SUM(a.litros)::numeric, 0) as total_litros,
+    ROUND(SUM(a.valor_total)::numeric, 2) as total_gasto,
+    COUNT(DISTINCT e.id) as escalas_mes,
+    ROUND(SUM(a.valor_total)::numeric / NULLIF(COUNT(DISTINCT e.id), 0), 2) as rs_por_escala
+FROM airbyte.abastecimentos_abastecimento a
+JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
+JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+LEFT JOIN airbyte.motoristas_funcionario func ON func.id = g.fiscal_responsavel_id
+LEFT JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+    AND TO_CHAR(e.data, 'YYYY-MM') = TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+    AND e.anulada = false
+WHERE a.datetime_abastecimento >= '2026-01-01'
+  AND a.litros > 0 AND a.litros <= 500
+  AND a.valor_total > 0 AND a.valor_total <= 5000
+  AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
+GROUP BY g.nome, func.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+ORDER BY g.nome, mes
+""")
+
+# Combustível mensal por motorista (top gastadores)
+df_combust_mot = safe_read("""
+SELECT
+    m.nome as motorista,
+    COALESCE(f.nome,'PRÓPRIO') as empresa,
+    m.cidade,
+    g.nome as gre,
+    TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
+    COUNT(DISTINCT a.id) as abastecimentos,
+    ROUND(SUM(a.litros)::numeric, 1) as litros,
+    ROUND(SUM(a.valor_total)::numeric, 2) as gasto,
+    COUNT(DISTINCT e.id) as escalas_mes,
+    ROUND(SUM(a.valor_total)::numeric / NULLIF(COUNT(DISTINCT e.id), 0), 2) as rs_por_escala
+FROM airbyte.abastecimentos_abastecimento a
+JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+LEFT JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+    AND TO_CHAR(e.data, 'YYYY-MM') = TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+    AND e.anulada = false
+WHERE a.datetime_abastecimento >= '2026-01-01'
+  AND a.litros > 0 AND a.litros <= 500
+  AND a.valor_total > 0 AND a.valor_total <= 5000
+GROUP BY m.nome, f.nome, m.cidade, g.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+ORDER BY gasto DESC
+LIMIT 60
+""")
+
 # Ranking de bonificação por motorista (abril-agosto/2026)
 df_bonificacao_mot = safe_read("""
 SELECT
@@ -853,6 +908,158 @@ fr_m = df_fraude_mensal['mes'].tolist() if not df_fraude_mensal.empty else []
 fr_s = df_fraude_mensal['suspeitas'].tolist() if not df_fraude_mensal.empty else []
 fr_sr = df_fraude_mensal['sem_rast'].tolist() if not df_fraude_mensal.empty else []
 
+# ─── PROCESSAR COMBUSTÍVEL E GERAR COMENTÁRIOS AUTOMÁTICOS ──────────────────
+
+MESES_COMB = ['2026-02','2026-03','2026-04','2026-05','2026-06','2026-07','2026-08']
+MESES_COMB_NOMES = {
+    '2026-02':'Fev','2026-03':'Mar','2026-04':'Abr',
+    '2026-05':'Mai','2026-06':'Jun','2026-07':'Jul','2026-08':'Ago'
+}
+
+# Pivô combustível por GRE
+comb_gre_pivot = {}
+if not df_combust_gre.empty:
+    for _, r in df_combust_gre.iterrows():
+        g = r['gre']; m = r['mes']
+        if g not in comb_gre_pivot: comb_gre_pivot[g] = {'fiscal': r.get('fiscal','—')}
+        comb_gre_pivot[g][m] = {
+            'gasto': float(r.get('total_gasto') or 0),
+            'litros': float(r.get('total_litros') or 0),
+            'escalas': int(r.get('escalas_mes') or 0),
+            'rs_escala': float(r.get('rs_por_escala') or 0)
+        }
+
+def html_comb_gre_pivo():
+    if not comb_gre_pivot: return "<tr><td colspan='10'>Sem dados</td></tr>"
+    h = ""
+    for gre in sorted(comb_gre_pivot.keys()):
+        dados = comb_gre_pivot[gre]
+        fiscal = dados.get('fiscal','—')
+        total = sum(dados.get(m,{}).get('gasto',0) for m in MESES_COMB)
+        h += f"<tr><td><b>{gre}</b></td><td style='font-size:11px;color:#64748b'>{fiscal}</td>"
+        for m in MESES_COMB:
+            v = dados.get(m,{}).get('gasto',0)
+            if v == 0:
+                h += "<td style='text-align:right;color:#334155'>—</td>"
+            else:
+                cor = "color:#ef4444;font-weight:700" if v > 20000000 else ("color:#f59e0b" if v > 10000000 else "color:#22c55e")
+                h += f"<td style='text-align:right;{cor}'>R$ {fmt(v)}</td>"
+        h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total)}</td>"
+        h += "</tr>"
+    return h
+
+def html_comb_mot():
+    if df_combust_mot.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
+    # Agregar por motorista
+    from collections import defaultdict
+    mot_total = defaultdict(lambda: {'empresa':'','cidade':'','gre':'','gasto':0,'litros':0,'escalas':0,'meses':{}})
+    for _, r in df_combust_mot.iterrows():
+        k = r['motorista']
+        mot_total[k]['empresa'] = r['empresa']
+        mot_total[k]['cidade'] = r.get('cidade','')
+        mot_total[k]['gre'] = r.get('gre','')
+        mot_total[k]['gasto'] += float(r.get('gasto') or 0)
+        mot_total[k]['litros'] += float(r.get('litros') or 0)
+        mot_total[k]['escalas'] += int(r.get('escalas_mes') or 0)
+        mot_total[k]['meses'][r['mes']] = float(r.get('gasto') or 0)
+
+    ranking = sorted(mot_total.items(), key=lambda x: -x[1]['gasto'])[:20]
+    h = ""
+    for i, (nome, d) in enumerate(ranking):
+        rs_e = round(d['gasto']/max(d['escalas'],1), 2)
+        h += f"<tr><td style='text-align:center;font-weight:700'>#{i+1}</td>"
+        h += f"<td><b>{nome}</b></td><td>{d['empresa']}</td>"
+        h += f"<td>{d['cidade']}</td><td>{d['gre']}</td>"
+        h += f"<td style='text-align:right'>{fmt(d['litros'])} L</td>"
+        h += f"<td style='text-align:right;color:#f59e0b;font-weight:700'>R$ {fmt(d['gasto'])}</td>"
+        h += f"<td style='text-align:center'>{int(d['escalas']):,}</td>"
+        h += f"<td style='text-align:right'>R$ {fmt(rs_e)}</td></tr>"
+    return h
+
+# ─── COMENTÁRIOS AUTOMÁTICOS ─────────────────────────────────────────────────
+def comentario_cidades():
+    """Gera diagnóstico automático das 3 cidades mais críticas"""
+    criticas = [r for r in cidade_scores if r['cls'] in ('crit','zero')][:3]
+    if not criticas: return "Nenhuma cidade em situação crítica identificada no período."
+    textos = []
+    for r in criticas:
+        v = [x for x in r['vals'] if x is not None]
+        ultimo = v[-1] if v else 0
+        acoes = {
+            'SEM REGISTRO': 'nunca registrou via rastreamento — resistência deliberada',
+            'REGREDIU TOTAL': 'regrediu para zero após ter iniciado o registro — ação imediata necessária',
+            'EM QUEDA FORTE': 'em queda acelerada nos últimos dois meses',
+            'EM QUEDA': 'em queda consistente — intervenção urgente',
+        }
+        desc = acoes.get(r['status'], 'índice abaixo do esperado')
+        textos.append(f"<b>{r['cidade']}</b> ({r['motoristas']} motoristas, {r['total_escalas']:,} escalas): {desc}. Índice atual: {ultimo}%.")
+    return " &nbsp;·&nbsp; ".join(textos)
+
+def comentario_fraude():
+    """Resumo automático do padrão de fraude"""
+    if df_fraude_mensal.empty: return ""
+    ultimo = df_fraude_mensal.iloc[-2] if len(df_fraude_mensal) > 1 else df_fraude_mensal.iloc[-1]
+    penultimo = df_fraude_mensal.iloc[-3] if len(df_fraude_mensal) > 2 else df_fraude_mensal.iloc[-2]
+    s_atual = int(ultimo.get('suspeitas') or 0)
+    s_ant = int(penultimo.get('suspeitas') or 0)
+    m_atual = int(ultimo.get('sem_rast') or 0)
+    m_ant = int(penultimo.get('sem_rast') or 0)
+    txt = f"Rotas suspeitas em {ultimo['mes']}: <b>{s_atual:,}</b>"
+    if s_ant > 0:
+        var = round((s_atual - s_ant)/s_ant*100, 1)
+        sinal = "▲" if var > 0 else "▼"
+        cor = "color:#ef4444" if var > 0 else "color:#22c55e"
+        txt += f" <span style='{cor}'>{sinal} {abs(var)}% vs mês anterior</span>"
+    txt += f". Confirmações sem rastreamento: <b>{m_atual:,}</b>"
+    if m_ant > 0:
+        var2 = round((m_atual - m_ant)/m_ant*100, 1)
+        sinal2 = "▲" if var2 > 0 else "▼"
+        cor2 = "color:#ef4444" if var2 > 0 else "color:#22c55e"
+        txt += f" <span style='{cor2}'>{sinal2} {abs(var2)}%</span>"
+    txt += ". <b>100% dos casos são de prestadores terceirizados.</b>"
+    return txt
+
+def comentario_gre():
+    """Resumo automático de GREs"""
+    if not gre_pivot: return ""
+    melhor = None; pior = None
+    for gre, dados in gre_pivot.items():
+        vals = [dados.get(m,{}).get('pct',0) for m in MESES_COLS if m in dados]
+        if len(vals) < 2: continue
+        ultimo = vals[-1]
+        if melhor is None or ultimo > melhor[1]: melhor = (gre, ultimo)
+        if pior is None or ultimo < pior[1]: pior = (gre, ultimo)
+    txt = ""
+    if melhor: txt += f"Melhor índice atual: <b>{melhor[0]}</b> com {melhor[1]}% de rastreamento. "
+    if pior: txt += f"Pior índice atual: <b>{pior[0]}</b> com {pior[1]}%. "
+    txt += "A tendência de queda no Q3/2026 é generalizada — investigar causas comuns (calendário escolar, resistência ou problema técnico)."
+    return txt
+
+def comentario_contratos():
+    """Resumo automático de contratos em risco"""
+    n = len(df_contratos) if not df_contratos.empty else 0
+    total_risco = 184493 + 199506
+    return (f"<b>{n} contratos ativos sem operação nos últimos 30 dias.</b> "
+            f"Valor diário estimado em risco: <b>R$ {fmt(total_risco)}</b> "
+            f"(veículos que nunca rodaram + parados há +90 dias com contrato ativo). "
+            f"Recomendação: solicitar comprovação de operação ou suspender pagamento até regularização.")
+
+def comentario_combustivel():
+    """Resumo automático de combustível"""
+    if not comb_gre_pivot: return ""
+    maior_gre = max(comb_gre_pivot.items(),
+        key=lambda x: sum(x[1].get(m,{}).get('gasto',0) for m in MESES_COMB), default=(None,{}))[0]
+    if not maior_gre: return ""
+    dados = comb_gre_pivot[maior_gre]
+    total = sum(dados.get(m,{}).get('gasto',0) for m in MESES_COMB)
+    # Detectar mês de pico
+    pico_mes = max(MESES_COMB, key=lambda m: dados.get(m,{}).get('gasto',0))
+    pico_val = dados.get(pico_mes,{}).get('gasto',0)
+    return (f"GRE com maior gasto de combustível: <b>{maior_gre}</b> — "
+            f"R$ {fmt(total)} no período. "
+            f"Pico em {MESES_COMB_NOMES.get(pico_mes,'')}: R$ {fmt(pico_val)}. "
+            f"Verificar se o volume de escalas justifica o consumo ou se há abastecimentos sem execução de rota.")
+
 # KPIs bonificação
 cidade_top = df_bonificacao_cidade['cidade'].iloc[0] if not df_bonificacao_cidade.empty else '—'
 gre_top = df_bonificacao_gre['gre'].iloc[0] if not df_bonificacao_gre.empty else '—'
@@ -1006,6 +1213,7 @@ canvas{{max-height:270px}}
   <button onclick="tab('t7',this)">👤 Motoristas</button>
   <button onclick="tab('t8',this)">🧠 Prioridades</button>
   <button onclick="tab('t9',this)">🏆 Bonificação</button>
+  <button onclick="tab('t10',this)">⛽ Combustível</button>
 </div>
 
 <!-- ABA 1: PAINEL EXECUTIVO -->
@@ -1050,6 +1258,7 @@ canvas{{max-height:270px}}
   </div>
   <div class="card">
     <h3>📊 Evolução do Rastreamento por Regional — Abr a Ago/2026</h3>
+    <p class="desc" style="border-left-color:var(--ac)">{comentario_gre()}</p>
     <div class="tw">
       <table>
         <thead><tr>
@@ -1087,6 +1296,7 @@ canvas{{max-height:270px}}
   </div>
   <div class="card">
     <h3>🏙️ Rastreamento por Cidade — Histórico Mensal Abr a Ago/2026</h3>
+    <p class="desc" style="border-left-color:var(--cr)">{comentario_cidades()}</p>
     <input class="src" id="s_cid" oninput="fil('s_cid','t_cid')" placeholder="Filtrar por cidade...">
     <div class="tw">
       <table id="t_cid">
@@ -1112,7 +1322,7 @@ canvas{{max-height:270px}}
     Rotas concluídas em menos de 10 minutos indicam abertura e fechamento irregular para registrar execução sem realizar a rota.
     <b>100% dos casos identificados são de prestadores terceirizados.</b>
   </div>
-  <div class="card"><h3>📉 Evolução Mensal — Rotas Suspeitas e Sem Rastreamento</h3><canvas id="c_fr"></canvas></div>
+  <div class="card"><h3>📉 Evolução Mensal — Rotas Suspeitas e Sem Rastreamento</h3><p class="desc" style="border-left-color:var(--cr)">{comentario_fraude()}</p><canvas id="c_fr"></canvas></div>
   <div class="g2">
     <div class="card">
       <h3>🏢 Empresas com Maior % de Rotas Suspeitas</h3>
@@ -1177,6 +1387,7 @@ canvas{{max-height:270px}}
   </div>
   <div class="card">
     <h3>🚨 Veículos em Contrato Ativo sem Motorista (Zero Escalas em 30 dias)</h3>
+    <p class="desc" style="border-left-color:var(--cr)">{comentario_contratos()}</p>
     <input class="src" id="s_ct" oninput="fil('s_ct','t_ct')" placeholder="Filtrar por GRE, placa...">
     <div class="tw">
       <table id="t_ct">
@@ -1354,6 +1565,58 @@ canvas{{max-height:270px}}
       Prestadores abaixo desse índice por dois meses consecutivos devem receber notificação formal
       com prazo de 30 dias para adequação, seguida de processo de glosa caso não haja melhora.
     </p>
+  </div>
+</div>
+
+<!-- ABA 10: COMBUSTÍVEL -->
+<div id="t10" class="tab">
+  <div class="info">
+    <b>📌 Como ler:</b> Gasto de combustível cruzado com escalas executadas no mesmo mês.
+    <b>R$/Escala</b> = eficiência real do combustível por rota executada.
+    Valores altos de R$/Escala em meses com poucas escalas indicam abastecimento sem operação proporcional.
+    <b>Dados validados:</b> filtro de 0-500 litros e R$ 0-5.000 por abastecimento.
+  </div>
+  <div class="card">
+    <h3>📊 Análise Automática</h3>
+    <p class="desc" style="border-left-color:var(--ac)">{comentario_combustivel()}</p>
+  </div>
+  <div class="card">
+    <h3>⛽ Gasto de Combustível por Regional — Mensal (2026)</h3>
+    <p class="desc">Valores em vermelho = acima de R$ 20 milhões/mês · Laranja = R$ 10-20 milhões · Verde = abaixo de R$ 10 milhões.</p>
+    <div class="tw">
+      <table>
+        <thead><tr>
+          <th>Regional (GRE)</th><th>Fiscal</th>
+          <th style="text-align:right">Fev/26</th>
+          <th style="text-align:right">Mar/26</th>
+          <th style="text-align:right">Abr/26</th>
+          <th style="text-align:right">Mai/26</th>
+          <th style="text-align:right">Jun/26</th>
+          <th style="text-align:right">Jul/26</th>
+          <th style="text-align:right">Ago/26</th>
+          <th style="text-align:right;color:#38bdf8">Total</th>
+        </tr></thead>
+        <tbody>{html_comb_gre_pivo()}</tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <h3>👤 Top 20 Motoristas por Gasto de Combustível (2026)</h3>
+    <p class="desc">Ranking acumulado Jan-Ago/2026. <b>R$/Escala</b> = custo médio de combustível por rota executada — quanto menor, mais eficiente.</p>
+    <input class="src" id="s_cm" oninput="fil('s_cm','t_cm')" placeholder="Buscar motorista, GRE, cidade...">
+    <div class="tw">
+      <table id="t_cm">
+        <thead><tr>
+          <th style="text-align:center">#</th><th>Motorista</th><th>Empresa</th>
+          <th>Cidade</th><th>GRE</th>
+          <th style="text-align:right">Total Litros</th>
+          <th style="text-align:right">Gasto Total</th>
+          <th style="text-align:center">Escalas</th>
+          <th style="text-align:right">R$/Escala</th>
+        </tr></thead>
+        <tbody>{html_comb_mot()}</tbody>
+      </table>
+    </div>
   </div>
 </div>
 
