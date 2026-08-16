@@ -457,80 +457,142 @@ GROUP BY g.nome, func.nome ORDER BY pct_q3 ASC
 
 # Combustível mensal por GRE e fiscal
 df_combust_gre = safe_read("""
+WITH abast AS (
+    SELECT
+        m.gre_id,
+        TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
+        COUNT(DISTINCT m.id) as motoristas,
+        COUNT(DISTINCT a.id) as abastecimentos,
+        ROUND(SUM(a.litros)::numeric, 0) as total_litros,
+        ROUND(SUM(a.valor_total)::numeric, 2) as total_gasto
+    FROM airbyte.abastecimentos_abastecimento a
+    JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
+    WHERE a.datetime_abastecimento >= '2026-01-01'
+      AND a.litros > 0 AND a.litros <= 500
+      AND a.valor_total > 0 AND a.valor_total <= 5000
+    GROUP BY m.gre_id, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+),
+esc AS (
+    SELECT
+        m.gre_id,
+        TO_CHAR(e.data, 'YYYY-MM') as mes,
+        COUNT(e.id) as escalas_mes
+    FROM airbyte.rotas_escalarota e
+    JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id AND m.status = 'A'
+    WHERE e.data >= '2026-01-01' AND e.anulada = false
+    GROUP BY m.gre_id, TO_CHAR(e.data, 'YYYY-MM')
+)
 SELECT
     g.nome as gre,
     func.nome as fiscal,
-    TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
-    COUNT(DISTINCT m.id) as motoristas,
-    COUNT(DISTINCT a.id) as abastecimentos,
-    ROUND(SUM(a.litros)::numeric, 0) as total_litros,
-    ROUND(SUM(a.valor_total)::numeric, 2) as total_gasto,
-    COUNT(DISTINCT e.id) as escalas_mes,
-    ROUND(SUM(a.valor_total)::numeric / NULLIF(COUNT(DISTINCT e.id), 0), 2) as rs_por_escala
-FROM airbyte.abastecimentos_abastecimento a
-JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
-JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+    a.mes,
+    a.motoristas,
+    a.abastecimentos,
+    a.total_litros,
+    a.total_gasto,
+    COALESCE(esc.escalas_mes, 0) as escalas_mes,
+    ROUND(a.total_gasto / NULLIF(esc.escalas_mes, 0), 2) as rs_por_escala
+FROM abast a
+JOIN airbyte.escolas_gre g ON g.id = a.gre_id
 LEFT JOIN airbyte.motoristas_funcionario func ON func.id = g.fiscal_responsavel_id
-LEFT JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
-    AND TO_CHAR(e.data, 'YYYY-MM') = TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
-    AND e.anulada = false
-WHERE a.datetime_abastecimento >= '2026-01-01'
-  AND a.litros > 0 AND a.litros <= 500
-  AND a.valor_total > 0 AND a.valor_total <= 5000
-  AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
-GROUP BY g.nome, func.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
-ORDER BY g.nome, mes
+LEFT JOIN esc ON esc.gre_id = a.gre_id AND esc.mes = a.mes
+WHERE g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
+ORDER BY g.nome, a.mes
 """)
 
 # Combustível mensal por empresa (pivô)
 df_combust_empresa = safe_read("""
+WITH abast AS (
+    SELECT
+        COALESCE(f.nome, 'PRÓPRIO') as empresa,
+        TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
+        COUNT(DISTINCT m.id) as motoristas,
+        ROUND(SUM(a.litros)::numeric, 0) as total_litros,
+        ROUND(SUM(a.valor_total)::numeric, 2) as total_gasto
+    FROM airbyte.abastecimentos_abastecimento a
+    JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
+    LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+    WHERE a.datetime_abastecimento >= '2026-01-01'
+      AND a.litros > 0 AND a.litros <= 500
+      AND a.valor_total > 0 AND a.valor_total <= 5000
+    GROUP BY f.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+),
+esc AS (
+    SELECT
+        COALESCE(f.nome, 'PRÓPRIO') as empresa,
+        TO_CHAR(e.data, 'YYYY-MM') as mes,
+        COUNT(e.id) as escalas_mes
+    FROM airbyte.rotas_escalarota e
+    JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id AND m.status = 'A'
+    LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+    WHERE e.data >= '2026-01-01' AND e.anulada = false
+    GROUP BY f.nome, TO_CHAR(e.data, 'YYYY-MM')
+)
 SELECT
-    COALESCE(f.nome, 'PRÓPRIO') as empresa,
-    TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
-    COUNT(DISTINCT m.id) as motoristas,
-    ROUND(SUM(a.litros)::numeric, 0) as total_litros,
-    ROUND(SUM(a.valor_total)::numeric, 2) as total_gasto,
-    COUNT(DISTINCT e.id) as escalas_mes,
-    ROUND(SUM(a.valor_total)::numeric / NULLIF(COUNT(DISTINCT e.id), 0), 2) as rs_por_escala
-FROM airbyte.abastecimentos_abastecimento a
-JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
-LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
-LEFT JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
-    AND TO_CHAR(e.data, 'YYYY-MM') = TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
-    AND e.anulada = false
-WHERE a.datetime_abastecimento >= '2026-01-01'
-  AND a.litros > 0 AND a.litros <= 500
-  AND a.valor_total > 0 AND a.valor_total <= 5000
-GROUP BY f.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
-ORDER BY f.nome, mes
+    a.empresa,
+    a.mes,
+    a.motoristas,
+    a.total_litros,
+    a.total_gasto,
+    COALESCE(esc.escalas_mes, 0) as escalas_mes,
+    ROUND(a.total_gasto / NULLIF(esc.escalas_mes, 0), 2) as rs_por_escala
+FROM abast a
+LEFT JOIN esc ON esc.empresa = a.empresa AND esc.mes = a.mes
+ORDER BY a.empresa, a.mes
 """)
 
 # Combustível mensal por motorista (top gastadores)
 df_combust_mot = safe_read("""
+WITH top_ids AS (
+    SELECT m.id
+    FROM airbyte.abastecimentos_abastecimento a
+    JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
+    WHERE a.datetime_abastecimento >= '2026-01-01'
+      AND a.litros > 0 AND a.litros <= 500
+      AND a.valor_total > 0 AND a.valor_total <= 5000
+    GROUP BY m.id
+    ORDER BY SUM(a.valor_total) DESC
+    LIMIT 40
+),
+abast AS (
+    SELECT
+        m.id as mot_id,
+        m.nome as motorista,
+        COALESCE(f.nome,'PRÓPRIO') as empresa,
+        m.cidade,
+        g.nome as gre,
+        TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
+        ROUND(SUM(a.litros)::numeric, 1) as litros,
+        ROUND(SUM(a.valor_total)::numeric, 2) as gasto
+    FROM airbyte.abastecimentos_abastecimento a
+    JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
+    JOIN top_ids t ON t.id = m.id
+    LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+    LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+    WHERE a.datetime_abastecimento >= '2026-01-01'
+      AND a.litros > 0 AND a.litros <= 500
+      AND a.valor_total > 0 AND a.valor_total <= 5000
+    GROUP BY m.id, m.nome, f.nome, m.cidade, g.nome,
+             TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+),
+esc AS (
+    SELECT
+        e.motorista_id as mot_id,
+        TO_CHAR(e.data, 'YYYY-MM') as mes,
+        COUNT(*) as escalas_mes
+    FROM airbyte.rotas_escalarota e
+    JOIN top_ids t ON t.id = e.motorista_id
+    WHERE e.data >= '2026-01-01' AND e.anulada = false
+    GROUP BY e.motorista_id, TO_CHAR(e.data, 'YYYY-MM')
+)
 SELECT
-    m.nome as motorista,
-    COALESCE(f.nome,'PRÓPRIO') as empresa,
-    m.cidade,
-    g.nome as gre,
-    TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
-    COUNT(DISTINCT a.id) as abastecimentos,
-    ROUND(SUM(a.litros)::numeric, 1) as litros,
-    ROUND(SUM(a.valor_total)::numeric, 2) as gasto,
-    COUNT(DISTINCT e.id) as escalas_mes,
-    ROUND(SUM(a.valor_total)::numeric / NULLIF(COUNT(DISTINCT e.id), 0), 2) as rs_por_escala
-FROM airbyte.abastecimentos_abastecimento a
-JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
-LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
-LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
-LEFT JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
-    AND TO_CHAR(e.data, 'YYYY-MM') = TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
-    AND e.anulada = false
-WHERE a.datetime_abastecimento >= '2026-01-01'
-  AND a.litros > 0 AND a.litros <= 500
-  AND a.valor_total > 0 AND a.valor_total <= 5000
-GROUP BY m.nome, f.nome, m.cidade, g.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
-ORDER BY gasto DESC
-LIMIT 60
+    a.motorista, a.empresa, a.cidade, a.gre, a.mes,
+    a.litros, a.gasto,
+    COALESCE(esc.escalas_mes, 0) as escalas_mes,
+    ROUND(a.gasto / NULLIF(esc.escalas_mes, 0), 2) as rs_por_escala
+FROM abast a
+LEFT JOIN esc ON esc.mot_id = a.mot_id AND esc.mes = a.mes
+ORDER BY a.motorista, a.mes
 """)
 
 # Ranking de bonificação por motorista (abril-agosto/2026)
