@@ -482,6 +482,29 @@ GROUP BY g.nome, func.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
 ORDER BY g.nome, mes
 """)
 
+# Combustível mensal por empresa (pivô)
+df_combust_empresa = safe_read("""
+SELECT
+    COALESCE(f.nome, 'PRÓPRIO') as empresa,
+    TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
+    COUNT(DISTINCT m.id) as motoristas,
+    ROUND(SUM(a.litros)::numeric, 0) as total_litros,
+    ROUND(SUM(a.valor_total)::numeric, 2) as total_gasto,
+    COUNT(DISTINCT e.id) as escalas_mes,
+    ROUND(SUM(a.valor_total)::numeric / NULLIF(COUNT(DISTINCT e.id), 0), 2) as rs_por_escala
+FROM airbyte.abastecimentos_abastecimento a
+JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+LEFT JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+    AND TO_CHAR(e.data, 'YYYY-MM') = TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+    AND e.anulada = false
+WHERE a.datetime_abastecimento >= '2026-01-01'
+  AND a.litros > 0 AND a.litros <= 500
+  AND a.valor_total > 0 AND a.valor_total <= 5000
+GROUP BY f.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+ORDER BY f.nome, mes
+""")
+
 # Combustível mensal por motorista (top gastadores)
 df_combust_mot = safe_read("""
 SELECT
@@ -945,6 +968,94 @@ def html_comb_gre_pivo():
                 cor = "color:#ef4444;font-weight:700" if v > 20000000 else ("color:#f59e0b" if v > 10000000 else "color:#22c55e")
                 h += f"<td style='text-align:right;{cor}'>R$ {fmt(v)}</td>"
         h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total)}</td>"
+        h += "</tr>"
+    return h
+
+# Pivô combustível por empresa
+comb_emp_pivot = {}
+EMPRESAS_EXCLUIR = ['PRÓPRIO']  # sem fornecedor — analisa separado se necessário
+if not df_combust_empresa.empty:
+    for _, r in df_combust_empresa.iterrows():
+        emp = r['empresa']
+        m = r['mes']
+        if emp not in comb_emp_pivot:
+            comb_emp_pivot[emp] = {}
+        comb_emp_pivot[emp][m] = {
+            'gasto': float(r.get('total_gasto') or 0),
+            'litros': float(r.get('total_litros') or 0),
+            'escalas': int(r.get('escalas_mes') or 0),
+            'rs_escala': float(r.get('rs_por_escala') or 0),
+            'motoristas': int(r.get('motoristas') or 0)
+        }
+
+def html_comb_emp_pivo():
+    if not comb_emp_pivot: return "<tr><td colspan='10'>Sem dados</td></tr>"
+    # Calcular total por empresa e ordenar
+    ranking = sorted(comb_emp_pivot.items(),
+        key=lambda x: sum(v.get('gasto',0) for v in x[1].values()), reverse=True)
+    h = ""
+    for emp, dados in ranking[:20]:
+        total = sum(dados.get(m,{}).get('gasto',0) for m in MESES_COMB)
+        if total == 0: continue
+        max_mot = max((dados.get(m,{}).get('motoristas',0) for m in MESES_COMB), default=0)
+        h += f"<tr><td><b>{emp}</b></td><td style='text-align:center'>{max_mot}</td>"
+        for m in MESES_COMB:
+            v = dados.get(m,{}).get('gasto',0)
+            if v == 0:
+                h += "<td style='text-align:right;color:#334155'>—</td>"
+            else:
+                cor = "color:#ef4444;font-weight:700" if v > 5000000 else ("color:#f59e0b" if v > 1000000 else "color:#22c55e")
+                h += f"<td style='text-align:right;{cor}'>R$ {fmt(v)}</td>"
+        h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total)}</td>"
+        h += "</tr>"
+    return h
+
+# Pivô combustível por motorista
+comb_mot_pivot = {}
+if not df_combust_mot.empty:
+    for _, r in df_combust_mot.iterrows():
+        k = r['motorista']
+        m = r['mes']
+        if k not in comb_mot_pivot:
+            comb_mot_pivot[k] = {
+                'empresa': r['empresa'],
+                'cidade': r.get('cidade',''),
+                'gre': r.get('gre','')
+            }
+        comb_mot_pivot[k][m] = {
+            'gasto': float(r.get('gasto') or 0),
+            'litros': float(r.get('litros') or 0),
+            'escalas': int(r.get('escalas_mes') or 0),
+            'rs_escala': float(r.get('rs_por_escala') or 0)
+        }
+
+def html_comb_mot_pivo():
+    if not comb_mot_pivot: return "<tr><td colspan='12'>Sem dados</td></tr>"
+    ranking = sorted(comb_mot_pivot.items(),
+        key=lambda x: sum(x[1].get(m,{}).get('gasto',0) for m in MESES_COMB), reverse=True)
+    h = ""
+    for i, (nome, dados) in enumerate(ranking[:30]):
+        # Excluir motoristas sem escalas (administrativo)
+        total_esc = sum(dados.get(m,{}).get('escalas',0) for m in MESES_COMB)
+        if total_esc == 0: continue
+        total_g = sum(dados.get(m,{}).get('gasto',0) for m in MESES_COMB)
+        rs_med = round(total_g / max(total_esc,1), 2)
+        cor_rs = "color:#ef4444;font-weight:700" if rs_med > 8000 else ("color:#f59e0b" if rs_med > 5000 else "")
+        h += f"<tr>"
+        h += f"<td style='text-align:center;font-weight:700'>#{i+1}</td>"
+        h += f"<td><b>{nome}</b></td>"
+        h += f"<td style='font-size:11px'>{dados['empresa']}</td>"
+        h += f"<td style='font-size:11px'>{dados['cidade']}</td>"
+        h += f"<td style='font-size:11px'>{dados['gre']}</td>"
+        for m in MESES_COMB:
+            v = dados.get(m,{}).get('gasto',0)
+            if v == 0:
+                h += "<td style='text-align:right;color:#334155'>—</td>"
+            else:
+                cor = "color:#ef4444" if v > 1500000 else ("color:#f59e0b" if v > 800000 else "")
+                h += f"<td style='text-align:right;{cor}'>R$ {fmt(v)}</td>"
+        h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total_g)}</td>"
+        h += f"<td style='text-align:right;{cor_rs}'>R$ {fmt(rs_med)}</td>"
         h += "</tr>"
     return h
 
@@ -1601,20 +1712,45 @@ canvas{{max-height:270px}}
     </div>
   </div>
   <div class="card">
-    <h3>👤 Top 20 Motoristas por Gasto de Combustível (2026)</h3>
-    <p class="desc">Ranking acumulado Jan-Ago/2026. <b>R$/Escala</b> = custo médio de combustível por rota executada — quanto menor, mais eficiente.</p>
-    <input class="src" id="s_cm" oninput="fil('s_cm','t_cm')" placeholder="Buscar motorista, GRE, cidade...">
+    <h3>🏢 Gasto de Combustível por Empresa — Mensal (2026)</h3>
+    <p class="desc">Top 20 empresas por gasto acumulado. Vermelho = acima de R$ 5 milhões/mês · Laranja = R$ 1-5 milhões · Verde = abaixo de R$ 1 milhão. Coluna <b>Total</b> = acumulado Fev-Ago/2026.</p>
+    <div class="tw">
+      <table>
+        <thead><tr>
+          <th>Empresa</th><th style="text-align:center">Mot.</th>
+          <th style="text-align:right">Fev/26</th>
+          <th style="text-align:right">Mar/26</th>
+          <th style="text-align:right">Abr/26</th>
+          <th style="text-align:right">Mai/26</th>
+          <th style="text-align:right">Jun/26</th>
+          <th style="text-align:right">Jul/26</th>
+          <th style="text-align:right">Ago/26</th>
+          <th style="text-align:right;color:#38bdf8">Total</th>
+        </tr></thead>
+        <tbody>{html_comb_emp_pivo()}</tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <h3>👤 Gasto de Combustível por Motorista — Mensal (2026)</h3>
+    <p class="desc">Top 30 motoristas por gasto acumulado (excluindo motoristas sem escalas). Vermelho = acima de R$ 1,5 milhão/mês · <b>R$/Escala</b> em vermelho = acima de R$ 8.000 (alto custo por rota). Quanto menor o R$/Escala, mais eficiente o motorista.</p>
+    <input class="src" id="s_cm" oninput="fil('s_cm','t_cm')" placeholder="Buscar motorista, empresa, cidade...">
     <div class="tw">
       <table id="t_cm">
         <thead><tr>
           <th style="text-align:center">#</th><th>Motorista</th><th>Empresa</th>
           <th>Cidade</th><th>GRE</th>
-          <th style="text-align:right">Total Litros</th>
-          <th style="text-align:right">Gasto Total</th>
-          <th style="text-align:center">Escalas</th>
+          <th style="text-align:right">Fev/26</th>
+          <th style="text-align:right">Mar/26</th>
+          <th style="text-align:right">Abr/26</th>
+          <th style="text-align:right">Mai/26</th>
+          <th style="text-align:right">Jun/26</th>
+          <th style="text-align:right">Jul/26</th>
+          <th style="text-align:right">Ago/26</th>
+          <th style="text-align:right;color:#38bdf8">Total</th>
           <th style="text-align:right">R$/Escala</th>
         </tr></thead>
-        <tbody>{html_comb_mot()}</tbody>
+        <tbody>{html_comb_mot_pivo()}</tbody>
       </table>
     </div>
   </div>
