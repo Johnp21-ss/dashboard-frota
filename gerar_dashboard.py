@@ -455,6 +455,106 @@ WHERE e.data >= '2026-04-01'
 GROUP BY g.nome, func.nome ORDER BY pct_q3 ASC
 """)
 
+# Ranking de bonificação por motorista (abril-agosto/2026)
+df_bonificacao_mot = safe_read("""
+SELECT
+    m.nome as motorista,
+    COALESCE(f.nome,'PRÓPRIO') as empresa,
+    m.cidade,
+    g.nome as gre,
+    COUNT(e.id) as total_escalas,
+    COUNT(e.id) FILTER (WHERE e.via_app = true) as rastreadas,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct_rastreado,
+    COUNT(e.id) FILTER (WHERE
+        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
+    ) as suspeitas,
+    ROUND(COUNT(e.id) FILTER (WHERE
+        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
+    )*100.0/NULLIF(COUNT(e.id),0),1) as pct_suspeitas,
+    ROUND(
+        (COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0))
+        - (COUNT(e.id) FILTER (WHERE
+            e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+            EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
+        )*100.0/NULLIF(COUNT(e.id),0))*2
+    ,1) as score
+FROM airbyte.motoristas_motorista m
+JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+WHERE m.status = 'A' AND e.data >= '2026-04-01'
+GROUP BY m.nome, f.nome, m.cidade, g.nome
+HAVING COUNT(e.id) >= 30
+ORDER BY score DESC
+LIMIT 30
+""")
+
+# Ranking de bonificação por GRE
+df_bonificacao_gre = safe_read("""
+SELECT
+    g.nome as gre,
+    func.nome as fiscal,
+    COUNT(DISTINCT m.id) as motoristas,
+    COUNT(e.id) as total_escalas,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct_rastreado,
+    COUNT(e.id) FILTER (WHERE
+        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
+    ) as suspeitas,
+    ROUND(COUNT(e.id) FILTER (WHERE
+        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
+    )*100.0/NULLIF(COUNT(e.id),0),1) as pct_suspeitas,
+    ROUND(
+        (COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0))
+        - (COUNT(e.id) FILTER (WHERE
+            e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+            EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
+        )*100.0/NULLIF(COUNT(e.id),0))*2
+    ,1) as score
+FROM airbyte.motoristas_motorista m
+JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+LEFT JOIN airbyte.motoristas_funcionario func ON func.id = g.fiscal_responsavel_id
+WHERE m.status = 'A' AND e.data >= '2026-04-01'
+  AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
+GROUP BY g.nome, func.nome
+ORDER BY score DESC
+""")
+
+# Ranking de bonificação por cidade
+df_bonificacao_cidade = safe_read("""
+SELECT
+    m.cidade,
+    COUNT(DISTINCT m.id) as motoristas,
+    COUNT(e.id) as total_escalas,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct_rastreado,
+    COUNT(e.id) FILTER (WHERE
+        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
+    ) as suspeitas,
+    ROUND(COUNT(e.id) FILTER (WHERE
+        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
+    )*100.0/NULLIF(COUNT(e.id),0),1) as pct_suspeitas,
+    ROUND(
+        (COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0))
+        - (COUNT(e.id) FILTER (WHERE
+            e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+            EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
+        )*100.0/NULLIF(COUNT(e.id),0))*2
+    ,1) as score
+FROM airbyte.motoristas_motorista m
+JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+WHERE m.status = 'A' AND m.cidade IS NOT NULL AND e.data >= '2026-04-01'
+GROUP BY m.cidade
+HAVING COUNT(e.id) >= 100
+ORDER BY score DESC
+LIMIT 30
+""")
+
 conn.close()
 print("✅ Queries concluídas. Processando...")
 
@@ -753,6 +853,72 @@ fr_m = df_fraude_mensal['mes'].tolist() if not df_fraude_mensal.empty else []
 fr_s = df_fraude_mensal['suspeitas'].tolist() if not df_fraude_mensal.empty else []
 fr_sr = df_fraude_mensal['sem_rast'].tolist() if not df_fraude_mensal.empty else []
 
+# KPIs bonificação
+cidade_top = df_bonificacao_cidade['cidade'].iloc[0] if not df_bonificacao_cidade.empty else '—'
+gre_top = df_bonificacao_gre['gre'].iloc[0] if not df_bonificacao_gre.empty else '—'
+n_mot_bonif = len(df_bonificacao_mot) if not df_bonificacao_mot.empty else 0
+
+def html_bonif_mot():
+    if df_bonificacao_mot.empty: return "<tr><td colspan='10'>Sem dados</td></tr>"
+    h = ""
+    for i, (_, r) in enumerate(df_bonificacao_mot.iterrows()):
+        score = float(r.get('score') or 0)
+        pct_r = float(r.get('pct_rastreado') or 0)
+        pct_s = float(r.get('pct_suspeitas') or 0)
+        cor_score = "color:#22c55e;font-weight:700" if score >= 70 else ("color:#f59e0b;font-weight:700" if score >= 50 else "color:#ef4444")
+        medal = "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else f"#{i+1}"))
+        h += f"<tr>"
+        h += f"<td style='text-align:center;font-weight:700'>{medal}</td>"
+        h += f"<td><b>{r['motorista']}</b></td>"
+        h += f"<td>{r['empresa']}</td>"
+        h += f"<td>{r.get('cidade','')}</td>"
+        h += f"<td>{r.get('gre','')}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('total_escalas',0)):,}</td>"
+        h += f"<td style='text-align:center;{cor_pct(pct_r)}'>{pct_r}%</td>"
+        h += f"<td style='text-align:center'>{int(r.get('suspeitas',0))}</td>"
+        h += f"<td style='text-align:center;{'color:#ef4444' if pct_s > 5 else ''}'>{pct_s}%</td>"
+        h += f"<td style='text-align:center;{cor_score}'>{score}</td>"
+        h += f"</tr>"
+    return h
+
+def html_bonif_gre():
+    if df_bonificacao_gre.empty: return "<tr><td colspan='7'>Sem dados</td></tr>"
+    h = ""
+    for i, (_, r) in enumerate(df_bonificacao_gre.iterrows()):
+        score = float(r.get('score') or 0)
+        pct_r = float(r.get('pct_rastreado') or 0)
+        cor_score = "color:#22c55e;font-weight:700" if score >= 50 else ("color:#f59e0b" if score >= 30 else "color:#ef4444")
+        medal = "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else f"#{i+1}"))
+        h += f"<tr>"
+        h += f"<td style='text-align:center'>{medal}</td>"
+        h += f"<td><b>{r['gre']}</b></td>"
+        h += f"<td>{r.get('fiscal','—')}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('motoristas',0))}</td>"
+        h += f"<td style='text-align:center;{cor_pct(pct_r)}'>{pct_r}%</td>"
+        h += f"<td style='text-align:center;{'color:#ef4444' if float(r.get('pct_suspeitas',0))>5 else ''}'>{r.get('pct_suspeitas',0)}%</td>"
+        h += f"<td style='text-align:center;{cor_score}'>{score}</td>"
+        h += f"</tr>"
+    return h
+
+def html_bonif_cidade():
+    if df_bonificacao_cidade.empty: return "<tr><td colspan='7'>Sem dados</td></tr>"
+    h = ""
+    for i, (_, r) in enumerate(df_bonificacao_cidade.iterrows()):
+        score = float(r.get('score') or 0)
+        pct_r = float(r.get('pct_rastreado') or 0)
+        cor_score = "color:#22c55e;font-weight:700" if score >= 50 else ("color:#f59e0b" if score >= 30 else "color:#ef4444")
+        medal = "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else f"#{i+1}"))
+        h += f"<tr>"
+        h += f"<td style='text-align:center'>{medal}</td>"
+        h += f"<td><b>{r['cidade']}</b></td>"
+        h += f"<td style='text-align:center'>{int(r.get('motoristas',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('total_escalas',0)):,}</td>"
+        h += f"<td style='text-align:center;{cor_pct(pct_r)}'>{pct_r}%</td>"
+        h += f"<td style='text-align:center;{'color:#ef4444' if float(r.get('pct_suspeitas',0))>5 else ''}'>{r.get('pct_suspeitas',0)}%</td>"
+        h += f"<td style='text-align:center;{cor_score}'>{score}</td>"
+        h += f"</tr>"
+    return h
+
 gerado = datetime.now().strftime("%d/%m/%Y %H:%M")
 
 # ─── HTML FINAL ─────────────────────────────────────────────────────────────
@@ -839,6 +1005,7 @@ canvas{{max-height:270px}}
   <button onclick="tab('t6',this)">🚌 Frota</button>
   <button onclick="tab('t7',this)">👤 Motoristas</button>
   <button onclick="tab('t8',this)">🧠 Prioridades</button>
+  <button onclick="tab('t9',this)">🏆 Bonificação</button>
 </div>
 
 <!-- ABA 1: PAINEL EXECUTIVO -->
@@ -1187,6 +1354,94 @@ canvas{{max-height:270px}}
       Prestadores abaixo desse índice por dois meses consecutivos devem receber notificação formal
       com prazo de 30 dias para adequação, seguida de processo de glosa caso não haja melhora.
     </p>
+  </div>
+</div>
+
+<!-- ABA 9: BONIFICAÇÃO -->
+<div id="t9" class="tab">
+  <div class="info">
+    <b>📌 Como funciona o Score de Bonificação:</b>
+    Calculado por motorista desde Abr/2026 combinando dois fatores:
+    <b>% de rastreamento</b> (peso positivo) e <b>% de rotas suspeitas</b> (peso negativo, conta dobrado).
+    Fórmula: Score = % Rastreado − (% Suspeitas × 2).
+    Score 70+ = excelente · 50-69 = bom · abaixo de 50 = atenção.
+    Mínimo de 30 escalas no período para entrar no ranking.
+    <b>Combustível:</b> dado em revisão — valores inconsistentes identificados no banco de origem.
+  </div>
+
+  <div class="g3">
+    <div class="kpi"><label>🏆 Top Cidade</label>
+      <div class="v v-ok" style="font-size:16px">{cidade_top}</div>
+      <div class="sub">maior score médio de bonificação</div>
+    </div>
+    <div class="kpi"><label>🏆 Top GRE</label>
+      <div class="v v-ok" style="font-size:16px">{gre_top}</div>
+      <div class="sub">maior score médio de bonificação</div>
+    </div>
+    <div class="kpi"><label>Motoristas no Ranking</label>
+      <div class="v">{n_mot_bonif}</div>
+      <div class="sub">com mín. 30 escalas em Abr-Ago/26</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>🏆 Ranking de Motoristas — Melhores Índices Operacionais (Abr-Ago/2026)</h3>
+    <p class="desc">Motoristas com maior score de bonificação. São referências de boa prática operacional
+    que podem servir de modelo para treinamentos e incentivos.</p>
+    <input class="src" id="s_bon" oninput="fil('s_bon','t_bon')" placeholder="Buscar motorista, cidade, GRE...">
+    <div class="tw">
+      <table id="t_bon">
+        <thead><tr>
+          <th style="text-align:center">#</th><th>Motorista</th><th>Empresa</th>
+          <th>Cidade</th><th>GRE</th>
+          <th style="text-align:center">Escalas</th>
+          <th style="text-align:center">% Rastreado</th>
+          <th style="text-align:center">Suspeitas</th>
+          <th style="text-align:center">% Suspeitas</th>
+          <th style="text-align:center">Score</th>
+        </tr></thead>
+        <tbody>{html_bonif_mot()}</tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="g2">
+    <div class="card">
+      <h3>🏆 Ranking por GRE — Score Médio de Bonificação</h3>
+      <p class="desc">Regionais ordenadas pelo score médio de bonificação de seus motoristas.
+      A coluna <b>Fiscal</b> é responsável pela área.</p>
+      <div class="tw">
+        <table>
+          <thead><tr>
+            <th style="text-align:center">#</th><th>GRE</th><th>Fiscal</th>
+            <th style="text-align:center">Motoristas</th>
+            <th style="text-align:center">% Rastreado</th>
+            <th style="text-align:center">% Suspeitas</th>
+            <th style="text-align:center">Score</th>
+          </tr></thead>
+          <tbody>{html_bonif_gre()}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h3>🏆 Ranking por Cidade — Score Médio de Bonificação</h3>
+      <p class="desc">Cidades ordenadas pelo score médio de bonificação.
+      Cidades no topo são referência de boa adesão ao rastreamento.</p>
+      <input class="src" id="s_bcid" oninput="fil('s_bcid','t_bcid')" placeholder="Filtrar cidade...">
+      <div class="tw">
+        <table id="t_bcid">
+          <thead><tr>
+            <th style="text-align:center">#</th><th>Cidade</th>
+            <th style="text-align:center">Motoristas</th>
+            <th style="text-align:center">Escalas</th>
+            <th style="text-align:center">% Rastreado</th>
+            <th style="text-align:center">% Suspeitas</th>
+            <th style="text-align:center">Score</th>
+          </tr></thead>
+          <tbody>{html_bonif_cidade()}</tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </div>
 
