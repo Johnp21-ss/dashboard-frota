@@ -992,7 +992,7 @@ def comentario_cidades():
             'EM QUEDA': 'em queda consistente — intervenção urgente',
         }
         desc = acoes.get(r['status'], 'índice abaixo do esperado')
-        textos.append(f"<b>{r['cidade']}</b> ({r['motoristas']} motoristas, {r['total_escalas']:,} escalas): {desc}. Índice atual: {ultimo}%.")
+        textos.append(f"<b>{r.get('cidade','?')}</b> ({r.get('motoristas',0)} motoristas, {r.get('total',0):,} escalas): {desc}. Índice atual: {ultimo}%.")
     return " &nbsp;·&nbsp; ".join(textos)
 
 def comentario_fraude():
