@@ -469,7 +469,7 @@ WITH abast AS (
     JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
     WHERE a.datetime_abastecimento >= '2026-01-01'
       AND a.litros > 0 AND a.litros <= 500
-      AND a.valor_total > 0 AND a.valor_total <= 5000
+      AND a.valor_total > 0
     GROUP BY m.gre_id, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
 ),
 esc AS (
@@ -514,7 +514,7 @@ WITH abast AS (
     LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
     WHERE a.datetime_abastecimento >= '2026-01-01'
       AND a.litros > 0 AND a.litros <= 500
-      AND a.valor_total > 0 AND a.valor_total <= 5000
+      AND a.valor_total > 0
     GROUP BY f.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
 ),
 esc AS (
@@ -549,7 +549,7 @@ WITH top_ids AS (
     JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
     WHERE a.datetime_abastecimento >= '2026-01-01'
       AND a.litros > 0 AND a.litros <= 500
-      AND a.valor_total > 0 AND a.valor_total <= 5000
+      AND a.valor_total > 0
     GROUP BY m.id
     ORDER BY SUM(a.valor_total) DESC
     LIMIT 40
@@ -571,7 +571,7 @@ abast AS (
     LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
     WHERE a.datetime_abastecimento >= '2026-01-01'
       AND a.litros > 0 AND a.litros <= 500
-      AND a.valor_total > 0 AND a.valor_total <= 5000
+      AND a.valor_total > 0
     GROUP BY m.id, m.nome, f.nome, m.cidade, g.nome,
              TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
 ),
@@ -1017,20 +1017,32 @@ if not df_combust_gre.empty:
 def html_comb_gre_pivo():
     if not comb_gre_pivot: return "<tr><td colspan='10'>Sem dados</td></tr>"
     h = ""
+    totais_mes = {m: 0 for m in MESES_COMB}
+    total_geral = 0
     for gre in sorted(comb_gre_pivot.keys()):
         dados = comb_gre_pivot[gre]
         fiscal = dados.get('fiscal','—')
         total = sum(dados.get(m,{}).get('gasto',0) for m in MESES_COMB)
+        total_geral += total
         h += f"<tr><td><b>{gre}</b></td><td style='font-size:11px;color:#64748b'>{fiscal}</td>"
         for m in MESES_COMB:
             v = dados.get(m,{}).get('gasto',0)
+            totais_mes[m] += v
             if v == 0:
                 h += "<td style='text-align:right;color:#334155'>—</td>"
             else:
-                cor = "color:#ef4444;font-weight:700" if v > 20000000 else ("color:#f59e0b" if v > 10000000 else "color:#22c55e")
+                cor = "color:#ef4444;font-weight:700" if v > 500000 else ("color:#f59e0b" if v > 200000 else "color:#22c55e")
                 h += f"<td style='text-align:right;{cor}'>R$ {fmt(v)}</td>"
         h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total)}</td>"
         h += "</tr>"
+    # Linha de total por mês
+    h += "<tr style='background:#0f172a;border-top:2px solid #334155'>"
+    h += "<td colspan='2' style='font-weight:700;color:#f8fafc'>TOTAL GERAL</td>"
+    for m in MESES_COMB:
+        v = totais_mes[m]
+        h += f"<td style='text-align:right;font-weight:700;color:#f8fafc'>R$ {fmt(v)}</td>"
+    h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total_geral)}</td>"
+    h += "</tr>"
     return h
 
 # Pivô combustível por empresa
