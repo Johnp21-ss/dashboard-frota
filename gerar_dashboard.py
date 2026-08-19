@@ -464,7 +464,8 @@ WITH abast AS (
         COUNT(DISTINCT m.id) as motoristas,
         COUNT(DISTINCT a.id) as abastecimentos,
         ROUND(SUM(a.litros)::numeric, 0) as total_litros,
-        ROUND(SUM(a.valor_total)::numeric, 2) as total_gasto
+        ROUND(SUM(a.valor_total)::numeric, 2) as total_gasto,
+        COUNT(DISTINCT a.id) FILTER (WHERE a.id_profrotas IS NOT NULL) as convenio_profrotas
     FROM airbyte.abastecimentos_abastecimento a
     JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
     WHERE a.datetime_abastecimento >= '2026-01-01'
@@ -490,13 +491,13 @@ SELECT
     a.abastecimentos,
     a.total_litros,
     a.total_gasto,
+    a.convenio_profrotas,
     COALESCE(esc.escalas_mes, 0) as escalas_mes,
     ROUND(a.total_gasto / NULLIF(esc.escalas_mes, 0), 2) as rs_por_escala
 FROM abast a
 JOIN airbyte.escolas_gre g ON g.id = a.gre_id
 LEFT JOIN airbyte.motoristas_funcionario func ON func.id = g.fiscal_responsavel_id
 LEFT JOIN esc ON esc.gre_id = a.gre_id AND esc.mes = a.mes
-WHERE g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
 ORDER BY g.nome, a.mes
 """)
 
@@ -693,6 +694,40 @@ GROUP BY m.cidade
 HAVING COUNT(e.id) >= 100
 ORDER BY score DESC
 LIMIT 30
+""")
+
+# Total mensal geral de combustível (todas as GREs, para referência)
+df_combust_total = safe_read("""
+SELECT
+    TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
+    COUNT(*) as lancamentos,
+    ROUND(SUM(a.litros)::numeric, 0) as litros,
+    ROUND(SUM(a.valor_total)::numeric, 2) as valor_total,
+    COUNT(*) FILTER (WHERE a.id_profrotas IS NOT NULL) as convenio
+FROM airbyte.abastecimentos_abastecimento a
+WHERE a.datetime_abastecimento >= '2026-01-01'
+  AND a.litros > 0 AND a.litros <= 500
+  AND a.valor_total > 0
+GROUP BY TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+ORDER BY mes
+""")
+
+# Convênio ProFrotas por GRE e mês
+df_combust_convenio = safe_read("""
+SELECT
+    g.nome as gre,
+    TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
+    COUNT(*) as lancamentos,
+    ROUND(SUM(a.litros)::numeric, 0) as litros,
+    ROUND(SUM(a.valor_total)::numeric, 2) as valor_total
+FROM airbyte.abastecimentos_abastecimento a
+JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
+LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+WHERE a.datetime_abastecimento >= '2026-01-01'
+  AND a.id_profrotas IS NOT NULL
+  AND a.litros > 0 AND a.valor_total > 0
+GROUP BY g.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+ORDER BY g.nome, mes
 """)
 
 conn.close()
@@ -1014,24 +1049,62 @@ if not df_combust_gre.empty:
             'rs_escala': float(r.get('rs_por_escala') or 0)
         }
 
+def html_comb_total():
+    if df_combust_total.empty: return "<tr><td colspan='5'>Sem dados</td></tr>"
+    h = ""
+    total_lanc = total_litros = total_val = total_conv = 0
+    meses_nomes = {'2026-01':'Jan/26','2026-02':'Fev/26','2026-03':'Mar/26','2026-04':'Abr/26',
+                   '2026-05':'Mai/26','2026-06':'Jun/26','2026-07':'Jul/26','2026-08':'Ago/26'}
+    for _, r in df_combust_total.iterrows():
+        lanc = int(r.get('lancamentos') or 0)
+        litros = float(r.get('litros') or 0)
+        val = float(r.get('valor_total') or 0)
+        conv = int(r.get('convenio') or 0)
+        total_lanc += lanc; total_litros += litros; total_val += val; total_conv += conv
+        nome_mes = meses_nomes.get(r['mes'], r['mes'])
+        h += f"<tr>"
+        h += f"<td><b>{nome_mes}</b></td>"
+        h += f"<td style='text-align:center'>{lanc:,}</td>"
+        h += f"<td style='text-align:right'>{fmt(litros)} L</td>"
+        h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(val)}</td>"
+        h += f"<td style='text-align:center;{'color:#a78bfa;font-weight:700' if conv > 0 else 'color:#334155'}'>{conv if conv > 0 else '—'}</td>"
+        h += "</tr>"
+    h += f"<tr style='background:#0f172a;border-top:2px solid #334155'>"
+    h += f"<td style='font-weight:700'>TOTAL</td>"
+    h += f"<td style='text-align:center;font-weight:700'>{total_lanc:,}</td>"
+    h += f"<td style='text-align:right;font-weight:700'>{fmt(total_litros)} L</td>"
+    h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total_val)}</td>"
+    h += f"<td style='text-align:center;font-weight:700;color:#a78bfa'>{total_conv}</td>"
+    h += "</tr>"
+    return h
+
 def html_comb_gre_pivo():
     if not comb_gre_pivot: return "<tr><td colspan='10'>Sem dados</td></tr>"
     h = ""
     totais_mes = {m: 0 for m in MESES_COMB}
     total_geral = 0
-    for gre in sorted(comb_gre_pivot.keys()):
+    ADMIN_GRES = {'ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR',
+                  'SEMEC - SUDESTE','SEMEC - NORTE','SEMEC -  SUDESTE','TESTE'}
+    gres_op = sorted([g for g in comb_gre_pivot.keys() if g not in ADMIN_GRES])
+    gres_ad = sorted([g for g in comb_gre_pivot.keys() if g in ADMIN_GRES])
+    for gre in gres_op + gres_ad:
         dados = comb_gre_pivot[gre]
         fiscal = dados.get('fiscal','—')
         total = sum(dados.get(m,{}).get('gasto',0) for m in MESES_COMB)
         total_geral += total
-        h += f"<tr><td><b>{gre}</b></td><td style='font-size:11px;color:#64748b'>{fiscal}</td>"
+        is_admin = gre in ADMIN_GRES
+        estilo_row = "opacity:0.55" if is_admin else ""
+        label_adm = " <span style='font-size:10px;color:#64748b'>(adm)</span>" if is_admin else ""
+        h += f"<tr style='{estilo_row}'>"
+        h += f"<td><b>{gre}</b>{label_adm}</td>"
+        h += f"<td style='font-size:11px;color:#64748b'>{fiscal}</td>"
         for m in MESES_COMB:
             v = dados.get(m,{}).get('gasto',0)
             totais_mes[m] += v
             if v == 0:
                 h += "<td style='text-align:right;color:#334155'>—</td>"
             else:
-                cor = "color:#ef4444;font-weight:700" if v > 500000 else ("color:#f59e0b" if v > 200000 else "color:#22c55e")
+                cor = "color:#ef4444;font-weight:700" if v > 400000 else ("color:#f59e0b" if v > 150000 else "color:#22c55e")
                 h += f"<td style='text-align:right;{cor}'>R$ {fmt(v)}</td>"
         h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total)}</td>"
         h += "</tr>"
@@ -1068,20 +1141,30 @@ def html_comb_emp_pivo():
     ranking = sorted(comb_emp_pivot.items(),
         key=lambda x: sum(v.get('gasto',0) for v in x[1].values()), reverse=True)
     h = ""
+    totais_emp = {m: 0 for m in MESES_COMB}
+    total_emp_geral = 0
     for emp, dados in ranking[:20]:
         total = sum(dados.get(m,{}).get('gasto',0) for m in MESES_COMB)
         if total == 0: continue
+        total_emp_geral += total
         max_mot = max((dados.get(m,{}).get('motoristas',0) for m in MESES_COMB), default=0)
         h += f"<tr><td><b>{emp}</b></td><td style='text-align:center'>{max_mot}</td>"
         for m in MESES_COMB:
             v = dados.get(m,{}).get('gasto',0)
+            totais_emp[m] += v
             if v == 0:
                 h += "<td style='text-align:right;color:#334155'>—</td>"
             else:
-                cor = "color:#ef4444;font-weight:700" if v > 5000000 else ("color:#f59e0b" if v > 1000000 else "color:#22c55e")
+                cor = "color:#ef4444;font-weight:700" if v > 500000 else ("color:#f59e0b" if v > 150000 else "color:#22c55e")
                 h += f"<td style='text-align:right;{cor}'>R$ {fmt(v)}</td>"
         h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total)}</td>"
         h += "</tr>"
+    h += "<tr style='background:#0f172a;border-top:2px solid #334155'>"
+    h += "<td colspan='2' style='font-weight:700;color:#f8fafc'>TOTAL (top 20)</td>"
+    for m in MESES_COMB:
+        h += f"<td style='text-align:right;font-weight:700;color:#f8fafc'>R$ {fmt(totais_emp[m])}</td>"
+    h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total_emp_geral)}</td>"
+    h += "</tr>"
     return h
 
 # Pivô combustível por motorista
@@ -1782,6 +1865,24 @@ canvas{{max-height:270px}}
           <th style="text-align:right;color:#38bdf8">Total</th>
         </tr></thead>
         <tbody>{html_comb_gre_pivo()}</tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <h3>📊 Total Geral de Combustível — Mensal (2026)</h3>
+    <p class="desc">Total consolidado de todos os abastecimentos do período, incluindo todas as GREs.
+    Referência para confronto com o sistema operacional.
+    <b>Convênio ProFrotas</b> = abastecimentos registrados via sistema ProFrotas (id_profrotas preenchido).</p>
+    <div class="tw">
+      <table>
+        <thead><tr>
+          <th>Mês</th>
+          <th style="text-align:center">Lançamentos</th>
+          <th style="text-align:right">Litros</th>
+          <th style="text-align:right">Valor Total</th>
+          <th style="text-align:center">Convênio ProFrotas</th>
+        </tr></thead>
+        <tbody>{html_comb_total()}</tbody>
       </table>
     </div>
   </div>
