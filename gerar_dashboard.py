@@ -207,7 +207,7 @@ ORDER BY pct_susp DESC LIMIT 20
 # Contratos sem operação
 df_contratos = safe_read("""
 SELECT DISTINCT ON (ci.id)
-    ci.id as item, g.nome as gre, ci.valor_unitario,
+    ci.id as item, c.id as contrato_id, g.nome as gre, ci.valor_unitario,
     v.placa, v.status as sv,
     COALESCE(ct.nome,'Não definido') as turno,
     (SELECT COUNT(*) FROM airbyte.rotas_escalarota e2
@@ -459,7 +459,7 @@ GROUP BY g.nome, func.nome ORDER BY pct_q3 ASC
 df_combust_gre = safe_read("""
 WITH abast AS (
     SELECT
-        m.gre_id,
+        COALESCE(a.gre_id, m.gre_id) as gre_id,
         TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
         COUNT(DISTINCT m.id) as motoristas,
         COUNT(DISTINCT a.id) as abastecimentos,
@@ -471,7 +471,7 @@ WITH abast AS (
     WHERE a.datetime_abastecimento >= '2026-01-01'
       AND a.litros > 0 AND a.litros <= 500
       AND a.valor_total > 0
-    GROUP BY m.gre_id, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+    GROUP BY COALESCE(a.gre_id, m.gre_id), TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
 ),
 esc AS (
     SELECT
@@ -878,14 +878,23 @@ def html_contratos_noite():
     return h
 
 def html_contratos():
-    if df_contratos.empty: return "<tr><td colspan='6'>Sem dados</td></tr>"
+    if df_contratos.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
     h = ""
     for _, r in df_contratos.iterrows():
         sv = "🔴 INATIVO" if r.get('sv') == 'I' else "🟡 SEM MOTORISTA"
         cor = "color:#ef4444" if r.get('sv') == 'I' else "color:#f59e0b"
-        h += f"<tr><td>{r.get('gre','—')}</td><td><b>{r.get('placa','—')}</b></td>"
-        h += f"<td>R$ {fmt(r.get('valor_unitario',0))}/dia</td><td>{r.get('turno','—')}</td>"
-        h += f"<td style='{cor}'>{sv}</td><td style='text-align:center'>{int(r.get('esc30d',0))}</td></tr>"
+        contrato_id = r.get('contrato_id','—')
+        item_id = r.get('item','—')
+        h += f"<tr>"
+        h += f"<td>{r.get('gre','—')}</td>"
+        h += f"<td><b>{r.get('placa','—')}</b></td>"
+        h += f"<td style='text-align:center;color:#a78bfa;font-weight:700'>#{contrato_id}</td>"
+        h += f"<td style='text-align:center;color:#64748b;font-size:11px'>item {item_id}</td>"
+        h += f"<td>R$ {fmt(r.get('valor_unitario',0))}/dia</td>"
+        h += f"<td>{r.get('turno','—')}</td>"
+        h += f"<td style='{cor}'>{sv}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('esc30d',0))}</td>"
+        h += "</tr>"
     return h
 
 def html_frota_parada():
@@ -1659,7 +1668,7 @@ canvas{{max-height:270px}}
     <input class="src" id="s_ct" oninput="fil('s_ct','t_ct')" placeholder="Filtrar por GRE, placa...">
     <div class="tw">
       <table id="t_ct">
-        <thead><tr><th>Regional</th><th>Placa</th><th>Valor/Dia</th><th>Turno</th><th>Situação do Veículo</th><th style="text-align:center">Esc. 30d</th></tr></thead>
+        <thead><tr><th>Regional</th><th>Placa</th><th style="text-align:center">Nº Contrato</th><th style="text-align:center">Item</th><th>Valor/Dia</th><th>Turno</th><th>Situação do Veículo</th><th style="text-align:center">Esc. 30d</th></tr></thead>
         <tbody>{html_contratos()}</tbody>
       </table>
     </div>
