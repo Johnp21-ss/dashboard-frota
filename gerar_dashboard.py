@@ -463,14 +463,14 @@ WITH abast AS (
         TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
         COUNT(DISTINCT m.id) as motoristas,
         COUNT(DISTINCT a.id) as abastecimentos,
-        ROUND(SUM(a.litros)::numeric, 0) as total_litros,
-        ROUND(SUM(a.valor_total)::numeric, 2) as total_gasto,
+        ROUND(SUM(COALESCE(a.litros,0))::numeric, 0) as total_litros,
+        ROUND(SUM(COALESCE(a.valor_total,0))::numeric, 2) as total_gasto,
         COUNT(DISTINCT a.id) FILTER (WHERE a.id_profrotas IS NOT NULL) as convenio_profrotas
     FROM airbyte.abastecimentos_abastecimento a
     JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
     WHERE a.datetime_abastecimento >= '2026-01-01'
-      AND a.litros > 0 AND a.litros <= 500
-      AND a.valor_total > 0
+      AND (a.litros IS NULL OR a.litros <= 500)
+      AND (a.valor_total IS NULL OR a.valor_total >= 0)
     GROUP BY COALESCE(a.gre_id, m.gre_id), TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
 ),
 esc AS (
@@ -508,14 +508,14 @@ WITH abast AS (
         COALESCE(f.nome, 'PRÓPRIO') as empresa,
         TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
         COUNT(DISTINCT m.id) as motoristas,
-        ROUND(SUM(a.litros)::numeric, 0) as total_litros,
-        ROUND(SUM(a.valor_total)::numeric, 2) as total_gasto
+        ROUND(SUM(COALESCE(a.litros,0))::numeric, 0) as total_litros,
+        ROUND(SUM(COALESCE(a.valor_total,0))::numeric, 2) as total_gasto
     FROM airbyte.abastecimentos_abastecimento a
     JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
     LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
     WHERE a.datetime_abastecimento >= '2026-01-01'
-      AND a.litros > 0 AND a.litros <= 500
-      AND a.valor_total > 0
+      AND (a.litros IS NULL OR a.litros <= 500)
+      AND (a.valor_total IS NULL OR a.valor_total >= 0)
     GROUP BY f.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
 ),
 esc AS (
@@ -549,8 +549,8 @@ WITH top_ids AS (
     FROM airbyte.abastecimentos_abastecimento a
     JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id AND m.status = 'A'
     WHERE a.datetime_abastecimento >= '2026-01-01'
-      AND a.litros > 0 AND a.litros <= 500
-      AND a.valor_total > 0
+      AND (a.litros IS NULL OR a.litros <= 500)
+      AND (a.valor_total IS NULL OR a.valor_total >= 0)
     GROUP BY m.id
     ORDER BY SUM(a.valor_total) DESC
     LIMIT 40
@@ -571,8 +571,8 @@ abast AS (
     LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
     LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
     WHERE a.datetime_abastecimento >= '2026-01-01'
-      AND a.litros > 0 AND a.litros <= 500
-      AND a.valor_total > 0
+      AND (a.litros IS NULL OR a.litros <= 500)
+      AND (a.valor_total IS NULL OR a.valor_total >= 0)
     GROUP BY m.id, m.nome, f.nome, m.cidade, g.nome,
              TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
 ),
@@ -701,8 +701,8 @@ df_combust_total = safe_read("""
 SELECT
     TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
     COUNT(*) as lancamentos,
-    ROUND(SUM(a.litros)::numeric, 0) as litros,
-    ROUND(SUM(a.valor_total)::numeric, 2) as valor_total,
+    ROUND(SUM(COALESCE(a.litros,0))::numeric, 0) as litros,
+    ROUND(SUM(COALESCE(a.valor_total,0))::numeric, 2) as valor_total,
     COUNT(*) FILTER (WHERE a.id_profrotas IS NOT NULL) as convenio
 FROM airbyte.abastecimentos_abastecimento a
 WHERE a.datetime_abastecimento >= '2026-01-01'
