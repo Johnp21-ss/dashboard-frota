@@ -1,7 +1,8 @@
 import psycopg2
 import pandas as pd
 import json
-from datetime import datetime
+import calendar
+from datetime import datetime, date
 
 HOST = "aws-0-sa-east-1.pooler.supabase.com"
 PORT = 5432
@@ -987,6 +988,159 @@ GROUP BY g.nome
 ORDER BY total_escalas DESC
 """)
 
+
+# 14) CALENDÁRIO FINANCEIRO — EXECUÇÃO REAL DAS DIÁRIAS E MENSALIDADES
+# Regra de negócio validada:
+#   DIÁRIA  = 1 pagamento por Contrato Rota + dia, desde que exista pelo menos
+#             uma execução não anulada naquele dia.
+#   MENSAL  = 1 pagamento por Contrato Rota + mês, desde que exista pelo menos
+#             uma execução não anulada no mês.
+# Portanto, várias escalas do mesmo Contrato Rota no mesmo dia NÃO multiplicam o valor.
+df_gc_pagamento_diario = safe_read("""
+WITH base AS (
+    SELECT
+        e.data::date AS data,
+        ci.id AS contrato_rota_id,
+        ci.contrato_id AS contrato_id,
+        ci.valor_unitario,
+        COALESCE(fc.nome, fv.nome, 'SEM FORNECEDOR') AS fornecedor,
+        COALESCE(vx.placa, vc.placa) AS placa,
+        COALESCE(m.nome, 'SEM MOTORISTA') AS motorista,
+        COALESCE(g.nome, gr.nome, 'SEM GRE') AS gre,
+        COALESCE(r.nome, 'ROTA #' || COALESCE(e.rota_id::text,'')) AS rota_nome,
+        e.id AS escala_id
+    FROM airbyte.rotas_escalarota e
+    JOIN airbyte.contratos_itemcontrato ci
+      ON ci.id = e.contrato_rota_id
+     AND ci.status = 'ATIVO'
+     AND ci.modalidade_pagamento = 'DIARIA'
+    JOIN airbyte.contratos_contrato c
+      ON c.id = ci.contrato_id
+     AND c.status = 'A'
+    LEFT JOIN airbyte.veiculos_veiculo vx
+      ON vx.id = e.veiculo_execucao_id
+    LEFT JOIN airbyte.veiculos_veiculo vc
+      ON vc.id = ci.veiculo_id
+    LEFT JOIN airbyte.motoristas_motorista m
+      ON m.id = e.motorista_id
+    LEFT JOIN airbyte.motoristas_fornecedor fc
+      ON fc.id = c.fornecedor_id
+    LEFT JOIN airbyte.motoristas_fornecedor fv
+      ON fv.id = COALESCE(vx.fornecedor_id, vc.fornecedor_id)
+    LEFT JOIN airbyte.rotas_rota r
+      ON r.id = e.rota_id
+    LEFT JOIN airbyte.escolas_gre g
+      ON g.id = ci.gre_id
+    LEFT JOIN airbyte.escolas_gre gr
+      ON gr.id = r.gre_id
+    WHERE e.data >= DATE '2026-01-01'
+      AND e.data <= CURRENT_DATE
+      AND e.anulada = false
+      AND e.contrato_rota_id IS NOT NULL
+), unicas AS (
+    SELECT DISTINCT ON (data, contrato_rota_id)
+        data,
+        contrato_rota_id,
+        contrato_id,
+        valor_unitario
+    FROM base
+    ORDER BY data, contrato_rota_id, escala_id
+)
+SELECT
+    data,
+    COUNT(*) AS contratos_rota_diaria,
+    COALESCE(SUM(valor_unitario),0) AS valor_diarias
+FROM unicas
+GROUP BY data
+ORDER BY data
+""", pd.DataFrame())
+
+df_gc_pagamento_mensal = safe_read("""
+WITH unicos AS (
+    SELECT DISTINCT
+        DATE_TRUNC('month', e.data)::date AS mes,
+        ci.id AS contrato_rota_id,
+        ci.valor_unitario
+    FROM airbyte.rotas_escalarota e
+    JOIN airbyte.contratos_itemcontrato ci
+      ON ci.id = e.contrato_rota_id
+     AND ci.status = 'ATIVO'
+     AND ci.modalidade_pagamento = 'MENSAL'
+    JOIN airbyte.contratos_contrato c
+      ON c.id = ci.contrato_id
+     AND c.status = 'A'
+    WHERE e.data >= DATE '2026-01-01'
+      AND e.data <= CURRENT_DATE
+      AND e.anulada = false
+      AND e.contrato_rota_id IS NOT NULL
+)
+SELECT
+    mes,
+    COUNT(*) AS contratos_mensais_executados,
+    COALESCE(SUM(valor_unitario),0) AS valor_mensal
+FROM unicos
+GROUP BY mes
+ORDER BY mes
+""", pd.DataFrame())
+
+df_gc_pagamento_detalhe = safe_read("""
+WITH base AS (
+    SELECT
+        e.data::date AS data,
+        ci.id AS contrato_rota_id,
+        ci.contrato_id AS contrato_id,
+        ci.valor_unitario,
+        COALESCE(fc.nome, fv.nome, 'SEM FORNECEDOR') AS fornecedor,
+        COALESCE(vx.placa, vc.placa, 'SEM PLACA') AS placa,
+        COALESCE(m.nome, 'SEM MOTORISTA') AS motorista,
+        COALESCE(g.nome, gr.nome, 'SEM GRE') AS gre,
+        COALESCE(r.nome, 'ROTA #' || COALESCE(e.rota_id::text,'')) AS rota_nome,
+        e.id AS escala_id
+    FROM airbyte.rotas_escalarota e
+    JOIN airbyte.contratos_itemcontrato ci
+      ON ci.id = e.contrato_rota_id
+     AND ci.status = 'ATIVO'
+     AND ci.modalidade_pagamento = 'DIARIA'
+    JOIN airbyte.contratos_contrato c
+      ON c.id = ci.contrato_id
+     AND c.status = 'A'
+    LEFT JOIN airbyte.veiculos_veiculo vx
+      ON vx.id = e.veiculo_execucao_id
+    LEFT JOIN airbyte.veiculos_veiculo vc
+      ON vc.id = ci.veiculo_id
+    LEFT JOIN airbyte.motoristas_motorista m
+      ON m.id = e.motorista_id
+    LEFT JOIN airbyte.motoristas_fornecedor fc
+      ON fc.id = c.fornecedor_id
+    LEFT JOIN airbyte.motoristas_fornecedor fv
+      ON fv.id = COALESCE(vx.fornecedor_id, vc.fornecedor_id)
+    LEFT JOIN airbyte.rotas_rota r
+      ON r.id = e.rota_id
+    LEFT JOIN airbyte.escolas_gre g
+      ON g.id = ci.gre_id
+    LEFT JOIN airbyte.escolas_gre gr
+      ON gr.id = r.gre_id
+    WHERE e.data >= DATE '2026-01-01'
+      AND e.data <= CURRENT_DATE
+      AND e.anulada = false
+      AND e.contrato_rota_id IS NOT NULL
+)
+SELECT
+    data,
+    contrato_rota_id,
+    contrato_id,
+    COALESCE(MAX(fornecedor),'SEM FORNECEDOR') AS fornecedor,
+    COALESCE(MAX(gre),'SEM GRE') AS gre,
+    STRING_AGG(DISTINCT motorista, ' | ' ORDER BY motorista) AS motoristas,
+    STRING_AGG(DISTINCT placa, ' | ' ORDER BY placa) AS placas,
+    STRING_AGG(DISTINCT rota_nome, ' | ' ORDER BY rota_nome) AS rotas,
+    COUNT(DISTINCT escala_id) AS execucoes,
+    MAX(valor_unitario) AS valor_diaria
+FROM base
+GROUP BY data, contrato_rota_id, contrato_id
+ORDER BY data, valor_diaria DESC, contrato_rota_id
+""", pd.DataFrame())
+
 conn.close()
 print("✅ Queries concluídas. Processando...")
 
@@ -1565,6 +1719,211 @@ def html_gc_historico():
         anterior = qtd
     return h
 
+
+def _gc_date_str(v):
+    if v is None:
+        return ''
+    return str(v)[:10]
+
+
+def _gc_num(v):
+    try:
+        return float(v or 0)
+    except Exception:
+        return 0.0
+
+
+def _gc_int(v):
+    try:
+        return int(v or 0)
+    except Exception:
+        return 0
+
+
+def _gc_mes_nome(ym):
+    nomes = {
+        '01':'Jan','02':'Fev','03':'Mar','04':'Abr','05':'Mai','06':'Jun',
+        '07':'Jul','08':'Ago','09':'Set','10':'Out','11':'Nov','12':'Dez'
+    }
+    parts = str(ym).split('-')
+    return f"{nomes.get(parts[1], parts[1] if len(parts)>1 else ym)}/{parts[0][-2:]}" if len(parts) > 1 else str(ym)
+
+
+def _gc_fmt_data(data_iso):
+    try:
+        y,m,d = [int(x) for x in str(data_iso)[:10].split('-')]
+        return f"{d:02d}/{m:02d}/{y}"
+    except Exception:
+        return str(data_iso)
+
+
+# Monta o calendário mensal/dia a partir dos dados reais consultados no banco.
+gc_pag_dia = {}
+if not df_gc_pagamento_diario.empty:
+    for _, r in df_gc_pagamento_diario.iterrows():
+        data_iso = _gc_date_str(r.get('data'))
+        gc_pag_dia[data_iso] = {
+            'contratos': _gc_int(r.get('contratos_rota_diaria')),
+            'valor': _gc_num(r.get('valor_diarias')),
+        }
+
+gc_pag_mensal = {}
+if not df_gc_pagamento_mensal.empty:
+    for _, r in df_gc_pagamento_mensal.iterrows():
+        mes_iso = _gc_date_str(r.get('mes'))[:7]
+        gc_pag_mensal[mes_iso] = {
+            'contratos': _gc_int(r.get('contratos_mensais_executados')),
+            'valor': _gc_num(r.get('valor_mensal')),
+        }
+
+gc_pag_detalhes = {}
+if not df_gc_pagamento_detalhe.empty:
+    for _, r in df_gc_pagamento_detalhe.iterrows():
+        data_iso = _gc_date_str(r.get('data'))
+        gc_pag_detalhes.setdefault(data_iso, []).append({
+            'contrato_rota': _gc_int(r.get('contrato_rota_id')),
+            'contrato_mestre': _gc_int(r.get('contrato_id')),
+            'fornecedor': str(r.get('fornecedor') or 'SEM FORNECEDOR'),
+            'gre': str(r.get('gre') or 'SEM GRE'),
+            'motoristas': str(r.get('motoristas') or 'SEM MOTORISTA'),
+            'placas': str(r.get('placas') or 'SEM PLACA'),
+            'rotas': str(r.get('rotas') or 'SEM ROTA'),
+            'execucoes': _gc_int(r.get('execucoes')),
+            'valor': _gc_num(r.get('valor_diaria')),
+        })
+
+# Meses do calendário: Jan/2026 até o mês atual da execução do RPA.
+_gc_hoje = datetime.now().date()
+gc_cal_meses = []
+for ano in range(2026, _gc_hoje.year + 1):
+    m_ini = 1
+    m_fim = _gc_hoje.month if ano == _gc_hoje.year else 12
+    for mes_num in range(m_ini, m_fim + 1):
+        ym = f"{ano:04d}-{mes_num:02d}"
+        dias = []
+        ultimo_dia = calendar.monthrange(ano, mes_num)[1]
+        limite_dia = _gc_hoje.day if (ano == _gc_hoje.year and mes_num == _gc_hoje.month) else ultimo_dia
+        total_diarias = 0.0
+        total_contratos_diaria = 0
+        dias_com_operacao = 0
+        for d in range(1, limite_dia + 1):
+            data_iso = f"{ano:04d}-{mes_num:02d}-{d:02d}"
+            info = gc_pag_dia.get(data_iso, {'contratos':0,'valor':0.0})
+            tem = info['contratos'] > 0
+            if tem:
+                dias_com_operacao += 1
+                total_diarias += info['valor']
+                total_contratos_diaria += info['contratos']
+            dias.append({
+                'data': data_iso,
+                'label': _gc_fmt_data(data_iso),
+                'contratos': info['contratos'],
+                'valor': info['valor'],
+                'detalhes': gc_pag_detalhes.get(data_iso, []),
+            })
+        mens = gc_pag_mensal.get(ym, {'contratos':0,'valor':0.0})
+        dias_com_valor = [d for d in dias if d['valor'] > 0]
+        maior_dia = max(dias_com_valor, key=lambda d: d['valor'], default={'data':'—','label':'—','valor':0.0,'contratos':0})
+        menor_dia = min(dias_com_valor, key=lambda d: d['valor'], default={'data':'—','label':'—','valor':0.0,'contratos':0})
+        gc_cal_meses.append({
+            'ym': ym,
+            'nome': _gc_mes_nome(ym),
+            'dias': dias,
+            'dias_com_operacao': dias_com_operacao,
+            'contratos_rota_diaria': total_contratos_diaria,
+            'valor_diarias': total_diarias,
+            'contratos_mensais': mens['contratos'],
+            'valor_mensal': mens['valor'],
+            'total_previsto': total_diarias + mens['valor'],
+            'maior_dia': maior_dia,
+            'menor_dia': menor_dia,
+        })
+
+
+def html_gc_pagamento_calendario():
+    if not gc_cal_meses:
+        return "<div class='info'>Sem dados de execução para montar o calendário financeiro.</div>"
+
+    h = ""
+    for mes in reversed(gc_cal_meses):
+        aberto = ' open' if mes['ym'] == gc_cal_meses[-1]['ym'] else ''
+        h += f"""
+        <details class='gc-month'{aberto}>
+          <summary>
+            <span class='gc-month-title'>📅 {mes['nome']}</span>
+            <span class='gc-month-metrics'>
+              <span>{mes['dias_com_operacao']} dias c/ operação</span>
+              <span>{mes['contratos_rota_diaria']:,} diárias registradas</span>
+              <strong>R$ {fmt(mes['total_previsto'])}</strong>
+            </span>
+          </summary>
+          <div class='gc-month-body'>
+            <div class='gc-month-cards'>
+              <div class='gc-mini'><label>Diárias previstas</label><b>R$ {fmt(mes['valor_diarias'])}</b><span>{mes['contratos_rota_diaria']:,} Contratos Rota-dia</span></div>
+              <div class='gc-mini'><label>Mensalidades previstas</label><b>R$ {fmt(mes['valor_mensal'])}</b><span>{mes['contratos_mensais']:,} contratos rota mensais</span></div>
+              <div class='gc-mini'><label>Maior dia de pagamento</label><b>R$ {fmt(mes['maior_dia']['valor'])}</b><span>{mes['maior_dia']['label']} · {mes['maior_dia']['contratos']:,} contratos rota</span></div>
+              <div class='gc-mini'><label>Menor dia com pagamento</label><b>R$ {fmt(mes['menor_dia']['valor'])}</b><span>{mes['menor_dia']['label']} · {mes['menor_dia']['contratos']:,} contratos rota</span></div>
+              <div class='gc-mini gc-mini-total'><label>Total previsto</label><b>R$ {fmt(mes['total_previsto'])}</b><span>execução registrada no mês</span></div>
+            </div>
+            <div class='gc-day-list'>
+        """
+        for dia in mes['dias']:
+            zero = dia['contratos'] == 0
+            cls = ' gc-day-zero' if zero else ''
+            h += f"""
+              <details class='gc-day{cls}'>
+                <summary>
+                  <span class='gc-day-date'>{dia['label']}</span>
+                  <span class='gc-day-count'>{dia['contratos']:,} Contratos Rota</span>
+                  <strong class='gc-day-value'>{'—' if zero else 'R$ '+fmt(dia['valor'])}</strong>
+                </summary>
+            """
+            if zero:
+                h += "<div class='gc-day-empty'>Nenhuma diária registrada para este dia.</div>"
+            else:
+                h += """
+                  <div class='gc-day-detail'>
+                    <div class='gc-day-note'>Regra: <b>1 diária por Contrato Rota no dia</b>. Várias escalas do mesmo Contrato Rota não multiplicam o valor.</div>
+                    <div class='tw'>
+                      <table>
+                        <thead><tr><th>Contrato Rota</th><th>Contrato Mestre</th><th>Fornecedor</th><th>GRE</th><th>Motorista(s)</th><th>Placa(s)</th><th>Execuções</th><th style='text-align:right'>Valor da Diária</th></tr></thead>
+                        <tbody>
+                """
+                for det in dia['detalhes']:
+                    h += f"<tr><td><b>#{det['contrato_rota']}</b></td><td>#{det['contrato_mestre']}</td><td>{det['fornecedor']}</td><td>{det['gre']}</td><td>{det['motoristas']}</td><td>{det['placas']}</td><td style='text-align:center'>{det['execucoes']}</td><td style='text-align:right;color:#38bdf8;font-weight:700'>R$ {fmt(det['valor'])}</td></tr>"
+                if not dia['detalhes']:
+                    h += "<tr><td colspan='8'>Detalhamento não disponível.</td></tr>"
+                h += """
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                """
+            h += "</details>"
+        h += """
+            </div>
+          </div>
+        </details>
+        """
+    return h
+
+
+def comentario_gc_pagamento_calendario():
+    if not gc_cal_meses:
+        return "Sem dados de pagamento por execução."
+    atual = gc_cal_meses[-1]
+    meses_com_valor = [m for m in gc_cal_meses if m['total_previsto'] > 0]
+    if not meses_com_valor:
+        return "Não houve execução faturável registrada no período analisado."
+    maior = max(meses_com_valor, key=lambda x: x['total_previsto'])
+    menor = min(meses_com_valor, key=lambda x: x['total_previsto'])
+    return (
+        f"<b>Leitura financeira:</b> {atual['nome']} registra <b>R$ {fmt(atual['total_previsto'])}</b> em previsão de pagamento "
+        f"com base nas execuções registradas. O maior total do período é <b>{maior['nome']}</b> (R$ {fmt(maior['total_previsto'])}). "
+        f"No mês com menor total observado, <b>{menor['nome']}</b>, foram previstos R$ {fmt(menor['total_previsto'])}. "
+        f"No detalhe diário, cada <b>Contrato Rota</b> conta apenas uma vez por dia na modalidade DIARIA, mesmo que haja várias escalas/execuções."
+    )
+
 # ─── COMENTÁRIOS AUTOMÁTICOS — GERENTE DE CONTRATOS ─────────────────────────
 
 def comentario_gc_frota_analise():
@@ -1812,6 +2171,36 @@ tr:hover{{background:var(--s2)}}
 .info{{background:rgba(56,189,248,.07);border:1px solid rgba(56,189,248,.2);
   border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#7dd3fc;line-height:1.6}}
 canvas{{max-height:270px}}
+
+.gc-payment-card summary{{list-style:none;cursor:pointer}}
+.gc-payment-card summary::-webkit-details-marker{{display:none}}
+.gc-month{{border:1px solid var(--bd);border-radius:8px;background:var(--bg);margin-bottom:10px;overflow:hidden}}
+.gc-month>summary{{padding:12px 14px;display:flex;justify-content:space-between;align-items:center;gap:12px;background:var(--s1);border-bottom:1px solid var(--bd)}}
+.gc-month[open]>summary{{border-bottom-color:var(--bd)}}
+.gc-month-title{{font-size:13px;font-weight:700;color:var(--ac)}}
+.gc-month-metrics{{display:flex;gap:14px;align-items:center;color:var(--mt);font-size:11px;flex-wrap:wrap;justify-content:flex-end}}
+.gc-month-metrics strong{{color:var(--tx);font-size:13px}}
+.gc-month-body{{padding:12px}}
+.gc-month-cards{{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px}}
+.gc-mini{{background:var(--s1);border:1px solid var(--bd);border-radius:6px;padding:10px}}
+.gc-mini label{{display:block;font-size:10px;color:var(--mt);text-transform:uppercase;font-weight:700}}
+.gc-mini b{{display:block;font-size:17px;margin:4px 0;color:var(--tx)}}
+.gc-mini span{{font-size:10px;color:var(--mt)}}
+.gc-mini-total{{border-left:3px solid var(--ac)}}
+.gc-day{{border-top:1px solid var(--bd)}}
+.gc-day:first-child{{border-top:0}}
+.gc-day>summary{{display:grid;grid-template-columns:120px 1fr 160px;gap:10px;padding:9px 10px;align-items:center;cursor:pointer;color:var(--tx);background:rgba(255,255,255,.01)}}
+.gc-day>summary:hover{{background:var(--s2)}}
+.gc-day-date{{font-weight:700}}
+.gc-day-count{{color:var(--mt);font-size:11px}}
+.gc-day-value{{text-align:right;color:#38bdf8}}
+.gc-day-zero>summary{{color:#64748b}}
+.gc-day-zero .gc-day-value{{color:#334155}}
+.gc-day-detail{{padding:0 10px 10px}}
+.gc-day-note{{font-size:10px;color:var(--mt);padding:8px;background:var(--s1);border-left:3px solid var(--wn);margin-bottom:8px}}
+.gc-day-empty{{padding:8px 10px 12px;color:var(--mt);font-size:11px}}
+@media(max-width:900px){{.gc-month-cards{{grid-template-columns:1fr}}.gc-month>summary{{align-items:flex-start;flex-direction:column}}.gc-month-metrics{{justify-content:flex-start}}.gc-day>summary{{grid-template-columns:1fr auto}}.gc-day-count{{grid-column:1}}.gc-day-value{{grid-column:2;grid-row:1 / span 2;align-self:center}}}}
+
 .legenda-cores{{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px;font-size:10px}}
 .lc{{padding:2px 8px;border-radius:3px;font-weight:700}}
 .lc-cr{{background:rgba(239,68,68,.2);color:var(--cr)}}
@@ -2359,6 +2748,15 @@ canvas{{max-height:270px}}
       </table>
       <p class="desc" style="border-left-color:#f97316;margin-top:12px"><b>Locada separada:</b> {gc_loc_qd} diária(s) = R$ {fmt(gc_loc_vd)}/dia · {gc_loc_qm} mensal(is) = R$ {fmt(gc_loc_vm)}/mês.</p>
     </div>
+  </div>
+
+  <div class="card gc-payment-card">
+    <h3>💳 Previsão de Pagamento por Execução — Mês → Dias → Contratos Rota</h3>
+    <p class="desc" style="border-left-color:var(--ac)">{comentario_gc_pagamento_calendario()}</p>
+    <p class="desc" style="border-left-color:var(--wn)">
+      <b>Como calcular:</b> DIÁRIA = 1 valor por <b>Contrato Rota + dia</b> com pelo menos uma execução não anulada. MENSAL = 1 valor por <b>Contrato Rota + mês</b> com pelo menos uma execução não anulada. Portanto, várias escalas do mesmo contrato rota no mesmo dia não multiplicam o pagamento. O calendário mostra a previsão baseada na <b>execução efetivamente registrada</b>, não uma projeção fixa de 22 dias.
+    </p>
+    {html_gc_pagamento_calendario()}
   </div>
 
   <div class="card">
