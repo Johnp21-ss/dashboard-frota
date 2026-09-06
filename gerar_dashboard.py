@@ -26,6 +26,10 @@ def n(v, d=0):
     try: return float(v)
     except: return d
 
+def fmt(v):
+    try: return f"{float(v):,.2f}".replace(",","X").replace(".",",").replace("X",".")
+    except: return "0,00"
+
 MESES_COLS = ['2026-04','2026-05','2026-06','2026-07','2026-08']
 MESES_NOMES = {'2026-04':'Abr/26','2026-05':'Mai/26','2026-06':'Jun/26','2026-07':'Jul/26','2026-08':'Ago/26'}
 
@@ -55,16 +59,11 @@ def score_gargalo(vals, suspeitas_total, total_escalas):
 
 # KPIs executivos
 df_kpi = safe_read("""
-SELECT
-    COUNT(*) as total_escalas,
-    COUNT(*) FILTER (WHERE via_app = true) as rastreado,
+SELECT COUNT(*) as total_escalas, COUNT(*) FILTER (WHERE via_app = true) as rastreado,
     COUNT(*) FILTER (WHERE via_app = false AND confirmado_manualmente = true) as sem_rastreamento,
-    COUNT(*) FILTER (WHERE
-        inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10
-    ) as suspeitas
-FROM airbyte.rotas_escalarota
-WHERE data >= DATE_TRUNC('month', CURRENT_DATE)
+    COUNT(*) FILTER (WHERE inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10) as suspeitas
+FROM airbyte.rotas_escalarota WHERE data >= DATE_TRUNC('month', CURRENT_DATE)
 """, pd.DataFrame([{'total_escalas':0,'rastreado':0,'sem_rastreamento':0,'suspeitas':0}]))
 
 df_kpi_extra = safe_read("""
@@ -78,200 +77,129 @@ SELECT
     (SELECT COUNT(*) FROM airbyte.ordens_chamado WHERE status = 'CO' AND emissao >= '2026-01-01') as em_oficina
 """, pd.DataFrame([{'contratos_risco':0,'chamados_abertos':0,'em_oficina':0}]))
 
-# Evolução mensal geral
 df_evolucao = safe_read("""
-SELECT
-    TO_CHAR(data,'YYYY-MM') as mes,
-    COUNT(*) as total,
+SELECT TO_CHAR(data,'YYYY-MM') as mes, COUNT(*) as total,
     COUNT(*) FILTER (WHERE via_app = true) as rastreado,
     COUNT(*) FILTER (WHERE via_app = false AND confirmado_manualmente = true) as sem_rast,
     COUNT(*) FILTER (WHERE anulada = true) as anuladas,
-    COUNT(*) FILTER (WHERE
-        inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10
-    ) as suspeitas
-FROM airbyte.rotas_escalarota
-WHERE data >= '2026-01-01' AND data IS NOT NULL
-GROUP BY TO_CHAR(data,'YYYY-MM')
-ORDER BY mes
+    COUNT(*) FILTER (WHERE inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10) as suspeitas
+FROM airbyte.rotas_escalarota WHERE data >= '2026-01-01' AND data IS NOT NULL
+GROUP BY TO_CHAR(data,'YYYY-MM') ORDER BY mes
 """)
 
-# Histórico mensal por cidade (PIVÔ)
 df_cidade_hist = safe_read("""
-SELECT
-    m.cidade,
-    TO_CHAR(e.data,'YYYY-MM') as mes,
-    COUNT(e.id) as total,
+SELECT m.cidade, TO_CHAR(e.data,'YYYY-MM') as mes, COUNT(e.id) as total,
     COUNT(e.id) FILTER (WHERE e.via_app = true) as rastreado,
     ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct,
-    COUNT(e.id) FILTER (WHERE
-        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    ) as suspeitas,
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas,
     COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as sem_rast
-FROM airbyte.motoristas_motorista m
-JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
-WHERE m.status = 'A' AND m.cidade IS NOT NULL
-  AND e.data >= '2026-04-01'
-GROUP BY m.cidade, TO_CHAR(e.data,'YYYY-MM')
-HAVING COUNT(e.id) >= 30
-ORDER BY m.cidade, mes
+FROM airbyte.motoristas_motorista m JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+WHERE m.status = 'A' AND m.cidade IS NOT NULL AND e.data >= '2026-04-01'
+GROUP BY m.cidade, TO_CHAR(e.data,'YYYY-MM') HAVING COUNT(e.id) >= 30 ORDER BY m.cidade, mes
 """)
 
-# Histórico mensal por GRE (apenas a partir de abr/2026)
 df_gre_hist = safe_read("""
-SELECT
-    g.nome as gre,
-    TO_CHAR(e.data,'YYYY-MM') as mes,
-    COUNT(e.id) as total,
+SELECT g.nome as gre, TO_CHAR(e.data,'YYYY-MM') as mes, COUNT(e.id) as total,
     COUNT(e.id) FILTER (WHERE e.via_app = true) as rastreado,
     ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct,
     COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as sem_rast,
     COUNT(e.id) FILTER (WHERE anulada = true) as anuladas,
-    COUNT(e.id) FILTER (WHERE
-        inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10
-    ) as suspeitas
-FROM airbyte.rotas_escalarota e
-JOIN airbyte.rotas_rota r ON r.id = e.rota_id
+    COUNT(e.id) FILTER (WHERE inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas
+FROM airbyte.rotas_escalarota e JOIN airbyte.rotas_rota r ON r.id = e.rota_id
 JOIN airbyte.escolas_gre g ON g.id = r.gre_id
-WHERE e.data >= '2026-04-01'
-  AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
-GROUP BY g.nome, TO_CHAR(e.data,'YYYY-MM')
-ORDER BY g.nome, mes
+WHERE e.data >= '2026-04-01' AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
+GROUP BY g.nome, TO_CHAR(e.data,'YYYY-MM') ORDER BY g.nome, mes
 """)
 
-# Fraude mensal
 df_fraude_mensal = safe_read("""
-SELECT
-    TO_CHAR(data,'YYYY-MM') as mes,
+SELECT TO_CHAR(data,'YYYY-MM') as mes,
     COUNT(*) FILTER (WHERE inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL) as com_horario,
-    COUNT(*) FILTER (WHERE
-        inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10
-    ) as suspeitas,
+    COUNT(*) FILTER (WHERE inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10) as suspeitas,
     COUNT(*) FILTER (WHERE via_app = false AND confirmado_manualmente = true) as sem_rast
-FROM airbyte.rotas_escalarota
-WHERE data >= '2026-01-01'
+FROM airbyte.rotas_escalarota WHERE data >= '2026-01-01'
 GROUP BY TO_CHAR(data,'YYYY-MM') ORDER BY mes
 """)
 
-# Empresas com fraude
 df_fraude_emp = safe_read("""
-SELECT
-    COALESCE(f.nome,'SEM FORNECEDOR') as empresa,
-    COUNT(DISTINCT m.id) as motoristas,
+SELECT COALESCE(f.nome,'SEM FORNECEDOR') as empresa, COUNT(DISTINCT m.id) as motoristas,
     COUNT(e.id) as total,
-    COUNT(e.id) FILTER (WHERE
-        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    ) as suspeitas,
-    ROUND(COUNT(e.id) FILTER (WHERE
-        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    )*100.0/NULLIF(COUNT(e.id),0),1) as pct_susp,
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas,
+    ROUND(COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0),1) as pct_susp,
     COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as sem_rast
-FROM airbyte.motoristas_fornecedor f
-JOIN airbyte.motoristas_motorista m ON m.fornecedor_id = f.id
+FROM airbyte.motoristas_fornecedor f JOIN airbyte.motoristas_motorista m ON m.fornecedor_id = f.id
 JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
-WHERE e.data >= '2026-01-01'
-  AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL
-GROUP BY f.nome HAVING COUNT(e.id) >= 20
-ORDER BY pct_susp DESC LIMIT 15
+WHERE e.data >= '2026-01-01' AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL
+GROUP BY f.nome HAVING COUNT(e.id) >= 20 ORDER BY pct_susp DESC LIMIT 15
 """)
 
-# Motoristas com fraude
 df_fraude_mot = safe_read("""
-SELECT
-    m.nome as motorista,
-    COALESCE(f.nome,'PRÓPRIO') as empresa,
-    m.cidade, g.nome as gre,
+SELECT m.nome as motorista, COALESCE(f.nome,'PRÓPRIO') as empresa, m.cidade, g.nome as gre,
     COUNT(e.id) as total,
-    COUNT(e.id) FILTER (WHERE
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    ) as suspeitas,
-    ROUND(COUNT(e.id) FILTER (WHERE
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    )*100.0/NULLIF(COUNT(e.id),0),1) as pct_susp,
+    COUNT(e.id) FILTER (WHERE EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas,
+    ROUND(COUNT(e.id) FILTER (WHERE EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0),1) as pct_susp,
     COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as sem_rast
-FROM airbyte.motoristas_motorista m
-JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+FROM airbyte.motoristas_motorista m JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
-WHERE m.status = 'A' AND e.data >= '2026-01-01'
-  AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL
-GROUP BY m.nome, f.nome, m.cidade, g.nome HAVING COUNT(e.id) >= 10
-ORDER BY pct_susp DESC LIMIT 20
+WHERE m.status = 'A' AND e.data >= '2026-01-01' AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL
+GROUP BY m.nome, f.nome, m.cidade, g.nome HAVING COUNT(e.id) >= 10 ORDER BY pct_susp DESC LIMIT 20
 """)
 
-# Contratos sem operação
 df_contratos = safe_read("""
-SELECT DISTINCT ON (ci.id)
-    ci.id as item, c.id as contrato_id, g.nome as gre, ci.valor_unitario,
-    v.placa, v.status as sv,
-    COALESCE(ct.nome,'Não definido') as turno,
-    (SELECT COUNT(*) FROM airbyte.rotas_escalarota e2
-     WHERE e2.veiculo_execucao_id = v.id AND e2.data >= CURRENT_DATE - INTERVAL '30 days'
-     AND e2.anulada = false) as esc30d
-FROM airbyte.contratos_itemcontrato ci
-JOIN airbyte.contratos_contrato c ON ci.contrato_id = c.id
+SELECT DISTINCT ON (ci.id) ci.id as item, c.id as contrato_id, g.nome as gre, ci.valor_unitario,
+    v.placa, v.status as sv, COALESCE(ct.nome,'Não definido') as turno,
+    (SELECT COUNT(*) FROM airbyte.rotas_escalarota e2 WHERE e2.veiculo_execucao_id = v.id AND e2.data >= CURRENT_DATE - INTERVAL '30 days' AND e2.anulada = false) as esc30d
+FROM airbyte.contratos_itemcontrato ci JOIN airbyte.contratos_contrato c ON ci.contrato_id = c.id
 LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
 LEFT JOIN airbyte.motoristas_motorista m ON m.veiculo_id = v.id AND m.status = 'A'
 LEFT JOIN airbyte.contratos_itemcontrato_turnos cit ON cit.itemcontrato_id = ci.id
 LEFT JOIN airbyte.contratos_turno ct ON ct.id = cit.turno_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
 WHERE c.status = 'A' AND ci.status = 'ATIVO' AND m.id IS NULL
-ORDER BY ci.id, ci.valor_unitario DESC
-LIMIT 60
+ORDER BY ci.id, ci.valor_unitario DESC LIMIT 60
 """)
 
 df_cont_mensal = safe_read("""
-SELECT TO_CHAR(data,'YYYY-MM') as mes,
-    COUNT(*) as total,
+SELECT TO_CHAR(data,'YYYY-MM') as mes, COUNT(*) as total,
     COUNT(*) FILTER (WHERE anulada=true) as anuladas,
     COUNT(*) FILTER (WHERE via_app=false AND confirmado_manualmente=true) as sem_rast
-FROM airbyte.rotas_escalarota
-WHERE contrato_rota_id IS NOT NULL AND data >= '2026-04-01'
+FROM airbyte.rotas_escalarota WHERE contrato_rota_id IS NOT NULL AND data >= '2026-04-01'
 GROUP BY TO_CHAR(data,'YYYY-MM') ORDER BY mes
 """)
 
-# Frota documentação
 df_frota = safe_read("""
-SELECT COALESCE(f.nome,'SEM FORNECEDOR') as fornecedor,
-    COUNT(DISTINCT v.id) as total,
+SELECT COALESCE(f.nome,'SEM FORNECEDOR') as fornecedor, COUNT(DISTINCT v.id) as total,
     COUNT(DISTINCT v.id) FILTER (WHERE v.status='A') as ativos,
     COUNT(DISTINCT v.id) FILTER (WHERE v.status='I') as inativos,
     COUNT(DISTINCT v.id) FILTER (WHERE v.multas=true) as multas,
     COUNT(DISTINCT v.id) FILTER (WHERE v.licenciamento::int < 2026) as lic_venc,
     COUNT(DISTINCT v.id) FILTER (WHERE v.licenciamento::int >= 2026) as lic_ok
-FROM airbyte.motoristas_fornecedor f
-JOIN airbyte.veiculos_veiculo v ON v.fornecedor_id = f.id
-WHERE v.licenciamento IS NOT NULL
-GROUP BY f.nome HAVING COUNT(DISTINCT v.id) >= 2
+FROM airbyte.motoristas_fornecedor f JOIN airbyte.veiculos_veiculo v ON v.fornecedor_id = f.id
+WHERE v.licenciamento IS NOT NULL GROUP BY f.nome HAVING COUNT(DISTINCT v.id) >= 2
 ORDER BY lic_venc DESC LIMIT 15
 """)
 
 df_manut_forn = safe_read("""
-SELECT COALESCE(f.nome,'SEM FORNECEDOR') as fornecedor,
-    COUNT(DISTINCT c.id) as chamados,
+SELECT COALESCE(f.nome,'SEM FORNECEDOR') as fornecedor, COUNT(DISTINCT c.id) as chamados,
     COUNT(DISTINCT c.id) FILTER (WHERE c.status='CA') as abertos,
     COUNT(DISTINCT c.id) FILTER (WHERE c.status='CO') as oficina,
     COUNT(DISTINCT c.veiculo_id) as veiculos,
     ROUND(AVG(CASE WHEN c.entrega IS NOT NULL AND c.emissao IS NOT NULL
         THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END)::numeric,1) as media_dias
-FROM airbyte.ordens_chamado c
-JOIN airbyte.veiculos_veiculo v ON v.id = c.veiculo_id
+FROM airbyte.ordens_chamado c JOIN airbyte.veiculos_veiculo v ON v.id = c.veiculo_id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
-WHERE c.emissao >= '2026-01-01'
-GROUP BY f.nome ORDER BY abertos DESC, chamados DESC LIMIT 12
+WHERE c.emissao >= '2026-01-01' GROUP BY f.nome ORDER BY abertos DESC, chamados DESC LIMIT 12
 """)
 
 df_veic_prob = safe_read("""
-SELECT v.placa, v.modelo, v.ano,
-    COALESCE(f.nome,'SEM FORN') as fornecedor,
-    g.nome as gre,
-    COUNT(DISTINCT c.id) as chamados,
-    COUNT(DISTINCT c.id) FILTER (WHERE c.status='CA') as abertos,
+SELECT v.placa, v.modelo, v.ano, COALESCE(f.nome,'SEM FORN') as fornecedor, g.nome as gre,
+    COUNT(DISTINCT c.id) as chamados, COUNT(DISTINCT c.id) FILTER (WHERE c.status='CA') as abertos,
     COUNT(DISTINCT c.id) FILTER (WHERE c.falha_humana=true) as falha_hum,
     ROUND(AVG(CASE WHEN c.entrega IS NOT NULL AND c.emissao IS NOT NULL
         THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END)::numeric,1) as media_dias,
@@ -280,59 +208,37 @@ SELECT v.placa, v.modelo, v.ano,
     COALESCE(SUM(p.valor * p.quantidade), 0) as custo_pecas,
     COALESCE(SUM(s.valor * s.quantidade), 0) as custo_servicos,
     COALESCE(SUM(p.valor * p.quantidade), 0) + COALESCE(SUM(s.valor * s.quantidade), 0) as custo_total
-FROM airbyte.veiculos_veiculo v
-JOIN airbyte.ordens_chamado c ON c.veiculo_id = v.id
+FROM airbyte.veiculos_veiculo v JOIN airbyte.ordens_chamado c ON c.veiculo_id = v.id
 LEFT JOIN airbyte.ordens_ordemservico os ON os.chamado_id = c.id
 LEFT JOIN airbyte.ordens_peca p ON p.os_id = os.id
 LEFT JOIN airbyte.ordens_servico s ON s.os_id = os.id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = v.gre_id
-WHERE c.emissao >= '2026-01-01'
-GROUP BY v.placa, v.modelo, v.ano, f.nome, g.nome
-HAVING COUNT(DISTINCT c.id) >= 5
-ORDER BY custo_total DESC NULLS LAST, chamados DESC
-LIMIT 15
+WHERE c.emissao >= '2026-01-01' GROUP BY v.placa, v.modelo, v.ano, f.nome, g.nome
+HAVING COUNT(DISTINCT c.id) >= 5 ORDER BY custo_total DESC NULLS LAST, chamados DESC LIMIT 15
 """)
 
-# Contratos noturnos de sábado — risco financeiro
 df_contratos_noite_sabado = safe_read("""
-SELECT
-    g.nome as gre,
-    ci.id as item_contrato,
-    v.placa,
-    COALESCE(f.nome,'SEM FORN') as fornecedor,
-    ci.valor_unitario,
-    ct.nome as turno,
-    -- Todos os turnos do mesmo item de contrato
+SELECT g.nome as gre, ci.id as item_contrato, v.placa, COALESCE(f.nome,'SEM FORN') as fornecedor,
+    ci.valor_unitario, ct.nome as turno,
     STRING_AGG(DISTINCT ct2.nome, ' + ' ORDER BY ct2.nome) as todos_turnos,
-    -- Sábados noturnos executados em 2026
-    COUNT(e.id) as escalas_sabado_noite,
-    COUNT(e.id) FILTER (WHERE e.anulada = false) as executadas,
+    COUNT(e.id) as escalas_sabado_noite, COUNT(e.id) FILTER (WHERE e.anulada = false) as executadas,
     COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as manuais_sem_gps,
-    -- Valor total pago nesses sábados (estimado)
     COUNT(e.id) FILTER (WHERE e.anulada = false) * ci.valor_unitario as valor_pago_estimado
-FROM airbyte.contratos_itemcontrato ci
-JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+FROM airbyte.contratos_itemcontrato ci JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
 JOIN airbyte.contratos_itemcontrato_turnos cit ON cit.itemcontrato_id = ci.id
 JOIN airbyte.contratos_turno ct ON ct.id = cit.turno_id
--- Todos os turnos do item para mostrar combinações
 JOIN airbyte.contratos_itemcontrato_turnos cit2 ON cit2.itemcontrato_id = ci.id
 JOIN airbyte.contratos_turno ct2 ON ct2.id = cit2.turno_id
 LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
-LEFT JOIN airbyte.rotas_escalarota e ON e.contrato_rota_id = ci.id
-    AND EXTRACT(DOW FROM e.data) = 6
-    AND e.data >= '2026-01-01'
-WHERE c.status = 'A'
-  AND ci.status = 'ATIVO'
-  AND ct.nome ILIKE '%noite%'
+LEFT JOIN airbyte.rotas_escalarota e ON e.contrato_rota_id = ci.id AND EXTRACT(DOW FROM e.data) = 6 AND e.data >= '2026-01-01'
+WHERE c.status = 'A' AND ci.status = 'ATIVO' AND ct.nome ILIKE '%noite%'
 GROUP BY g.nome, ci.id, v.placa, f.nome, ci.valor_unitario, ct.nome
-ORDER BY executadas DESC, ci.valor_unitario DESC
-LIMIT 25
+ORDER BY executadas DESC, ci.valor_unitario DESC LIMIT 25
 """)
 
-# Frota parada — visão geral por faixa de tempo
 df_frota_parada = safe_read("""
 SELECT situacao, COUNT(*) as veiculos,
     COUNT(*) FILTER (WHERE tipo_contrato_locacao = 'FROTA_PROPRIA') as propria,
@@ -340,414 +246,399 @@ SELECT situacao, COUNT(*) as veiculos,
     COUNT(*) FILTER (WHERE tipo_contrato_locacao = 'FROTA_PARCEIRO') as parceiro
 FROM (
     SELECT v.id, v.tipo_contrato_locacao,
-        CASE
-            WHEN MAX(e.data) IS NULL THEN 'Nunca registrou rota'
+        CASE WHEN MAX(e.data) IS NULL THEN 'Nunca registrou rota'
             WHEN MAX(e.data)::date < CURRENT_DATE - INTERVAL '90 days' THEN 'Parado há +90 dias'
             WHEN MAX(e.data)::date < CURRENT_DATE - INTERVAL '60 days' THEN 'Parado há 60-90 dias'
             WHEN MAX(e.data)::date < CURRENT_DATE - INTERVAL '30 days' THEN 'Parado há 30-60 dias'
-            ELSE 'Ativo (últimos 30 dias)'
-        END as situacao
-    FROM airbyte.veiculos_veiculo v
-    LEFT JOIN airbyte.rotas_escalarota e ON e.veiculo_execucao_id = v.id
-    WHERE v.status = 'A'
-    GROUP BY v.id, v.tipo_contrato_locacao
-) sub
-GROUP BY situacao
-ORDER BY veiculos DESC
+            ELSE 'Ativo (últimos 30 dias)' END as situacao
+    FROM airbyte.veiculos_veiculo v LEFT JOIN airbyte.rotas_escalarota e ON e.veiculo_execucao_id = v.id
+    WHERE v.status = 'A' GROUP BY v.id, v.tipo_contrato_locacao
+) sub GROUP BY situacao ORDER BY veiculos DESC
 """)
 
-# Veículos com contrato ativo que nunca registraram rota
 df_frota_nunca = safe_read("""
 SELECT DISTINCT ON (v.id) v.placa, v.modelo, v.tipo_contrato_locacao,
-    COALESCE(f.nome,'SEM FORNECEDOR') as fornecedor,
-    g.nome as gre,
-    ci.valor_unitario,
-    c.data_inicio, c.data_fim
-FROM airbyte.veiculos_veiculo v
-JOIN airbyte.contratos_itemcontrato ci ON ci.veiculo_id = v.id
+    COALESCE(f.nome,'SEM FORNECEDOR') as fornecedor, g.nome as gre, ci.valor_unitario, c.data_inicio, c.data_fim
+FROM airbyte.veiculos_veiculo v JOIN airbyte.contratos_itemcontrato ci ON ci.veiculo_id = v.id
 JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = v.gre_id
-WHERE v.status = 'A'
-  AND c.status = 'A' AND ci.status = 'ATIVO'
-  AND NOT EXISTS (
-    SELECT 1 FROM airbyte.rotas_escalarota e WHERE e.veiculo_execucao_id = v.id
-  )
-ORDER BY v.id, ci.valor_unitario DESC
-LIMIT 30
+WHERE v.status = 'A' AND c.status = 'A' AND ci.status = 'ATIVO'
+  AND NOT EXISTS (SELECT 1 FROM airbyte.rotas_escalarota e WHERE e.veiculo_execucao_id = v.id)
+ORDER BY v.id, ci.valor_unitario DESC LIMIT 30
 """)
 
-# Motoristas
 df_mot_rank = safe_read("""
-SELECT m.nome, COALESCE(f.nome,'PRÓPRIO') as empresa, m.cidade, g.nome as gre,
-    COUNT(e.id) as total,
+SELECT m.nome, COALESCE(f.nome,'PRÓPRIO') as empresa, m.cidade, g.nome as gre, COUNT(e.id) as total,
     ROUND(COUNT(e.id) FILTER (WHERE e.via_app=true)*100.0/NULLIF(COUNT(e.id),0),1) as pct_rast,
-    COUNT(e.id) FILTER (WHERE
-        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    ) as suspeitas,
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas,
     COUNT(e.id) FILTER (WHERE e.via_app=false AND e.confirmado_manualmente=true) as sem_rast
-FROM airbyte.motoristas_motorista m
-JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+FROM airbyte.motoristas_motorista m JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
-WHERE m.status='A' AND e.data >= '2026-04-01'
-GROUP BY m.nome, f.nome, m.cidade, g.nome
-HAVING COUNT(e.id) >= 20
-ORDER BY pct_rast ASC LIMIT 30
+WHERE m.status='A' AND e.data >= '2026-04-01' GROUP BY m.nome, f.nome, m.cidade, g.nome
+HAVING COUNT(e.id) >= 20 ORDER BY pct_rast ASC LIMIT 30
 """)
 
 df_mot_chamados = safe_read("""
-SELECT m.nome, COALESCE(f.nome,'PRÓPRIO') as empresa, g.nome as gre,
-    COUNT(c.id) as chamados,
-    COUNT(c.id) FILTER (WHERE c.falha_humana=true) as falha_hum,
-    COUNT(c.id) FILTER (WHERE c.status='CA') as abertos
-FROM airbyte.ordens_chamado c
-JOIN airbyte.motoristas_motorista m ON m.id = c.motorista_id
+SELECT m.nome, COALESCE(f.nome,'PRÓPRIO') as empresa, g.nome as gre, COUNT(c.id) as chamados,
+    COUNT(c.id) FILTER (WHERE c.falha_humana=true) as falha_hum, COUNT(c.id) FILTER (WHERE c.status='CA') as abertos
+FROM airbyte.ordens_chamado c JOIN airbyte.motoristas_motorista m ON m.id = c.motorista_id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
-WHERE c.emissao >= '2026-01-01'
-GROUP BY m.nome, f.nome, g.nome HAVING COUNT(c.id) >= 3
+WHERE c.emissao >= '2026-01-01' GROUP BY m.nome, f.nome, g.nome HAVING COUNT(c.id) >= 3
 ORDER BY chamados DESC LIMIT 15
 """)
 
 df_abast = safe_read("""
 SELECT m.nome, COALESCE(f.nome,'PRÓPRIO') as empresa, m.cidade, g.nome as gre,
-    COUNT(DISTINCT a.id) as abast,
-    COALESCE(SUM(a.litros),0) as litros,
-    COALESCE(SUM(a.valor_total),0) as gasto,
-    COUNT(DISTINCT e.id) as escalas,
-    CASE WHEN COUNT(DISTINCT e.id) > 0
-        THEN ROUND(COALESCE(SUM(a.valor_total),0)/COUNT(DISTINCT e.id),2) ELSE 0
-    END as rs_escala
+    COUNT(DISTINCT a.id) as abast, COALESCE(SUM(a.litros),0) as litros,
+    COALESCE(SUM(a.valor_total),0) as gasto, COUNT(DISTINCT e.id) as escalas,
+    CASE WHEN COUNT(DISTINCT e.id) > 0 THEN ROUND(COALESCE(SUM(a.valor_total),0)/COUNT(DISTINCT e.id),2) ELSE 0 END as rs_escala
 FROM airbyte.motoristas_motorista m
-LEFT JOIN airbyte.abastecimentos_abastecimento a ON a.motorista_id = m.id
-    AND a.datetime_abastecimento >= '2026-01-01' AND a.litros <= 1000
-LEFT JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
-    AND e.data >= '2026-01-01' AND e.anulada = false
+LEFT JOIN airbyte.abastecimentos_abastecimento a ON a.motorista_id = m.id AND a.datetime_abastecimento >= '2026-01-01' AND a.litros <= 1000
+LEFT JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id AND e.data >= '2026-01-01' AND e.anulada = false
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
-WHERE m.status='A'
-GROUP BY m.nome, f.nome, m.cidade, g.nome
-HAVING COALESCE(SUM(a.litros),0) BETWEEN 1 AND 50000
-ORDER BY gasto DESC LIMIT 20
+WHERE m.status='A' GROUP BY m.nome, f.nome, m.cidade, g.nome
+HAVING COALESCE(SUM(a.litros),0) BETWEEN 1 AND 50000 ORDER BY gasto DESC LIMIT 20
 """)
 
-# Fiscal
 df_fiscal = safe_read("""
-SELECT g.nome as gre, func.nome as fiscal,
-    COUNT(e.id) as total,
+SELECT g.nome as gre, func.nome as fiscal, COUNT(e.id) as total,
     ROUND(COUNT(e.id) FILTER (WHERE e.via_app=true AND e.data BETWEEN '2026-04-01' AND '2026-06-30')
         *100.0/NULLIF(COUNT(e.id) FILTER (WHERE e.data BETWEEN '2026-04-01' AND '2026-06-30'),0),1) as pct_q2,
     ROUND(COUNT(e.id) FILTER (WHERE e.via_app=true AND e.data >= '2026-07-01')
         *100.0/NULLIF(COUNT(e.id) FILTER (WHERE e.data >= '2026-07-01'),0),1) as pct_q3,
-    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL
-        AND EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-        AND e.data >= '2026-04-01') as suspeitas,
-    COUNT(e.id) FILTER (WHERE e.via_app=false AND e.confirmado_manualmente=true
-        AND e.data >= '2026-04-01') as sem_rast
-FROM airbyte.rotas_escalarota e
-JOIN airbyte.rotas_rota r ON r.id = e.rota_id
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10 AND e.data >= '2026-04-01') as suspeitas,
+    COUNT(e.id) FILTER (WHERE e.via_app=false AND e.confirmado_manualmente=true AND e.data >= '2026-04-01') as sem_rast
+FROM airbyte.rotas_escalarota e JOIN airbyte.rotas_rota r ON r.id = e.rota_id
 JOIN airbyte.escolas_gre g ON g.id = r.gre_id
 LEFT JOIN airbyte.motoristas_funcionario func ON func.id = g.fiscal_responsavel_id
-WHERE e.data >= '2026-04-01'
-  AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
+WHERE e.data >= '2026-04-01' AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
 GROUP BY g.nome, func.nome ORDER BY pct_q3 ASC
 """)
 
-# Combustível mensal por GRE e fiscal
 df_combust_gre = safe_read("""
 WITH abast AS (
-    SELECT
-        COALESCE(a.gre_id, m.gre_id) as gre_id,
-        TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
-        COUNT(DISTINCT m.id) as motoristas,
-        COUNT(DISTINCT a.id) as abastecimentos,
+    SELECT COALESCE(a.gre_id, m.gre_id) as gre_id, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
+        COUNT(DISTINCT m.id) as motoristas, COUNT(DISTINCT a.id) as abastecimentos,
         ROUND(SUM(COALESCE(a.litros,0))::numeric, 0) as total_litros,
         ROUND(SUM(COALESCE(a.valor_total,0))::numeric, 2) as total_gasto,
         COUNT(DISTINCT a.id) FILTER (WHERE a.id_profrotas IS NOT NULL) as convenio_profrotas
-    FROM airbyte.abastecimentos_abastecimento a
-    JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
-    WHERE a.datetime_abastecimento >= '2026-01-01'
-      AND (a.litros IS NULL OR a.litros <= 500)
-      AND (a.valor_total IS NULL OR a.valor_total >= 0)
+    FROM airbyte.abastecimentos_abastecimento a JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
+    WHERE a.datetime_abastecimento >= '2026-01-01' AND (a.litros IS NULL OR a.litros <= 500) AND (a.valor_total IS NULL OR a.valor_total >= 0)
     GROUP BY COALESCE(a.gre_id, m.gre_id), TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
 ),
 esc AS (
-    SELECT
-        m.gre_id,
-        TO_CHAR(e.data, 'YYYY-MM') as mes,
-        COUNT(e.id) as escalas_mes
-    FROM airbyte.rotas_escalarota e
-    JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id AND m.status = 'A'
-    WHERE e.data >= '2026-01-01' AND e.anulada = false
-    GROUP BY m.gre_id, TO_CHAR(e.data, 'YYYY-MM')
+    SELECT m.gre_id, TO_CHAR(e.data, 'YYYY-MM') as mes, COUNT(e.id) as escalas_mes
+    FROM airbyte.rotas_escalarota e JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id AND m.status = 'A'
+    WHERE e.data >= '2026-01-01' AND e.anulada = false GROUP BY m.gre_id, TO_CHAR(e.data, 'YYYY-MM')
 )
-SELECT
-    g.nome as gre,
-    func.nome as fiscal,
-    a.mes,
-    a.motoristas,
-    a.abastecimentos,
-    a.total_litros,
-    a.total_gasto,
-    a.convenio_profrotas,
-    COALESCE(esc.escalas_mes, 0) as escalas_mes,
-    ROUND(a.total_gasto / NULLIF(esc.escalas_mes, 0), 2) as rs_por_escala
-FROM abast a
-JOIN airbyte.escolas_gre g ON g.id = a.gre_id
+SELECT g.nome as gre, func.nome as fiscal, a.mes, a.motoristas, a.abastecimentos, a.total_litros, a.total_gasto, a.convenio_profrotas,
+    COALESCE(esc.escalas_mes, 0) as escalas_mes, ROUND(a.total_gasto / NULLIF(esc.escalas_mes, 0), 2) as rs_por_escala
+FROM abast a JOIN airbyte.escolas_gre g ON g.id = a.gre_id
 LEFT JOIN airbyte.motoristas_funcionario func ON func.id = g.fiscal_responsavel_id
-LEFT JOIN esc ON esc.gre_id = a.gre_id AND esc.mes = a.mes
-ORDER BY g.nome, a.mes
+LEFT JOIN esc ON esc.gre_id = a.gre_id AND esc.mes = a.mes ORDER BY g.nome, a.mes
 """)
 
-# Combustível mensal por empresa (pivô)
 df_combust_empresa = safe_read("""
 WITH abast AS (
-    SELECT
-        COALESCE(f.nome, 'PRÓPRIO') as empresa,
-        TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
-        COUNT(DISTINCT m.id) as motoristas,
-        ROUND(SUM(COALESCE(a.litros,0))::numeric, 0) as total_litros,
+    SELECT COALESCE(f.nome, 'PRÓPRIO') as empresa, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
+        COUNT(DISTINCT m.id) as motoristas, ROUND(SUM(COALESCE(a.litros,0))::numeric, 0) as total_litros,
         ROUND(SUM(COALESCE(a.valor_total,0))::numeric, 2) as total_gasto
-    FROM airbyte.abastecimentos_abastecimento a
-    JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
+    FROM airbyte.abastecimentos_abastecimento a JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
     LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
-    WHERE a.datetime_abastecimento >= '2026-01-01'
-      AND (a.litros IS NULL OR a.litros <= 500)
-      AND (a.valor_total IS NULL OR a.valor_total >= 0)
+    WHERE a.datetime_abastecimento >= '2026-01-01' AND (a.litros IS NULL OR a.litros <= 500) AND (a.valor_total IS NULL OR a.valor_total >= 0)
     GROUP BY f.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
 ),
 esc AS (
-    SELECT
-        COALESCE(f.nome, 'PRÓPRIO') as empresa,
-        TO_CHAR(e.data, 'YYYY-MM') as mes,
-        COUNT(e.id) as escalas_mes
-    FROM airbyte.rotas_escalarota e
-    JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id AND m.status = 'A'
+    SELECT COALESCE(f.nome, 'PRÓPRIO') as empresa, TO_CHAR(e.data, 'YYYY-MM') as mes, COUNT(e.id) as escalas_mes
+    FROM airbyte.rotas_escalarota e JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id AND m.status = 'A'
     LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
-    WHERE e.data >= '2026-01-01' AND e.anulada = false
-    GROUP BY f.nome, TO_CHAR(e.data, 'YYYY-MM')
+    WHERE e.data >= '2026-01-01' AND e.anulada = false GROUP BY f.nome, TO_CHAR(e.data, 'YYYY-MM')
 )
-SELECT
-    a.empresa,
-    a.mes,
-    a.motoristas,
-    a.total_litros,
-    a.total_gasto,
-    COALESCE(esc.escalas_mes, 0) as escalas_mes,
+SELECT a.empresa, a.mes, a.motoristas, a.total_litros, a.total_gasto, COALESCE(esc.escalas_mes, 0) as escalas_mes,
     ROUND(a.total_gasto / NULLIF(esc.escalas_mes, 0), 2) as rs_por_escala
-FROM abast a
-LEFT JOIN esc ON esc.empresa = a.empresa AND esc.mes = a.mes
-ORDER BY a.empresa, a.mes
+FROM abast a LEFT JOIN esc ON esc.empresa = a.empresa AND esc.mes = a.mes ORDER BY a.empresa, a.mes
 """)
 
-# Combustível mensal por motorista (top gastadores)
 df_combust_mot = safe_read("""
 WITH top_ids AS (
-    SELECT m.id
-    FROM airbyte.abastecimentos_abastecimento a
-    JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
-    WHERE a.datetime_abastecimento >= '2026-01-01'
-      AND (a.litros IS NULL OR a.litros <= 500)
-      AND (a.valor_total IS NULL OR a.valor_total >= 0)
-    GROUP BY m.id
-    ORDER BY SUM(a.valor_total) DESC
-    LIMIT 40
+    SELECT m.id FROM airbyte.abastecimentos_abastecimento a JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
+    WHERE a.datetime_abastecimento >= '2026-01-01' AND (a.litros IS NULL OR a.litros <= 500) AND (a.valor_total IS NULL OR a.valor_total >= 0)
+    GROUP BY m.id ORDER BY SUM(a.valor_total) DESC LIMIT 40
 ),
 abast AS (
-    SELECT
-        m.id as mot_id,
-        m.nome as motorista,
-        COALESCE(f.nome,'PRÓPRIO') as empresa,
-        m.cidade,
-        g.nome as gre,
+    SELECT m.id as mot_id, m.nome as motorista, COALESCE(f.nome,'PRÓPRIO') as empresa, m.cidade, g.nome as gre,
         TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
-        ROUND(SUM(a.litros)::numeric, 1) as litros,
-        ROUND(SUM(a.valor_total)::numeric, 2) as gasto
-    FROM airbyte.abastecimentos_abastecimento a
-    JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
-    JOIN top_ids t ON t.id = m.id
-    LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+        ROUND(SUM(a.litros)::numeric, 1) as litros, ROUND(SUM(a.valor_total)::numeric, 2) as gasto
+    FROM airbyte.abastecimentos_abastecimento a JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
+    JOIN top_ids t ON t.id = m.id LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
     LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
-    WHERE a.datetime_abastecimento >= '2026-01-01'
-      AND (a.litros IS NULL OR a.litros <= 500)
-      AND (a.valor_total IS NULL OR a.valor_total >= 0)
-    GROUP BY m.id, m.nome, f.nome, m.cidade, g.nome,
-             TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+    WHERE a.datetime_abastecimento >= '2026-01-01' AND (a.litros IS NULL OR a.litros <= 500) AND (a.valor_total IS NULL OR a.valor_total >= 0)
+    GROUP BY m.id, m.nome, f.nome, m.cidade, g.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
 ),
 esc AS (
-    SELECT
-        e.motorista_id as mot_id,
-        TO_CHAR(e.data, 'YYYY-MM') as mes,
-        COUNT(*) as escalas_mes
-    FROM airbyte.rotas_escalarota e
-    JOIN top_ids t ON t.id = e.motorista_id
-    WHERE e.data >= '2026-01-01' AND e.anulada = false
-    GROUP BY e.motorista_id, TO_CHAR(e.data, 'YYYY-MM')
+    SELECT e.motorista_id as mot_id, TO_CHAR(e.data, 'YYYY-MM') as mes, COUNT(*) as escalas_mes
+    FROM airbyte.rotas_escalarota e JOIN top_ids t ON t.id = e.motorista_id
+    WHERE e.data >= '2026-01-01' AND e.anulada = false GROUP BY e.motorista_id, TO_CHAR(e.data, 'YYYY-MM')
 )
-SELECT
-    a.motorista, a.empresa, a.cidade, a.gre, a.mes,
-    a.litros, a.gasto,
-    COALESCE(esc.escalas_mes, 0) as escalas_mes,
-    ROUND(a.gasto / NULLIF(esc.escalas_mes, 0), 2) as rs_por_escala
-FROM abast a
-LEFT JOIN esc ON esc.mot_id = a.mot_id AND esc.mes = a.mes
-ORDER BY a.motorista, a.mes
+SELECT a.motorista, a.empresa, a.cidade, a.gre, a.mes, a.litros, a.gasto,
+    COALESCE(esc.escalas_mes, 0) as escalas_mes, ROUND(a.gasto / NULLIF(esc.escalas_mes, 0), 2) as rs_por_escala
+FROM abast a LEFT JOIN esc ON esc.mot_id = a.mot_id AND esc.mes = a.mes ORDER BY a.motorista, a.mes
 """)
 
-# Ranking de bonificação por motorista (abril-agosto/2026)
 df_bonificacao_mot = safe_read("""
-SELECT
-    m.nome as motorista,
-    COALESCE(f.nome,'PRÓPRIO') as empresa,
-    m.cidade,
-    g.nome as gre,
-    COUNT(e.id) as total_escalas,
-    COUNT(e.id) FILTER (WHERE e.via_app = true) as rastreadas,
+SELECT m.nome as motorista, COALESCE(f.nome,'PRÓPRIO') as empresa, m.cidade, g.nome as gre,
+    COUNT(e.id) as total_escalas, COUNT(e.id) FILTER (WHERE e.via_app = true) as rastreadas,
     ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct_rastreado,
-    COUNT(e.id) FILTER (WHERE
-        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    ) as suspeitas,
-    ROUND(COUNT(e.id) FILTER (WHERE
-        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    )*100.0/NULLIF(COUNT(e.id),0),1) as pct_suspeitas,
-    ROUND(
-        (COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0))
-        - (COUNT(e.id) FILTER (WHERE
-            e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-            EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-        )*100.0/NULLIF(COUNT(e.id),0))*2
-    ,1) as score
-FROM airbyte.motoristas_motorista m
-JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas,
+    ROUND(COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0),1) as pct_suspeitas,
+    ROUND((COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0))
+        - (COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0))*2,1) as score
+FROM airbyte.motoristas_motorista m JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
-WHERE m.status = 'A' AND e.data >= '2026-04-01'
-GROUP BY m.nome, f.nome, m.cidade, g.nome
-HAVING COUNT(e.id) >= 30
-ORDER BY score DESC
-LIMIT 30
+WHERE m.status = 'A' AND e.data >= '2026-04-01' GROUP BY m.nome, f.nome, m.cidade, g.nome
+HAVING COUNT(e.id) >= 30 ORDER BY score DESC LIMIT 30
 """)
 
-# Ranking de bonificação por GRE
 df_bonificacao_gre = safe_read("""
-SELECT
-    g.nome as gre,
-    func.nome as fiscal,
-    COUNT(DISTINCT m.id) as motoristas,
-    COUNT(e.id) as total_escalas,
+SELECT g.nome as gre, func.nome as fiscal, COUNT(DISTINCT m.id) as motoristas, COUNT(e.id) as total_escalas,
     ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct_rastreado,
-    COUNT(e.id) FILTER (WHERE
-        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    ) as suspeitas,
-    ROUND(COUNT(e.id) FILTER (WHERE
-        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    )*100.0/NULLIF(COUNT(e.id),0),1) as pct_suspeitas,
-    ROUND(
-        (COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0))
-        - (COUNT(e.id) FILTER (WHERE
-            e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-            EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-        )*100.0/NULLIF(COUNT(e.id),0))*2
-    ,1) as score
-FROM airbyte.motoristas_motorista m
-JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas,
+    ROUND(COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0),1) as pct_suspeitas,
+    ROUND((COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0))
+        - (COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0))*2,1) as score
+FROM airbyte.motoristas_motorista m JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
 JOIN airbyte.escolas_gre g ON g.id = m.gre_id
 LEFT JOIN airbyte.motoristas_funcionario func ON func.id = g.fiscal_responsavel_id
 WHERE m.status = 'A' AND e.data >= '2026-04-01'
   AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
-GROUP BY g.nome, func.nome
-ORDER BY score DESC
+GROUP BY g.nome, func.nome ORDER BY score DESC
 """)
 
-# Ranking de bonificação por cidade
 df_bonificacao_cidade = safe_read("""
-SELECT
-    m.cidade,
-    COUNT(DISTINCT m.id) as motoristas,
-    COUNT(e.id) as total_escalas,
+SELECT m.cidade, COUNT(DISTINCT m.id) as motoristas, COUNT(e.id) as total_escalas,
     ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct_rastreado,
-    COUNT(e.id) FILTER (WHERE
-        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    ) as suspeitas,
-    ROUND(COUNT(e.id) FILTER (WHERE
-        e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-    )*100.0/NULLIF(COUNT(e.id),0),1) as pct_suspeitas,
-    ROUND(
-        (COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0))
-        - (COUNT(e.id) FILTER (WHERE
-            e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
-            EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
-        )*100.0/NULLIF(COUNT(e.id),0))*2
-    ,1) as score
-FROM airbyte.motoristas_motorista m
-JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas,
+    ROUND(COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0),1) as pct_suspeitas,
+    ROUND((COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0))
+        - (COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0))*2,1) as score
+FROM airbyte.motoristas_motorista m JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
 WHERE m.status = 'A' AND m.cidade IS NOT NULL AND e.data >= '2026-04-01'
-GROUP BY m.cidade
-HAVING COUNT(e.id) >= 100
-ORDER BY score DESC
-LIMIT 30
+GROUP BY m.cidade HAVING COUNT(e.id) >= 100 ORDER BY score DESC LIMIT 30
 """)
 
-# Total mensal geral de combustível (todas as GREs, para referência)
 df_combust_total = safe_read("""
-SELECT
-    TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
-    COUNT(*) as lancamentos,
+SELECT TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes, COUNT(*) as lancamentos,
     ROUND(SUM(COALESCE(a.litros,0))::numeric, 0) as litros,
     ROUND(SUM(COALESCE(a.valor_total,0))::numeric, 2) as valor_total,
     COUNT(*) FILTER (WHERE a.id_profrotas IS NOT NULL) as convenio
 FROM airbyte.abastecimentos_abastecimento a
-WHERE a.datetime_abastecimento >= '2026-01-01'
-  AND a.litros > 0 AND a.litros <= 500
-  AND a.valor_total > 0
-GROUP BY TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
-ORDER BY mes
+WHERE a.datetime_abastecimento >= '2026-01-01' AND a.litros > 0 AND a.litros <= 500 AND a.valor_total > 0
+GROUP BY TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') ORDER BY mes
 """)
 
-# Convênio ProFrotas por GRE e mês
 df_combust_convenio = safe_read("""
-SELECT
-    g.nome as gre,
-    TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
-    COUNT(*) as lancamentos,
-    ROUND(SUM(a.litros)::numeric, 0) as litros,
-    ROUND(SUM(a.valor_total)::numeric, 2) as valor_total
-FROM airbyte.abastecimentos_abastecimento a
-JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
+SELECT g.nome as gre, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes, COUNT(*) as lancamentos,
+    ROUND(SUM(a.litros)::numeric, 0) as litros, ROUND(SUM(a.valor_total)::numeric, 2) as valor_total
+FROM airbyte.abastecimentos_abastecimento a JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
-WHERE a.datetime_abastecimento >= '2026-01-01'
-  AND a.id_profrotas IS NOT NULL
-  AND a.litros > 0 AND a.valor_total > 0
-GROUP BY g.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
-ORDER BY g.nome, mes
+WHERE a.datetime_abastecimento >= '2026-01-01' AND a.id_profrotas IS NOT NULL AND a.litros > 0 AND a.valor_total > 0
+GROUP BY g.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') ORDER BY g.nome, mes
+""")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# NOVAS QUERIES — GERENTE DE CONTRATOS
+# ═════════════════════════════════════════════════════════════════════════════
+
+df_gc_resumo = safe_read("""
+SELECT COUNT(*) as total_ativos,
+    COUNT(*) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PROPRIA') as qtd_propria,
+    COUNT(*) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_TERCEIRIZADA') as qtd_terceirizada,
+    COUNT(*) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PARCEIRO') as qtd_parceiro,
+    COALESCE(SUM(ci.valor_unitario),0) as valor_diario_total,
+    COALESCE(SUM(ci.valor_unitario) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PROPRIA'),0) as valor_propria,
+    COALESCE(SUM(ci.valor_unitario) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_TERCEIRIZADA'),0) as valor_terceirizada,
+    COALESCE(SUM(ci.valor_unitario) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PARCEIRO'),0) as valor_parceiro
+FROM airbyte.contratos_itemcontrato ci JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+WHERE c.status = 'A' AND ci.status = 'ATIVO'
+""")
+
+df_gc_vencer = safe_read("""
+SELECT c.id as contrato_id, c.numero_contrato, c.data_fim, g.nome as gre,
+    COALESCE(f.nome,'PRÓPRIO') as fornecedor, v.placa, v.tipo_contrato_locacao as tipo_frota,
+    ci.valor_unitario, STRING_AGG(DISTINCT ct.nome, ', ') as turnos,
+    CASE WHEN c.data_fim <= CURRENT_DATE + INTERVAL '30 days' THEN '🔴 Até 30 dias'
+        WHEN c.data_fim <= CURRENT_DATE + INTERVAL '60 days' THEN '🟠 31-60 dias'
+        WHEN c.data_fim <= CURRENT_DATE + INTERVAL '90 days' THEN '🟡 61-90 dias'
+    END as alerta
+FROM airbyte.contratos_itemcontrato ci JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
+LEFT JOIN airbyte.contratos_itemcontrato_turnos cit ON cit.itemcontrato_id = ci.id
+LEFT JOIN airbyte.contratos_turno ct ON ct.id = cit.turno_id
+WHERE c.status = 'A' AND ci.status = 'ATIVO'
+  AND c.data_fim BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '90 days'
+GROUP BY c.id, c.numero_contrato, c.data_fim, g.nome, f.nome, v.placa, v.tipo_contrato_locacao, ci.valor_unitario
+ORDER BY c.data_fim, g.nome
+""")
+
+df_gc_frota_status = safe_read("""
+SELECT v.tipo_contrato_locacao as tipo, COUNT(DISTINCT v.id) as total,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'A') as ativos,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'I') as inativos,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'A' AND EXISTS (
+        SELECT 1 FROM airbyte.rotas_escalarota e WHERE e.veiculo_execucao_id = v.id AND e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false)) as em_operacao,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'A' AND NOT EXISTS (
+        SELECT 1 FROM airbyte.rotas_escalarota e WHERE e.veiculo_execucao_id = v.id AND e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false)) as ociosos,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'A' AND ci.id IS NOT NULL AND c.status = 'A' AND ci.status = 'ATIVO') as com_contrato,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'A' AND (ci.id IS NULL OR c.status != 'A' OR ci.status != 'ATIVO')) as sem_contrato
+FROM airbyte.veiculos_veiculo v
+LEFT JOIN airbyte.contratos_itemcontrato ci ON ci.veiculo_id = v.id AND ci.status = 'ATIVO'
+LEFT JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id AND c.status = 'A'
+WHERE v.tipo_contrato_locacao IN ('FROTA_PROPRIA','FROTA_TERCEIRIZADA','FROTA_PARCEIRO')
+GROUP BY v.tipo_contrato_locacao
+""")
+
+df_gc_gap_gre = safe_read("""
+WITH frota_gre AS (
+    SELECT COALESCE(ci.gre_id, v.gre_id) as gre_id,
+        COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'A') as frota_ativa,
+        COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'A' AND EXISTS (
+            SELECT 1 FROM airbyte.rotas_escalarota e WHERE e.veiculo_execucao_id = v.id AND e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false)) as frota_operando
+    FROM airbyte.veiculos_veiculo v
+    LEFT JOIN airbyte.contratos_itemcontrato ci ON ci.veiculo_id = v.id
+    LEFT JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id AND c.status = 'A' AND ci.status = 'ATIVO'
+    GROUP BY COALESCE(ci.gre_id, v.gre_id)
+),
+demanda_gre AS (
+    SELECT m.gre_id, COUNT(DISTINCT e.id) as escalas_30d, COUNT(DISTINCT e.veiculo_execucao_id) as veiculos_usados
+    FROM airbyte.rotas_escalarota e JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id
+    WHERE e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false GROUP BY m.gre_id
+)
+SELECT g.nome as gre, COALESCE(f.frota_ativa, 0) as frota_ativa, COALESCE(f.frota_operando, 0) as frota_operando,
+    COALESCE(d.escalas_30d, 0) as escalas_30d, COALESCE(d.veiculos_usados, 0) as veiculos_usados,
+    ROUND(COALESCE(f.frota_operando,0)::numeric / NULLIF(f.frota_ativa,0) * 100, 1) as utilizacao_pct,
+    CASE WHEN COALESCE(f.frota_ativa,0) = 0 THEN 'SEM FROTA'
+        WHEN COALESCE(d.veiculos_usados,0) > COALESCE(f.frota_ativa,0) * 1.2 THEN 'SOBRECARGA'
+        WHEN COALESCE(f.frota_operando,0) < COALESCE(f.frota_ativa,0) * 0.5 THEN 'FROTA OCIOSA'
+        WHEN COALESCE(d.veiculos_usados,0) > COALESCE(f.frota_ativa,0) * 0.9 THEN 'LIMITE'
+        ELSE 'EQUILIBRADO' END as situacao
+FROM airbyte.escolas_gre g
+LEFT JOIN frota_gre f ON f.gre_id = g.id LEFT JOIN demanda_gre d ON d.gre_id = g.id
+WHERE g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
+ORDER BY escalas_30d DESC
+""")
+
+df_gc_custo_tipo = safe_read("""
+WITH custo_mensal AS (
+    SELECT v.tipo_contrato_locacao as tipo, TO_CHAR(e.data,'YYYY-MM') as mes,
+        COUNT(DISTINCT e.id) as escalas, COUNT(DISTINCT v.id) as veiculos, SUM(ci.valor_unitario) as custo_contrato
+    FROM airbyte.rotas_escalarota e JOIN airbyte.veiculos_veiculo v ON v.id = e.veiculo_execucao_id
+    LEFT JOIN airbyte.contratos_itemcontrato ci ON ci.veiculo_id = v.id
+    LEFT JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id AND c.status = 'A' AND ci.status = 'ATIVO'
+    WHERE e.data >= CURRENT_DATE - INTERVAL '90 days' AND e.anulada = false
+      AND v.tipo_contrato_locacao IN ('FROTA_PROPRIA','FROTA_TERCEIRIZADA','FROTA_PARCEIRO')
+    GROUP BY v.tipo_contrato_locacao, TO_CHAR(e.data,'YYYY-MM')
+)
+SELECT tipo, ROUND(AVG(escalas)::numeric,0) as media_escalas, ROUND(AVG(veiculos)::numeric,0) as media_veiculos,
+    ROUND(AVG(custo_contrato)::numeric,2) as media_custo_mensal,
+    ROUND(AVG(custo_contrato)/NULLIF(AVG(escalas),0),2) as custo_por_escala,
+    ROUND(AVG(custo_contrato)/NULLIF(AVG(veiculos),0),2) as custo_por_veiculo
+FROM custo_mensal GROUP BY tipo ORDER BY custo_por_escala
+""")
+
+df_gc_cont_detalhes = safe_read("""
+SELECT c.id as contrato_id, c.numero_contrato, c.data_inicio, c.data_fim, g.nome as gre,
+    COALESCE(f.nome,'FROTA PRÓPRIA') as fornecedor, v.placa, v.modelo, v.ano,
+    v.tipo_contrato_locacao as tipo_frota, ci.valor_unitario, STRING_AGG(DISTINCT ct.nome, ', ') as turnos,
+    (SELECT COUNT(*) FROM airbyte.rotas_escalarota e WHERE e.contrato_rota_id = ci.id AND e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false) as escalas_30d,
+    (SELECT COUNT(*) FROM airbyte.rotas_escalarota e WHERE e.contrato_rota_id = ci.id AND e.data >= CURRENT_DATE - INTERVAL '7 days' AND e.anulada = false) as escalas_7d,
+    CASE WHEN c.data_fim <= CURRENT_DATE + INTERVAL '30 days' THEN 'VENCENDO'
+        WHEN v.status = 'I' THEN 'VEICULO INATIVO'
+        WHEN NOT EXISTS (SELECT 1 FROM airbyte.rotas_escalarota e WHERE e.contrato_rota_id = ci.id AND e.data >= CURRENT_DATE - INTERVAL '30 days') THEN 'PARADO +30D'
+        ELSE 'ATIVO' END as situacao
+FROM airbyte.contratos_itemcontrato ci JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
+LEFT JOIN airbyte.contratos_itemcontrato_turnos cit ON cit.itemcontrato_id = ci.id
+LEFT JOIN airbyte.contratos_turno ct ON ct.id = cit.turno_id
+WHERE c.status = 'A' AND ci.status = 'ATIVO'
+GROUP BY c.id, c.numero_contrato, c.data_inicio, c.data_fim, g.nome, f.nome, v.placa, v.modelo, v.ano, v.tipo_contrato_locacao, ci.valor_unitario, ci.id, v.status
+ORDER BY g.nome, c.data_fim LIMIT 200
+""")
+
+df_gc_historico = safe_read("""
+SELECT TO_CHAR(c.data_inicio,'YYYY-MM') as mes, COUNT(*) as novos,
+    COUNT(*) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PROPRIA') as propria,
+    COUNT(*) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_TERCEIRIZADA') as terceirizada,
+    COUNT(*) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PARCEIRO') as parceiro,
+    COALESCE(SUM(ci.valor_unitario),0) as valor_diario
+FROM airbyte.contratos_contrato c JOIN airbyte.contratos_itemcontrato ci ON ci.contrato_id = c.id
+LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+WHERE c.status = 'A' AND ci.status = 'ATIVO' AND c.data_inicio >= '2026-01-01'
+GROUP BY TO_CHAR(c.data_inicio,'YYYY-MM') ORDER BY mes
+""")
+
+df_gc_demanda_diaria = safe_read("""
+SELECT g.nome as gre, COUNT(DISTINCT e.data) as dias_com_escala, COUNT(e.id) as total_escalas,
+    ROUND(COUNT(e.id)::numeric / NULLIF(COUNT(DISTINCT e.data),0), 1) as media_escalas_dia,
+    COUNT(DISTINCT e.veiculo_execucao_id) as veiculos_distintos,
+    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PROPRIA') as veic_proprios,
+    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_TERCEIRIZADA') as veic_terceirizados,
+    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PARCEIRO') as veic_parceiros
+FROM airbyte.rotas_escalarota e JOIN airbyte.veiculos_veiculo v ON v.id = e.veiculo_execucao_id
+JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id
+JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+WHERE e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false
+  AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
+GROUP BY g.nome ORDER BY total_escalas DESC
+""")
+
+df_gc_ociosa_contrato = safe_read("""
+SELECT g.nome as gre, v.placa, v.modelo, v.tipo_contrato_locacao as tipo,
+    COALESCE(f.nome,'PRÓPRIO') as fornecedor, ci.valor_unitario, c.data_fim as contrato_fim,
+    MAX(e.data) as ultima_rota, CURRENT_DATE - MAX(e.data)::date as dias_parado,
+    ci.valor_unitario * (CURRENT_DATE - MAX(e.data)::date) as valor_risco_acumulado
+FROM airbyte.veiculos_veiculo v JOIN airbyte.contratos_itemcontrato ci ON ci.veiculo_id = v.id
+JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+LEFT JOIN airbyte.rotas_escalarota e ON e.veiculo_execucao_id = v.id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
+WHERE c.status = 'A' AND ci.status = 'ATIVO' AND v.status = 'A'
+GROUP BY g.nome, v.placa, v.modelo, v.tipo_contrato_locacao, f.nome, ci.valor_unitario, c.data_fim
+HAVING MAX(e.data) IS NULL OR MAX(e.data)::date < CURRENT_DATE - INTERVAL '30 days'
+ORDER BY dias_parado DESC NULLS LAST, valor_unitario DESC LIMIT 40
 """)
 
 conn.close()
 print("✅ Queries concluídas. Processando...")
 
 # ─── PROCESSAR PIVÔ DE CIDADES ─────────────────────────────────────────────
-pivot = {}  # cidade -> {mes -> {total, pct, suspeitas, sem_rast}}
+pivot = {}
 if not df_cidade_hist.empty:
     for _, r in df_cidade_hist.iterrows():
-        c = r['cidade']
-        m = r['mes']
+        c = r['cidade']; m = r['mes']
         if c not in pivot: pivot[c] = {}
-        pivot[c][m] = {
-            'total': int(r['total']),
-            'pct': float(r['pct'] or 0),
-            'suspeitas': int(r['suspeitas'] or 0),
-            'sem_rast': int(r['sem_rast'] or 0)
-        }
+        pivot[c][m] = {'total': int(r['total']), 'pct': float(r['pct'] or 0), 'suspeitas': int(r['suspeitas'] or 0), 'sem_rast': int(r['sem_rast'] or 0)}
 
-# Calcular scores e tendências por cidade
 cidade_scores = []
 for cidade, dados in pivot.items():
     vals = [dados.get(m, {}).get('pct') for m in MESES_COLS]
@@ -757,14 +648,9 @@ for cidade, dados in pivot.items():
     v_clean = [x for x in vals if x is not None]
     score = score_gargalo(v_clean, total_susp, total_geral)
     icon, status, cls = tendencia(v_clean)
-    cidade_scores.append({
-        'cidade': cidade, 'vals': vals, 'total': total_geral,
-        'suspeitas': total_susp, 'sem_rast': total_sem,
-        'score': score, 'icon': icon, 'status': status, 'cls': cls
-    })
+    cidade_scores.append({'cidade': cidade, 'vals': vals, 'total': total_geral, 'suspeitas': total_susp, 'sem_rast': total_sem, 'score': score, 'icon': icon, 'status': status, 'cls': cls})
 cidade_scores.sort(key=lambda x: -x['score'])
 
-# ─── GERAR HTML DA TABELA PIVÔ ─────────────────────────────────────────────
 def cor_pct(pct):
     if pct is None: return "color:#334155"
     if pct == 0: return "color:#ef4444;font-weight:700"
@@ -781,29 +667,18 @@ def html_pivo():
     if not cidade_scores: return "<tr><td colspan='8'>Sem dados</td></tr>"
     h = ""
     for r in cidade_scores:
-        h += f"<tr><td><b>{r['cidade']}</b></td>"
-        h += f"<td style='text-align:center'>{r['total']:,}</td>"
+        h += f"<tr><td><b>{r['cidade']}</b></td><td style='text-align:center'>{r['total']:,}</td>"
         for pct in r['vals']:
-            if pct is None:
-                h += "<td style='text-align:center;color:#334155'>—</td>"
-            else:
-                h += f"<td style='text-align:center;{cor_pct(pct)}'>{pct}%</td>"
-        h += f"<td style='text-align:center'>{r['suspeitas']:,}</td>"
-        h += f"<td><span class='tag {cls_status(r['cls'])}'>{r['icon']} {r['status']}</span></td>"
-        h += f"<td style='text-align:right;color:#64748b;font-size:11px'>{r['score']}</td></tr>"
+            h += "<td style='text-align:center;color:#334155'>—</td>" if pct is None else f"<td style='text-align:center;{cor_pct(pct)}'>{pct}%</td>"
+        h += f"<td style='text-align:center'>{r['suspeitas']:,}</td><td><span class='tag {cls_status(r['cls'])}'>{r['icon']} {r['status']}</span></td><td style='text-align:right;color:#64748b;font-size:11px'>{r['score']}</td></tr>"
     return h
 
-# Tabela pivô de GREs
 gre_pivot = {}
 if not df_gre_hist.empty:
     for _, r in df_gre_hist.iterrows():
         g = r['gre']; m = r['mes']
         if g not in gre_pivot: gre_pivot[g] = {}
-        gre_pivot[g][m] = {
-            'total': int(r['total']), 'pct': float(r['pct'] or 0),
-            'sem_rast': int(r['sem_rast'] or 0), 'suspeitas': int(r['suspeitas'] or 0),
-            'anuladas': int(r['anuladas'] or 0)
-        }
+        gre_pivot[g][m] = {'total': int(r['total']), 'pct': float(r['pct'] or 0), 'sem_rast': int(r['sem_rast'] or 0), 'suspeitas': int(r['suspeitas'] or 0), 'anuladas': int(r['anuladas'] or 0)}
 
 def html_gre_pivo():
     if not gre_pivot: return "<tr><td colspan='9'>Sem dados</td></tr>"
@@ -818,17 +693,9 @@ def html_gre_pivo():
         suspeitas = sum(dados.get(m,{}).get('suspeitas',0) for m in MESES_COLS)
         h += f"<tr><td><b>{gre}</b></td><td style='text-align:center'>{total:,}</td>"
         for pct in vals:
-            if pct is None: h += "<td style='text-align:center;color:#334155'>—</td>"
-            else: h += f"<td style='text-align:center;{cor_pct(pct)}'>{pct}%</td>"
-        h += f"<td style='text-align:center'>{sem_rast:,}</td>"
-        h += f"<td style='text-align:center;color:#f97316'>{suspeitas:,}</td>"
-        h += f"<td><span class='tag {cls_status(cls)}'>{icon} {status}</span></td></tr>"
+            h += "<td style='text-align:center;color:#334155'>—</td>" if pct is None else f"<td style='text-align:center;{cor_pct(pct)}'>{pct}%</td>"
+        h += f"<td style='text-align:center'>{sem_rast:,}</td><td style='text-align:center;color:#f97316'>{suspeitas:,}</td><td><span class='tag {cls_status(cls)}'>{icon} {status}</span></td></tr>"
     return h
-
-# ─── FUNÇÕES DE TABELAS ─────────────────────────────────────────────────────
-def fmt(v):
-    try: return f"{float(v):,.2f}".replace(",","X").replace(".",",").replace("X",".")
-    except: return "0,00"
 
 def html_fraude_emp():
     if df_fraude_emp.empty: return "<tr><td colspan='6'>Sem dados</td></tr>"
@@ -836,9 +703,7 @@ def html_fraude_emp():
     for _, r in df_fraude_emp.iterrows():
         pct = float(r.get('pct_susp') or 0)
         cls = "color:#ef4444;font-weight:700" if pct > 20 else ("color:#f97316" if pct > 10 else "")
-        h += f"<tr><td><b>{r['empresa']}</b></td><td>{int(r['motoristas'])}</td>"
-        h += f"<td>{int(r['total']):,}</td><td>{int(r.get('suspeitas',0)):,}</td>"
-        h += f"<td style='{cls}'>{pct}%</td><td>{int(r.get('sem_rast',0)):,}</td></tr>"
+        h += f"<tr><td><b>{r['empresa']}</b></td><td>{int(r['motoristas'])}</td><td>{int(r['total']):,}</td><td>{int(r.get('suspeitas',0)):,}</td><td style='{cls}'>{pct}%</td><td>{int(r.get('sem_rast',0)):,}</td></tr>"
     return h
 
 def html_fraude_mot():
@@ -847,34 +712,23 @@ def html_fraude_mot():
     for _, r in df_fraude_mot.iterrows():
         pct = float(r.get('pct_susp') or 0)
         cls = "color:#ef4444;font-weight:700" if pct > 20 else ""
-        h += f"<tr><td><b>{r['motorista']}</b></td><td>{r['empresa']}</td>"
-        h += f"<td>{r.get('cidade','')}</td><td>{r.get('gre','')}</td>"
-        h += f"<td>{int(r.get('suspeitas',0))}</td><td style='{cls}'>{pct}%</td>"
-        h += f"<td>{int(r.get('sem_rast',0))}</td></tr>"
+        h += f"<tr><td><b>{r['motorista']}</b></td><td>{r['empresa']}</td><td>{r.get('cidade','')}</td><td>{r.get('gre','')}</td><td>{int(r.get('suspeitas',0))}</td><td style='{cls}'>{pct}%</td><td>{int(r.get('sem_rast',0))}</td></tr>"
     return h
 
 def html_contratos_noite():
     if df_contratos_noite_sabado.empty: return "<tr><td colspan='9'>Sem dados</td></tr>"
     h = ""
     for _, r in df_contratos_noite_sabado.iterrows():
-        exec_ = int(r.get('executadas') or 0)
-        manuais = int(r.get('manuais_sem_gps') or 0)
-        val = float(r.get('valor_unitario') or 0)
-        pago = float(r.get('valor_pago_estimado') or 0)
-        turnos = str(r.get('todos_turnos') or r.get('turno','Noite'))
-        tem_combo = '+' in turnos
+        exec_ = int(r.get('executadas') or 0); manuais = int(r.get('manuais_sem_gps') or 0)
+        val = float(r.get('valor_unitario') or 0); pago = float(r.get('valor_pago_estimado') or 0)
+        turnos = str(r.get('todos_turnos') or r.get('turno','Noite')); tem_combo = '+' in turnos
         cor_turnos = "color:#ef4444;font-weight:700" if tem_combo else "color:#f59e0b"
-        h += f"<tr>"
-        h += f"<td>{r.get('gre','—')}</td>"
-        h += f"<td><b>{r.get('placa','—')}</b></td>"
-        h += f"<td>{r.get('fornecedor','—')}</td>"
-        h += f"<td style='text-align:right'>R$ {fmt(val)}/dia</td>"
-        h += f"<td style='{cor_turnos}'>{turnos}</td>"
+        h += f"<tr><td>{r.get('gre','—')}</td><td><b>{r.get('placa','—')}</b></td><td>{r.get('fornecedor','—')}</td>"
+        h += f"<td style='text-align:right'>R$ {fmt(val)}/dia</td><td style='{cor_turnos}'>{turnos}</td>"
         h += f"<td style='text-align:center'>{int(r.get('escalas_sabado_noite') or 0)}</td>"
         h += f"<td style='text-align:center;color:#f59e0b;font-weight:700'>{exec_}</td>"
         h += f"<td style='text-align:center;{'color:#ef4444' if manuais > 0 else ''}'>{manuais}</td>"
-        h += f"<td style='text-align:right;color:#ef4444;font-weight:700'>R$ {fmt(pago)}</td>"
-        h += f"</tr>"
+        h += f"<td style='text-align:right;color:#ef4444;font-weight:700'>R$ {fmt(pago)}</td></tr>"
     return h
 
 def html_contratos():
@@ -883,66 +737,39 @@ def html_contratos():
     for _, r in df_contratos.iterrows():
         sv = "🔴 INATIVO" if r.get('sv') == 'I' else "🟡 SEM MOTORISTA"
         cor = "color:#ef4444" if r.get('sv') == 'I' else "color:#f59e0b"
-        contrato_id = r.get('contrato_id','—')
-        item_id = r.get('item','—')
-        h += f"<tr>"
-        h += f"<td>{r.get('gre','—')}</td>"
-        h += f"<td><b>{r.get('placa','—')}</b></td>"
-        h += f"<td style='text-align:center;color:#a78bfa;font-weight:700'>#{contrato_id}</td>"
-        h += f"<td style='text-align:center;color:#64748b;font-size:11px'>item {item_id}</td>"
-        h += f"<td>R$ {fmt(r.get('valor_unitario',0))}/dia</td>"
-        h += f"<td>{r.get('turno','—')}</td>"
-        h += f"<td style='{cor}'>{sv}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('esc30d',0))}</td>"
-        h += "</tr>"
+        h += f"<tr><td>{r.get('gre','—')}</td><td><b>{r.get('placa','—')}</b></td><td style='text-align:center;color:#a78bfa;font-weight:700'>#{r.get('contrato_id','—')}</td>"
+        h += f"<td style='text-align:center;color:#64748b;font-size:11px'>item {r.get('item','—')}</td><td>R$ {fmt(r.get('valor_unitario',0))}/dia</td>"
+        h += f"<td>{r.get('turno','—')}</td><td style='{cor}'>{sv}</td><td style='text-align:center'>{int(r.get('esc30d',0))}</td></tr>"
     return h
 
 def html_frota_parada():
     if df_frota_parada.empty: return "<tr><td colspan='5'>Sem dados</td></tr>"
     h = ""
-    cores = {
-        'Ativo (últimos 30 dias)': 'color:#22c55e;font-weight:700',
-        'Parado há 30-60 dias': 'color:#f59e0b',
-        'Parado há 60-90 dias': 'color:#f97316;font-weight:700',
-        'Parado há +90 dias': 'color:#ef4444;font-weight:700',
-        'Nunca registrou rota': 'color:#a78bfa;font-weight:700',
-    }
+    cores = {'Ativo (últimos 30 dias)': 'color:#22c55e;font-weight:700','Parado há 30-60 dias': 'color:#f59e0b','Parado há 60-90 dias': 'color:#f97316;font-weight:700','Parado há +90 dias': 'color:#ef4444;font-weight:700','Nunca registrou rota': 'color:#a78bfa;font-weight:700'}
     for _, r in df_frota_parada.iterrows():
-        sit = r['situacao']
-        cor = cores.get(sit, '')
-        h += f"<tr><td style='{cor}'>{sit}</td>"
-        h += f"<td style='text-align:center;font-weight:700'>{int(r.get('veiculos',0))}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('propria',0))}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('terceirizada',0))}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('parceiro',0))}</td></tr>"
+        sit = r['situacao']; cor = cores.get(sit, '')
+        h += f"<tr><td style='{cor}'>{sit}</td><td style='text-align:center;font-weight:700'>{int(r.get('veiculos',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('propria',0))}</td><td style='text-align:center'>{int(r.get('terceirizada',0))}</td><td style='text-align:center'>{int(r.get('parceiro',0))}</td></tr>"
     return h
 
 def html_frota_nunca():
     if df_frota_nunca.empty: return "<tr><td colspan='6'>Sem dados</td></tr>"
     h = ""
     for _, r in df_frota_nunca.iterrows():
-        val = float(r.get('valor_unitario') or 0)
-        cor = 'color:#ef4444;font-weight:700' if val >= 1000 else 'color:#f59e0b'
+        val = float(r.get('valor_unitario') or 0); cor = 'color:#ef4444;font-weight:700' if val >= 1000 else 'color:#f59e0b'
         inicio = str(r.get('data_inicio','—'))[:10] if r.get('data_inicio') else '—'
-        h += f"<tr><td><b>{r.get('placa','—')}</b></td>"
-        h += f"<td>{r.get('modelo','—')}</td>"
-        h += f"<td>{r.get('fornecedor','—')}</td>"
-        h += f"<td>{r.get('gre','—')}</td>"
-        h += f"<td style='{cor}'>R$ {fmt(val)}/dia</td>"
-        h += f"<td>{inicio}</td></tr>"
+        h += f"<tr><td><b>{r.get('placa','—')}</b></td><td>{r.get('modelo','—')}</td><td>{r.get('fornecedor','—')}</td><td>{r.get('gre','—')}</td>"
+        h += f"<td style='{cor}'>R$ {fmt(val)}/dia</td><td>{inicio}</td></tr>"
     return h
 
 def html_frota():
     if df_frota.empty: return "<tr><td colspan='7'>Sem dados</td></tr>"
     h = ""
     for _, r in df_frota.iterrows():
-        tot = max(int(r.get('total',1)),1)
-        pct_v = round(int(r.get('lic_venc',0))/tot*100)
+        tot = max(int(r.get('total',1)),1); pct_v = round(int(r.get('lic_venc',0))/tot*100)
         cls = "color:#ef4444;font-weight:700" if pct_v > 50 else ("color:#f97316" if pct_v > 20 else "")
-        h += f"<tr><td><b>{r['fornecedor']}</b></td><td>{int(r.get('total',0))}</td>"
-        h += f"<td>{int(r.get('ativos',0))}</td><td>{int(r.get('inativos',0))}</td>"
-        h += f"<td style='{cls}'>{int(r.get('lic_venc',0))} ({pct_v}%)</td>"
-        h += f"<td>{int(r.get('lic_ok',0))}</td><td>{int(r.get('multas',0))}</td></tr>"
+        h += f"<tr><td><b>{r['fornecedor']}</b></td><td>{int(r.get('total',0))}</td><td>{int(r.get('ativos',0))}</td><td>{int(r.get('inativos',0))}</td>"
+        h += f"<td style='{cls}'>{int(r.get('lic_venc',0))} ({pct_v}%)</td><td>{int(r.get('lic_ok',0))}</td><td>{int(r.get('multas',0))}</td></tr>"
     return h
 
 def html_mot():
@@ -951,21 +778,17 @@ def html_mot():
     for _, r in df_mot_rank.iterrows():
         pct = float(r.get('pct_rast') or 0)
         cls = "color:#ef4444;font-weight:700" if pct < 20 else ("color:#f59e0b" if pct < 50 else "color:#22c55e")
-        h += f"<tr><td><b>{r['nome']}</b></td><td>{r['empresa']}</td>"
-        h += f"<td>{r.get('cidade','')}</td><td>{r.get('gre','')}</td>"
+        h += f"<tr><td><b>{r['nome']}</b></td><td>{r['empresa']}</td><td>{r.get('cidade','')}</td><td>{r.get('gre','')}</td>"
         h += f"<td>{int(r.get('total',0)):,}</td><td style='{cls}'>{pct}%</td>"
-        h += f"<td style='{'color:#ef4444' if int(r.get('suspeitas',0))>5 else ''}'>{int(r.get('suspeitas',0))}</td>"
-        h += f"<td>{int(r.get('sem_rast',0))}</td></tr>"
+        h += f"<td style='{'color:#ef4444' if int(r.get('suspeitas',0))>5 else ''}'>{int(r.get('suspeitas',0))}</td><td>{int(r.get('sem_rast',0))}</td></tr>"
     return h
 
 def html_abast():
     if df_abast.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
     h = ""
     for _, r in df_abast.iterrows():
-        h += f"<tr><td><b>{r['nome']}</b></td><td>{r['empresa']}</td>"
-        h += f"<td>{r.get('cidade','')}</td><td>{r.get('gre','')}</td>"
-        h += f"<td>{fmt(r.get('litros',0))} L</td><td>R$ {fmt(r.get('gasto',0))}</td>"
-        h += f"<td>{int(r.get('escalas',0)):,}</td><td>R$ {fmt(r.get('rs_escala',0))}</td></tr>"
+        h += f"<tr><td><b>{r['nome']}</b></td><td>{r['empresa']}</td><td>{r.get('cidade','')}</td><td>{r.get('gre','')}</td>"
+        h += f"<td>{fmt(r.get('litros',0))} L</td><td>R$ {fmt(r.get('gasto',0))}</td><td>{int(r.get('escalas',0)):,}</td><td>R$ {fmt(r.get('rs_escala',0))}</td></tr>"
     return h
 
 def html_fiscal():
@@ -973,39 +796,23 @@ def html_fiscal():
     h = ""
     for _, r in df_fiscal.iterrows():
         q2 = float(r.get('pct_q2') or 0); q3 = float(r.get('pct_q3') or 0)
-        icon, _, cls = tendencia([q2, q3])
-        cls_badge = cls_status(cls)
-        h += f"<tr><td><b>{r['gre']}</b></td><td>{r.get('fiscal','—')}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('total',0)):,}</td>"
-        h += f"<td style='text-align:center;{cor_pct(q2)}'>{q2}%</td>"
-        h += f"<td style='text-align:center'><span class='tag {cls_badge}'>{q3}% {icon}</span></td>"
-        h += f"<td style='text-align:center;color:#f97316'>{int(r.get('suspeitas',0)):,}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('sem_rast',0)):,}</td></tr>"
+        icon, _, cls = tendencia([q2, q3]); cls_badge = cls_status(cls)
+        h += f"<tr><td><b>{r['gre']}</b></td><td>{r.get('fiscal','—')}</td><td style='text-align:center'>{int(r.get('total',0)):,}</td>"
+        h += f"<td style='text-align:center;{cor_pct(q2)}'>{q2}%</td><td style='text-align:center'><span class='tag {cls_badge}'>{q3}% {icon}</span></td>"
+        h += f"<td style='text-align:center;color:#f97316'>{int(r.get('suspeitas',0)):,}</td><td style='text-align:center'>{int(r.get('sem_rast',0)):,}</td></tr>"
     return h
 
 def html_insights():
     if not cidade_scores: return "<tr><td colspan='9'>Sem dados</td></tr>"
     h = ""
-    acoes = {
-        'SEM REGISTRO': 'Notificação formal ao fornecedor + visita do coordenador com prazo de 15 dias',
-        'REGREDIU TOTAL': 'Visita imediata + relatório ao gestor regional + prazo de regularização',
-        'EM QUEDA FORTE': 'Reunião urgente com o fiscal responsável + cobrança formal',
-        'EM QUEDA': 'Reunião com fiscal + prazo de 15 dias para recuperação',
-        'ATENÇÃO': 'Monitoramento semanal + cobrança ao fiscal responsável',
-        'MELHORANDO': 'Manter pressão. Reconhecer melhora na próxima reunião',
-        'LEVE MELHORA': 'Continuar monitorando. Meta: superar 50% até fim do trimestre',
-        'ESTÁVEL': 'Monitoramento padrão mensal',
-    }
+    acoes = {'SEM REGISTRO': 'Notificação formal ao fornecedor + visita do coordenador com prazo de 15 dias','REGREDIU TOTAL': 'Visita imediata + relatório ao gestor regional + prazo de regularização','EM QUEDA FORTE': 'Reunião urgente com o fiscal responsável + cobrança formal','EM QUEDA': 'Reunião com fiscal + prazo de 15 dias para recuperação','ATENÇÃO': 'Monitoramento semanal + cobrança ao fiscal responsável','MELHORANDO': 'Manter pressão. Reconhecer melhora na próxima reunião','LEVE MELHORA': 'Continuar monitorando. Meta: superar 50% até fim do trimestre','ESTÁVEL': 'Monitoramento padrão mensal'}
     for i, r in enumerate(cidade_scores[:25]):
         acao = acoes.get(r['status'], 'Avaliar individualmente')
-        h += f"<tr><td style='text-align:center;font-weight:700'>#{i+1}</td>"
-        h += f"<td><b>{r['cidade']}</b></td><td style='text-align:center'>{r['total']:,}</td>"
+        h += f"<tr><td style='text-align:center;font-weight:700'>#{i+1}</td><td><b>{r['cidade']}</b></td><td style='text-align:center'>{r['total']:,}</td>"
         for pct in r['vals']:
-            if pct is None: h += "<td style='text-align:center;color:#334155'>—</td>"
-            else: h += f"<td style='text-align:center;{cor_pct(pct)}'>{pct}%</td>"
+            h += "<td style='text-align:center;color:#334155'>—</td>" if pct is None else f"<td style='text-align:center;{cor_pct(pct)}'>{pct}%</td>"
         cls_tag = cls_status(r['cls'])
-        h += f"<td><span class='tag {cls_tag}'>{r['icon']} {r['status']}</span></td>"
-        h += f"<td style='font-size:11px;color:#94a3b8'>{acao}</td></tr>"
+        h += f"<td><span class='tag {cls_tag}'>{r['icon']} {r['status']}</span></td><td style='font-size:11px;color:#94a3b8'>{acao}</td></tr>"
     return h
 
 # ─── KPIs ───────────────────────────────────────────────────────────────────
@@ -1019,7 +826,6 @@ kpi_cont = int(df_kpi_extra['contratos_risco'].iloc[0]) if not df_kpi_extra.empt
 kpi_ch = int(df_kpi_extra['chamados_abertos'].iloc[0]) if not df_kpi_extra.empty else 0
 kpi_of = int(df_kpi_extra['em_oficina'].iloc[0]) if not df_kpi_extra.empty else 0
 
-# Dados gráficos
 meses_ev = df_evolucao['mes'].tolist() if not df_evolucao.empty else []
 ev_tot = df_evolucao['total'].tolist() if not df_evolucao.empty else []
 ev_rast = df_evolucao['rastreado'].tolist() if not df_evolucao.empty else []
@@ -1037,267 +843,140 @@ fr_m = df_fraude_mensal['mes'].tolist() if not df_fraude_mensal.empty else []
 fr_s = df_fraude_mensal['suspeitas'].tolist() if not df_fraude_mensal.empty else []
 fr_sr = df_fraude_mensal['sem_rast'].tolist() if not df_fraude_mensal.empty else []
 
-# ─── PROCESSAR COMBUSTÍVEL E GERAR COMENTÁRIOS AUTOMÁTICOS ──────────────────
-
+# ─── COMBUSTÍVEL ────────────────────────────────────────────────────────────
 MESES_COMB = ['2026-02','2026-03','2026-04','2026-05','2026-06','2026-07','2026-08']
-MESES_COMB_NOMES = {
-    '2026-02':'Fev','2026-03':'Mar','2026-04':'Abr',
-    '2026-05':'Mai','2026-06':'Jun','2026-07':'Jul','2026-08':'Ago'
-}
+MESES_COMB_NOMES = {'2026-02':'Fev','2026-03':'Mar','2026-04':'Abr','2026-05':'Mai','2026-06':'Jun','2026-07':'Jul','2026-08':'Ago'}
 
-# Pivô combustível por GRE
 comb_gre_pivot = {}
 if not df_combust_gre.empty:
     for _, r in df_combust_gre.iterrows():
         g = r['gre']; m = r['mes']
         if g not in comb_gre_pivot: comb_gre_pivot[g] = {'fiscal': r.get('fiscal','—')}
-        comb_gre_pivot[g][m] = {
-            'gasto': float(r.get('total_gasto') or 0),
-            'litros': float(r.get('total_litros') or 0),
-            'escalas': int(r.get('escalas_mes') or 0),
-            'rs_escala': float(r.get('rs_por_escala') or 0)
-        }
+        comb_gre_pivot[g][m] = {'gasto': float(r.get('total_gasto') or 0), 'litros': float(r.get('total_litros') or 0), 'escalas': int(r.get('escalas_mes') or 0), 'rs_escala': float(r.get('rs_por_escala') or 0)}
 
 def html_comb_total():
     if df_combust_total.empty: return "<tr><td colspan='5'>Sem dados</td></tr>"
-    h = ""
-    total_lanc = total_litros = total_val = total_conv = 0
-    meses_nomes = {'2026-01':'Jan/26','2026-02':'Fev/26','2026-03':'Mar/26','2026-04':'Abr/26',
-                   '2026-05':'Mai/26','2026-06':'Jun/26','2026-07':'Jul/26','2026-08':'Ago/26'}
+    h = ""; total_lanc = total_litros = total_val = total_conv = 0
+    meses_nomes = {'2026-01':'Jan/26','2026-02':'Fev/26','2026-03':'Mar/26','2026-04':'Abr/26','2026-05':'Mai/26','2026-06':'Jun/26','2026-07':'Jul/26','2026-08':'Ago/26'}
     for _, r in df_combust_total.iterrows():
-        lanc = int(r.get('lancamentos') or 0)
-        litros = float(r.get('litros') or 0)
-        val = float(r.get('valor_total') or 0)
-        conv = int(r.get('convenio') or 0)
+        lanc = int(r.get('lancamentos') or 0); litros = float(r.get('litros') or 0); val = float(r.get('valor_total') or 0); conv = int(r.get('convenio') or 0)
         total_lanc += lanc; total_litros += litros; total_val += val; total_conv += conv
         nome_mes = meses_nomes.get(r['mes'], r['mes'])
-        h += f"<tr>"
-        h += f"<td><b>{nome_mes}</b></td>"
-        h += f"<td style='text-align:center'>{lanc:,}</td>"
-        h += f"<td style='text-align:right'>{fmt(litros)} L</td>"
-        h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(val)}</td>"
-        h += f"<td style='text-align:center;{'color:#a78bfa;font-weight:700' if conv > 0 else 'color:#334155'}'>{conv if conv > 0 else '—'}</td>"
-        h += "</tr>"
-    h += f"<tr style='background:#0f172a;border-top:2px solid #334155'>"
-    h += f"<td style='font-weight:700'>TOTAL</td>"
-    h += f"<td style='text-align:center;font-weight:700'>{total_lanc:,}</td>"
-    h += f"<td style='text-align:right;font-weight:700'>{fmt(total_litros)} L</td>"
-    h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total_val)}</td>"
-    h += f"<td style='text-align:center;font-weight:700;color:#a78bfa'>{total_conv}</td>"
-    h += "</tr>"
+        h += f"<tr><td><b>{nome_mes}</b></td><td style='text-align:center'>{lanc:,}</td><td style='text-align:right'>{fmt(litros)} L</td>"
+        h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(val)}</td><td style='text-align:center;{'color:#a78bfa;font-weight:700' if conv > 0 else 'color:#334155'}'>{conv if conv > 0 else '—'}</td></tr>"
+    h += f"<tr style='background:#0f172a;border-top:2px solid #334155'><td style='font-weight:700'>TOTAL</td><td style='text-align:center;font-weight:700'>{total_lanc:,}</td>"
+    h += f"<td style='text-align:right;font-weight:700'>{fmt(total_litros)} L</td><td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total_val)}</td><td style='text-align:center;font-weight:700;color:#a78bfa'>{total_conv}</td></tr>"
     return h
 
 def html_comb_gre_pivo():
     if not comb_gre_pivot: return "<tr><td colspan='10'>Sem dados</td></tr>"
-    h = ""
-    totais_mes = {m: 0 for m in MESES_COMB}
-    total_geral = 0
-    ADMIN_GRES = {'ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR',
-                  'SEMEC - SUDESTE','SEMEC - NORTE','SEMEC -  SUDESTE','TESTE'}
+    h = ""; totais_mes = {m: 0 for m in MESES_COMB}; total_geral = 0
+    ADMIN_GRES = {'ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','SEMEC - SUDESTE','SEMEC -  SUDESTE','TESTE'}
     gres_op = sorted([g for g in comb_gre_pivot.keys() if g not in ADMIN_GRES])
     gres_ad = sorted([g for g in comb_gre_pivot.keys() if g in ADMIN_GRES])
     for gre in gres_op + gres_ad:
-        dados = comb_gre_pivot[gre]
-        fiscal = dados.get('fiscal','—')
-        total = sum(dados.get(m,{}).get('gasto',0) for m in MESES_COMB)
-        total_geral += total
-        is_admin = gre in ADMIN_GRES
-        estilo_row = "opacity:0.55" if is_admin else ""
+        dados = comb_gre_pivot[gre]; fiscal = dados.get('fiscal','—'); total = sum(dados.get(m,{}).get('gasto',0) for m in MESES_COMB)
+        total_geral += total; is_admin = gre in ADMIN_GRES; estilo_row = "opacity:0.55" if is_admin else ""
         label_adm = " <span style='font-size:10px;color:#64748b'>(adm)</span>" if is_admin else ""
-        h += f"<tr style='{estilo_row}'>"
-        h += f"<td><b>{gre}</b>{label_adm}</td>"
-        h += f"<td style='font-size:11px;color:#64748b'>{fiscal}</td>"
+        h += f"<tr style='{estilo_row}'><td><b>{gre}</b>{label_adm}</td><td style='font-size:11px;color:#64748b'>{fiscal}</td>"
         for m in MESES_COMB:
-            v = dados.get(m,{}).get('gasto',0)
-            totais_mes[m] += v
-            if v == 0:
-                h += "<td style='text-align:right;color:#334155'>—</td>"
+            v = dados.get(m,{}).get('gasto',0); totais_mes[m] += v
+            if v == 0: h += "<td style='text-align:right;color:#334155'>—</td>"
             else:
                 cor = "color:#ef4444;font-weight:700" if v > 400000 else ("color:#f59e0b" if v > 150000 else "color:#22c55e")
                 h += f"<td style='text-align:right;{cor}'>R$ {fmt(v)}</td>"
-        h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total)}</td>"
-        h += "</tr>"
-    # Linha de total por mês
-    h += "<tr style='background:#0f172a;border-top:2px solid #334155'>"
-    h += "<td colspan='2' style='font-weight:700;color:#f8fafc'>TOTAL GERAL</td>"
-    for m in MESES_COMB:
-        v = totais_mes[m]
-        h += f"<td style='text-align:right;font-weight:700;color:#f8fafc'>R$ {fmt(v)}</td>"
-    h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total_geral)}</td>"
-    h += "</tr>"
+        h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total)}</td></tr>"
+    h += "<tr style='background:#0f172a;border-top:2px solid #334155'><td colspan='2' style='font-weight:700;color:#f8fafc'>TOTAL GERAL</td>"
+    for m in MESES_COMB: h += f"<td style='text-align:right;font-weight:700;color:#f8fafc'>R$ {fmt(totais_mes[m])}</td>"
+    h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total_geral)}</td></tr>"
     return h
 
-# Pivô combustível por empresa
 comb_emp_pivot = {}
-EMPRESAS_EXCLUIR = ['PRÓPRIO']  # sem fornecedor — analisa separado se necessário
 if not df_combust_empresa.empty:
     for _, r in df_combust_empresa.iterrows():
-        emp = r['empresa']
-        m = r['mes']
-        if emp not in comb_emp_pivot:
-            comb_emp_pivot[emp] = {}
-        comb_emp_pivot[emp][m] = {
-            'gasto': float(r.get('total_gasto') or 0),
-            'litros': float(r.get('total_litros') or 0),
-            'escalas': int(r.get('escalas_mes') or 0),
-            'rs_escala': float(r.get('rs_por_escala') or 0),
-            'motoristas': int(r.get('motoristas') or 0)
-        }
+        emp = r['empresa']; m = r['mes']
+        if emp not in comb_emp_pivot: comb_emp_pivot[emp] = {}
+        comb_emp_pivot[emp][m] = {'gasto': float(r.get('total_gasto') or 0), 'litros': float(r.get('total_litros') or 0), 'escalas': int(r.get('escalas_mes') or 0), 'rs_escala': float(r.get('rs_por_escala') or 0), 'motoristas': int(r.get('motoristas') or 0)}
 
 def html_comb_emp_pivo():
     if not comb_emp_pivot: return "<tr><td colspan='10'>Sem dados</td></tr>"
-    # Calcular total por empresa e ordenar
-    ranking = sorted(comb_emp_pivot.items(),
-        key=lambda x: sum(v.get('gasto',0) for v in x[1].values()), reverse=True)
-    h = ""
-    totais_emp = {m: 0 for m in MESES_COMB}
-    total_emp_geral = 0
+    ranking = sorted(comb_emp_pivot.items(), key=lambda x: sum(v.get('gasto',0) for v in x[1].values()), reverse=True)
+    h = ""; totais_emp = {m: 0 for m in MESES_COMB}; total_emp_geral = 0
     for emp, dados in ranking[:20]:
         total = sum(dados.get(m,{}).get('gasto',0) for m in MESES_COMB)
         if total == 0: continue
-        total_emp_geral += total
-        max_mot = max((dados.get(m,{}).get('motoristas',0) for m in MESES_COMB), default=0)
+        total_emp_geral += total; max_mot = max((dados.get(m,{}).get('motoristas',0) for m in MESES_COMB), default=0)
         h += f"<tr><td><b>{emp}</b></td><td style='text-align:center'>{max_mot}</td>"
         for m in MESES_COMB:
-            v = dados.get(m,{}).get('gasto',0)
-            totais_emp[m] += v
-            if v == 0:
-                h += "<td style='text-align:right;color:#334155'>—</td>"
+            v = dados.get(m,{}).get('gasto',0); totais_emp[m] += v
+            if v == 0: h += "<td style='text-align:right;color:#334155'>—</td>"
             else:
                 cor = "color:#ef4444;font-weight:700" if v > 500000 else ("color:#f59e0b" if v > 150000 else "color:#22c55e")
                 h += f"<td style='text-align:right;{cor}'>R$ {fmt(v)}</td>"
-        h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total)}</td>"
-        h += "</tr>"
-    h += "<tr style='background:#0f172a;border-top:2px solid #334155'>"
-    h += "<td colspan='2' style='font-weight:700;color:#f8fafc'>TOTAL (top 20)</td>"
-    for m in MESES_COMB:
-        h += f"<td style='text-align:right;font-weight:700;color:#f8fafc'>R$ {fmt(totais_emp[m])}</td>"
-    h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total_emp_geral)}</td>"
-    h += "</tr>"
+        h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total)}</td></tr>"
+    h += "<tr style='background:#0f172a;border-top:2px solid #334155'><td colspan='2' style='font-weight:700;color:#f8fafc'>TOTAL (top 20)</td>"
+    for m in MESES_COMB: h += f"<td style='text-align:right;font-weight:700;color:#f8fafc'>R$ {fmt(totais_emp[m])}</td>"
+    h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total_emp_geral)}</td></tr>"
     return h
 
-# Pivô combustível por motorista
 comb_mot_pivot = {}
 if not df_combust_mot.empty:
     for _, r in df_combust_mot.iterrows():
-        k = r['motorista']
-        m = r['mes']
-        if k not in comb_mot_pivot:
-            comb_mot_pivot[k] = {
-                'empresa': r['empresa'],
-                'cidade': r.get('cidade',''),
-                'gre': r.get('gre','')
-            }
-        comb_mot_pivot[k][m] = {
-            'gasto': float(r.get('gasto') or 0),
-            'litros': float(r.get('litros') or 0),
-            'escalas': int(r.get('escalas_mes') or 0),
-            'rs_escala': float(r.get('rs_por_escala') or 0)
-        }
+        k = r['motorista']; m = r['mes']
+        if k not in comb_mot_pivot: comb_mot_pivot[k] = {'empresa': r['empresa'], 'cidade': r.get('cidade',''), 'gre': r.get('gre','')}
+        comb_mot_pivot[k][m] = {'gasto': float(r.get('gasto') or 0), 'litros': float(r.get('litros') or 0), 'escalas': int(r.get('escalas_mes') or 0), 'rs_escala': float(r.get('rs_por_escala') or 0)}
 
 def html_comb_mot_pivo():
     if not comb_mot_pivot: return "<tr><td colspan='12'>Sem dados</td></tr>"
-    ranking = sorted(comb_mot_pivot.items(),
-        key=lambda x: sum(x[1].get(m,{}).get('gasto',0) for m in MESES_COMB), reverse=True)
+    ranking = sorted(comb_mot_pivot.items(), key=lambda x: sum(x[1].get(m,{}).get('gasto',0) for m in MESES_COMB), reverse=True)
     h = ""
     for i, (nome, dados) in enumerate(ranking[:30]):
-        # Excluir motoristas sem escalas (administrativo)
         total_esc = sum(dados.get(m,{}).get('escalas',0) for m in MESES_COMB)
         if total_esc == 0: continue
         total_g = sum(dados.get(m,{}).get('gasto',0) for m in MESES_COMB)
         rs_med = round(total_g / max(total_esc,1), 2)
         cor_rs = "color:#ef4444;font-weight:700" if rs_med > 8000 else ("color:#f59e0b" if rs_med > 5000 else "")
-        h += f"<tr>"
-        h += f"<td style='text-align:center;font-weight:700'>#{i+1}</td>"
-        h += f"<td><b>{nome}</b></td>"
-        h += f"<td style='font-size:11px'>{dados['empresa']}</td>"
-        h += f"<td style='font-size:11px'>{dados['cidade']}</td>"
-        h += f"<td style='font-size:11px'>{dados['gre']}</td>"
+        h += f"<tr><td style='text-align:center;font-weight:700'>#{i+1}</td><td><b>{nome}</b></td><td style='font-size:11px'>{dados['empresa']}</td>"
+        h += f"<td style='font-size:11px'>{dados['cidade']}</td><td style='font-size:11px'>{dados['gre']}</td>"
         for m in MESES_COMB:
             v = dados.get(m,{}).get('gasto',0)
-            if v == 0:
-                h += "<td style='text-align:right;color:#334155'>—</td>"
+            if v == 0: h += "<td style='text-align:right;color:#334155'>—</td>"
             else:
                 cor = "color:#ef4444" if v > 1500000 else ("color:#f59e0b" if v > 800000 else "")
                 h += f"<td style='text-align:right;{cor}'>R$ {fmt(v)}</td>"
-        h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total_g)}</td>"
-        h += f"<td style='text-align:right;{cor_rs}'>R$ {fmt(rs_med)}</td>"
-        h += "</tr>"
-    return h
-
-def html_comb_mot():
-    if df_combust_mot.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
-    # Agregar por motorista
-    from collections import defaultdict
-    mot_total = defaultdict(lambda: {'empresa':'','cidade':'','gre':'','gasto':0,'litros':0,'escalas':0,'meses':{}})
-    for _, r in df_combust_mot.iterrows():
-        k = r['motorista']
-        mot_total[k]['empresa'] = r['empresa']
-        mot_total[k]['cidade'] = r.get('cidade','')
-        mot_total[k]['gre'] = r.get('gre','')
-        mot_total[k]['gasto'] += float(r.get('gasto') or 0)
-        mot_total[k]['litros'] += float(r.get('litros') or 0)
-        mot_total[k]['escalas'] += int(r.get('escalas_mes') or 0)
-        mot_total[k]['meses'][r['mes']] = float(r.get('gasto') or 0)
-
-    ranking = sorted(mot_total.items(), key=lambda x: -x[1]['gasto'])[:20]
-    h = ""
-    for i, (nome, d) in enumerate(ranking):
-        rs_e = round(d['gasto']/max(d['escalas'],1), 2)
-        h += f"<tr><td style='text-align:center;font-weight:700'>#{i+1}</td>"
-        h += f"<td><b>{nome}</b></td><td>{d['empresa']}</td>"
-        h += f"<td>{d['cidade']}</td><td>{d['gre']}</td>"
-        h += f"<td style='text-align:right'>{fmt(d['litros'])} L</td>"
-        h += f"<td style='text-align:right;color:#f59e0b;font-weight:700'>R$ {fmt(d['gasto'])}</td>"
-        h += f"<td style='text-align:center'>{int(d['escalas']):,}</td>"
-        h += f"<td style='text-align:right'>R$ {fmt(rs_e)}</td></tr>"
+        h += f"<td style='text-align:right;font-weight:700;color:#38bdf8'>R$ {fmt(total_g)}</td><td style='text-align:right;{cor_rs}'>R$ {fmt(rs_med)}</td></tr>"
     return h
 
 # ─── COMENTÁRIOS AUTOMÁTICOS ─────────────────────────────────────────────────
 def comentario_cidades():
-    """Gera diagnóstico automático das 3 cidades mais críticas"""
     criticas = [r for r in cidade_scores if r['cls'] in ('crit','zero')][:3]
     if not criticas: return "Nenhuma cidade em situação crítica identificada no período."
     textos = []
     for r in criticas:
-        v = [x for x in r['vals'] if x is not None]
-        ultimo = v[-1] if v else 0
-        acoes = {
-            'SEM REGISTRO': 'nunca registrou via rastreamento — resistência deliberada',
-            'REGREDIU TOTAL': 'regrediu para zero após ter iniciado o registro — ação imediata necessária',
-            'EM QUEDA FORTE': 'em queda acelerada nos últimos dois meses',
-            'EM QUEDA': 'em queda consistente — intervenção urgente',
-        }
+        v = [x for x in r['vals'] if x is not None]; ultimo = v[-1] if v else 0
+        acoes = {'SEM REGISTRO': 'nunca registrou via rastreamento — resistência deliberada','REGREDIU TOTAL': 'regrediu para zero após ter iniciado o registro — ação imediata necessária','EM QUEDA FORTE': 'em queda acelerada nos últimos dois meses','EM QUEDA': 'em queda consistente — intervenção urgente'}
         desc = acoes.get(r['status'], 'índice abaixo do esperado')
-        textos.append(f"<b>{r.get('cidade','?')}</b> ({r.get('motoristas',0)} motoristas, {r.get('total',0):,} escalas): {desc}. Índice atual: {ultimo}%.")
+        textos.append(f"<b>{r.get('cidade','?')}</b> ({r.get('total',0):,} escalas): {desc}. Índice atual: {ultimo}%.")
     return " &nbsp;·&nbsp; ".join(textos)
 
 def comentario_fraude():
-    """Resumo automático do padrão de fraude"""
     if df_fraude_mensal.empty: return ""
     ultimo = df_fraude_mensal.iloc[-2] if len(df_fraude_mensal) > 1 else df_fraude_mensal.iloc[-1]
     penultimo = df_fraude_mensal.iloc[-3] if len(df_fraude_mensal) > 2 else df_fraude_mensal.iloc[-2]
-    s_atual = int(ultimo.get('suspeitas') or 0)
-    s_ant = int(penultimo.get('suspeitas') or 0)
-    m_atual = int(ultimo.get('sem_rast') or 0)
-    m_ant = int(penultimo.get('sem_rast') or 0)
+    s_atual = int(ultimo.get('suspeitas') or 0); s_ant = int(penultimo.get('suspeitas') or 0)
+    m_atual = int(ultimo.get('sem_rast') or 0); m_ant = int(penultimo.get('sem_rast') or 0)
     txt = f"Rotas suspeitas em {ultimo['mes']}: <b>{s_atual:,}</b>"
     if s_ant > 0:
-        var = round((s_atual - s_ant)/s_ant*100, 1)
-        sinal = "▲" if var > 0 else "▼"
-        cor = "color:#ef4444" if var > 0 else "color:#22c55e"
+        var = round((s_atual - s_ant)/s_ant*100, 1); sinal = "▲" if var > 0 else "▼"; cor = "color:#ef4444" if var > 0 else "color:#22c55e"
         txt += f" <span style='{cor}'>{sinal} {abs(var)}% vs mês anterior</span>"
     txt += f". Confirmações sem rastreamento: <b>{m_atual:,}</b>"
     if m_ant > 0:
-        var2 = round((m_atual - m_ant)/m_ant*100, 1)
-        sinal2 = "▲" if var2 > 0 else "▼"
-        cor2 = "color:#ef4444" if var2 > 0 else "color:#22c55e"
+        var2 = round((m_atual - m_ant)/m_ant*100, 1); sinal2 = "▲" if var2 > 0 else "▼"; cor2 = "color:#ef4444" if var2 > 0 else "color:#22c55e"
         txt += f" <span style='{cor2}'>{sinal2} {abs(var2)}%</span>"
     txt += ". <b>100% dos casos são de prestadores terceirizados.</b>"
     return txt
 
 def comentario_gre():
-    """Resumo automático de GREs"""
     if not gre_pivot: return ""
     melhor = None; pior = None
     for gre, dados in gre_pivot.items():
@@ -1313,31 +992,20 @@ def comentario_gre():
     return txt
 
 def comentario_contratos():
-    """Resumo automático de contratos em risco"""
     n = len(df_contratos) if not df_contratos.empty else 0
     total_risco = 184493 + 199506
-    return (f"<b>{n} contratos ativos sem operação nos últimos 30 dias.</b> "
-            f"Valor diário estimado em risco: <b>R$ {fmt(total_risco)}</b> "
-            f"(veículos que nunca rodaram + parados há +90 dias com contrato ativo). "
-            f"Recomendação: solicitar comprovação de operação ou suspender pagamento até regularização.")
+    return (f"<b>{n} contratos ativos sem operação nos últimos 30 dias.</b> Valor diário estimado em risco: <b>R$ {fmt(total_risco)}</b> "
+            f"(veículos que nunca rodaram + parados há +90 dias com contrato ativo). Recomendação: solicitar comprovação de operação ou suspender pagamento até regularização.")
 
 def comentario_combustivel():
-    """Resumo automático de combustível"""
     if not comb_gre_pivot: return ""
-    maior_gre = max(comb_gre_pivot.items(),
-        key=lambda x: sum(x[1].get(m,{}).get('gasto',0) for m in MESES_COMB), default=(None,{}))[0]
+    maior_gre = max(comb_gre_pivot.items(), key=lambda x: sum(x[1].get(m,{}).get('gasto',0) for m in MESES_COMB), default=(None,{}))[0]
     if not maior_gre: return ""
-    dados = comb_gre_pivot[maior_gre]
-    total = sum(dados.get(m,{}).get('gasto',0) for m in MESES_COMB)
-    # Detectar mês de pico
-    pico_mes = max(MESES_COMB, key=lambda m: dados.get(m,{}).get('gasto',0))
-    pico_val = dados.get(pico_mes,{}).get('gasto',0)
-    return (f"GRE com maior gasto de combustível: <b>{maior_gre}</b> — "
-            f"R$ {fmt(total)} no período. "
-            f"Pico em {MESES_COMB_NOMES.get(pico_mes,'')}: R$ {fmt(pico_val)}. "
-            f"Verificar se o volume de escalas justifica o consumo ou se há abastecimentos sem execução de rota.")
+    dados = comb_gre_pivot[maior_gre]; total = sum(dados.get(m,{}).get('gasto',0) for m in MESES_COMB)
+    pico_mes = max(MESES_COMB, key=lambda m: dados.get(m,{}).get('gasto',0)); pico_val = dados.get(pico_mes,{}).get('gasto',0)
+    return (f"GRE com maior gasto de combustível: <b>{maior_gre}</b> — R$ {fmt(total)} no período. "
+            f"Pico em {MESES_COMB_NOMES.get(pico_mes,'')}: R$ {fmt(pico_val)}. Verificar se o volume de escalas justifica o consumo ou se há abastecimentos sem execução de rota.")
 
-# KPIs bonificação
 cidade_top = df_bonificacao_cidade['cidade'].iloc[0] if not df_bonificacao_cidade.empty else '—'
 gre_top = df_bonificacao_gre['gre'].iloc[0] if not df_bonificacao_gre.empty else '—'
 n_mot_bonif = len(df_bonificacao_mot) if not df_bonificacao_mot.empty else 0
@@ -1346,66 +1014,232 @@ def html_bonif_mot():
     if df_bonificacao_mot.empty: return "<tr><td colspan='10'>Sem dados</td></tr>"
     h = ""
     for i, (_, r) in enumerate(df_bonificacao_mot.iterrows()):
-        score = float(r.get('score') or 0)
-        pct_r = float(r.get('pct_rastreado') or 0)
-        pct_s = float(r.get('pct_suspeitas') or 0)
+        score = float(r.get('score') or 0); pct_r = float(r.get('pct_rastreado') or 0); pct_s = float(r.get('pct_suspeitas') or 0)
         cor_score = "color:#22c55e;font-weight:700" if score >= 70 else ("color:#f59e0b;font-weight:700" if score >= 50 else "color:#ef4444")
         medal = "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else f"#{i+1}"))
-        h += f"<tr>"
-        h += f"<td style='text-align:center;font-weight:700'>{medal}</td>"
-        h += f"<td><b>{r['motorista']}</b></td>"
-        h += f"<td>{r['empresa']}</td>"
-        h += f"<td>{r.get('cidade','')}</td>"
-        h += f"<td>{r.get('gre','')}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('total_escalas',0)):,}</td>"
-        h += f"<td style='text-align:center;{cor_pct(pct_r)}'>{pct_r}%</td>"
-        h += f"<td style='text-align:center'>{int(r.get('suspeitas',0))}</td>"
-        h += f"<td style='text-align:center;{'color:#ef4444' if pct_s > 5 else ''}'>{pct_s}%</td>"
-        h += f"<td style='text-align:center;{cor_score}'>{score}</td>"
-        h += f"</tr>"
+        h += f"<tr><td style='text-align:center;font-weight:700'>{medal}</td><td><b>{r['motorista']}</b></td><td>{r['empresa']}</td><td>{r.get('cidade','')}</td><td>{r.get('gre','')}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('total_escalas',0)):,}</td><td style='text-align:center;{cor_pct(pct_r)}'>{pct_r}%</td>"
+        h += f"<td style='text-align:center'>{int(r.get('suspeitas',0))}</td><td style='text-align:center;{'color:#ef4444' if pct_s > 5 else ''}'>{pct_s}%</td><td style='text-align:center;{cor_score}'>{score}</td></tr>"
     return h
 
 def html_bonif_gre():
     if df_bonificacao_gre.empty: return "<tr><td colspan='7'>Sem dados</td></tr>"
     h = ""
     for i, (_, r) in enumerate(df_bonificacao_gre.iterrows()):
-        score = float(r.get('score') or 0)
-        pct_r = float(r.get('pct_rastreado') or 0)
+        score = float(r.get('score') or 0); pct_r = float(r.get('pct_rastreado') or 0)
         cor_score = "color:#22c55e;font-weight:700" if score >= 50 else ("color:#f59e0b" if score >= 30 else "color:#ef4444")
         medal = "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else f"#{i+1}"))
-        h += f"<tr>"
-        h += f"<td style='text-align:center'>{medal}</td>"
-        h += f"<td><b>{r['gre']}</b></td>"
-        h += f"<td>{r.get('fiscal','—')}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('motoristas',0))}</td>"
-        h += f"<td style='text-align:center;{cor_pct(pct_r)}'>{pct_r}%</td>"
-        h += f"<td style='text-align:center;{'color:#ef4444' if float(r.get('pct_suspeitas',0))>5 else ''}'>{r.get('pct_suspeitas',0)}%</td>"
-        h += f"<td style='text-align:center;{cor_score}'>{score}</td>"
-        h += f"</tr>"
+        h += f"<tr><td style='text-align:center'>{medal}</td><td><b>{r['gre']}</b></td><td>{r.get('fiscal','—')}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('motoristas',0))}</td><td style='text-align:center;{cor_pct(pct_r)}'>{pct_r}%</td>"
+        h += f"<td style='text-align:center;{'color:#ef4444' if float(r.get('pct_suspeitas',0))>5 else ''}'>{r.get('pct_suspeitas',0)}%</td><td style='text-align:center;{cor_score}'>{score}</td></tr>"
     return h
 
 def html_bonif_cidade():
     if df_bonificacao_cidade.empty: return "<tr><td colspan='7'>Sem dados</td></tr>"
     h = ""
     for i, (_, r) in enumerate(df_bonificacao_cidade.iterrows()):
-        score = float(r.get('score') or 0)
-        pct_r = float(r.get('pct_rastreado') or 0)
+        score = float(r.get('score') or 0); pct_r = float(r.get('pct_rastreado') or 0)
         cor_score = "color:#22c55e;font-weight:700" if score >= 50 else ("color:#f59e0b" if score >= 30 else "color:#ef4444")
         medal = "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else f"#{i+1}"))
-        h += f"<tr>"
-        h += f"<td style='text-align:center'>{medal}</td>"
-        h += f"<td><b>{r['cidade']}</b></td>"
-        h += f"<td style='text-align:center'>{int(r.get('motoristas',0))}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('total_escalas',0)):,}</td>"
-        h += f"<td style='text-align:center;{cor_pct(pct_r)}'>{pct_r}%</td>"
-        h += f"<td style='text-align:center;{'color:#ef4444' if float(r.get('pct_suspeitas',0))>5 else ''}'>{r.get('pct_suspeitas',0)}%</td>"
-        h += f"<td style='text-align:center;{cor_score}'>{score}</td>"
-        h += f"</tr>"
+        h += f"<tr><td style='text-align:center'>{medal}</td><td><b>{r['cidade']}</b></td><td style='text-align:center'>{int(r.get('motoristas',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('total_escalas',0)):,}</td><td style='text-align:center;{cor_pct(pct_r)}'>{pct_r}%</td>"
+        h += f"<td style='text-align:center;{'color:#ef4444' if float(r.get('pct_suspeitas',0))>5 else ''}'>{r.get('pct_suspeitas',0)}%</td><td style='text-align:center;{cor_score}'>{score}</td></tr>"
     return h
 
-gerado = datetime.now().strftime("%d/%m/%Y %H:%M")
+# ─── FUNÇÕES HTML — GERENTE DE CONTRATOS ────────────────────────────────────
+
+def html_gc_frota_status():
+    if df_gc_frota_status.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
+    h = ""
+    tipos_nice = {'FROTA_PROPRIA':'🚗 Frota Própria','FROTA_TERCEIRIZADA':'🤝 Terceirizada','FROTA_PARCEIRO':'🤝 Parceiro'}
+    for _, r in df_gc_frota_status.iterrows():
+        tipo = tipos_nice.get(r['tipo'], r['tipo'])
+        ociosos = int(r.get('ociosos') or 0)
+        cor_ociosos = "color:#ef4444;font-weight:700" if ociosos > 10 else "color:#f59e0b"
+        h += f"<tr><td><b>{tipo}</b></td><td style='text-align:center'>{int(r.get('total',0))}</td>"
+        h += f"<td style='text-align:center;color:#22c55e;font-weight:700'>{int(r.get('ativos',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('inativos',0))}</td>"
+        h += f"<td style='text-align:center;color:#38bdf8;font-weight:700'>{int(r.get('em_operacao',0))}</td>"
+        h += f"<td style='text-align:center;{cor_ociosos}'>{ociosos}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('com_contrato',0))}</td>"
+        h += f"<td style='text-align:center;color:#64748b'>{int(r.get('sem_contrato',0))}</td></tr>"
+    return h
+
+def html_gc_vencer():
+    if df_gc_vencer.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_gc_vencer.iterrows():
+        alerta = r.get('alerta','')
+        cor_alerta = "color:#ef4444;font-weight:700" if '30 dias' in alerta else ("color:#f97316" if '60 dias' in alerta else "color:#f59e0b")
+        data_fim = str(r.get('data_fim',''))[:10] if r.get('data_fim') else '—'
+        h += f"<tr><td style='{cor_alerta}'>{alerta}</td><td><b>{r.get('numero_contrato','—')}</b></td>"
+        h += f"<td>{r.get('gre','—')}</td><td>{r.get('placa','—')}</td><td>{r.get('fornecedor','—')}</td>"
+        h += f"<td>{r.get('tipo_frota','—').replace('FROTA_','')}</td><td>R$ {fmt(r.get('valor_unitario',0))}/dia</td>"
+        h += f"<td>{data_fim}</td></tr>"
+    return h
+
+def html_gc_gap_gre():
+    if df_gc_gap_gre.empty: return "<tr><td colspan='7'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_gc_gap_gre.iterrows():
+        sit = r.get('situacao','')
+        cores_sit = {'SOBRECARGA':'color:#ef4444;font-weight:700','FROTA OCIOSA':'color:#f59e0b;font-weight:700','LIMITE':'color:#f97316;font-weight:700','EQUILIBRADO':'color:#22c55e','SEM FROTA':'color:#a78bfa;font-weight:700'}
+        cor = cores_sit.get(sit, '')
+        h += f"<tr><td><b>{r.get('gre','—')}</b></td><td style='text-align:center'>{int(r.get('frota_ativa',0))}</td>"
+        h += f"<td style='text-align:center;color:#38bdf8;font-weight:700'>{int(r.get('frota_operando',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('escalas_30d',0)):,}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('veiculos_usados',0))}</td>"
+        h += f"<td style='text-align:center'>{r.get('utilizacao_pct',0)}%</td>"
+        h += f"<td style='{cor}'>{sit}</td></tr>"
+    return h
+
+def html_gc_custo_tipo():
+    if df_gc_custo_tipo.empty: return "<tr><td colspan='6'>Sem dados</td></tr>"
+    h = ""
+    tipos_nice = {'FROTA_PROPRIA':'🚗 Própria','FROTA_TERCEIRIZADA':'🤝 Terceirizada','FROTA_PARCEIRO':'🤝 Parceiro'}
+    for _, r in df_gc_custo_tipo.iterrows():
+        tipo = tipos_nice.get(r['tipo'], r['tipo'])
+        custo_esc = float(r.get('custo_por_escala') or 0)
+        cor_custo = "color:#22c55e" if custo_esc < 500 else ("color:#f59e0b" if custo_esc < 800 else "color:#ef4444;font-weight:700")
+        h += f"<tr><td><b>{tipo}</b></td><td style='text-align:center'>{int(r.get('media_escalas',0)):,}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('media_veiculos',0))}</td>"
+        h += f"<td style='text-align:right;color:#38bdf8;font-weight:700'>R$ {fmt(r.get('media_custo_mensal',0))}</td>"
+        h += f"<td style='text-align:right;{cor_custo}'>R$ {fmt(custo_esc)}</td>"
+        h += f"<td style='text-align:right'>R$ {fmt(r.get('custo_por_veiculo',0))}</td></tr>"
+    return h
+
+def html_gc_cont_detalhes():
+    if df_gc_cont_detalhes.empty: return "<tr><td colspan='11'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_gc_cont_detalhes.iterrows():
+        sit = r.get('situacao','')
+        cores_sit = {'VENCENDO':'color:#ef4444;font-weight:700','VEICULO INATIVO':'color:#a78bfa;font-weight:700','PARADO +30D':'color:#f59e0b;font-weight:700','ATIVO':'color:#22c55e'}
+        cor = cores_sit.get(sit, '')
+        esc30 = int(r.get('escalas_30d',0) or 0)
+        esc7 = int(r.get('escalas_7d',0) or 0)
+        h += f"<tr><td><b>#{r.get('contrato_id','—')}</b></td><td>{r.get('numero_contrato','—')}</td>"
+        h += f"<td>{r.get('gre','—')}</td><td><b>{r.get('placa','—')}</b></td><td>{r.get('fornecedor','—')}</td>"
+        h += f"<td>{r.get('tipo_frota','—').replace('FROTA_','')}</td><td>R$ {fmt(r.get('valor_unitario',0))}/dia</td>"
+        h += f"<td>{r.get('turno','—')}</td><td style='text-align:center;color:#38bdf8;font-weight:700'>{esc30}</td>"
+        h += f"<td style='text-align:center'>{esc7}</td><td style='{cor}'>{sit}</td></tr>"
+    return h
+
+def html_gc_ociosa():
+    if df_gc_ociosa_contrato.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_gc_ociosa_contrato.iterrows():
+        dias = int(r.get('dias_parado') or 0) if r.get('dias_parado') else 0
+        risco = float(r.get('valor_risco_acumulado') or 0)
+        cor_dias = "color:#ef4444;font-weight:700" if dias > 90 else ("color:#f97316" if dias > 60 else "color:#f59e0b")
+        h += f"<tr><td>{r.get('gre','—')}</td><td><b>{r.get('placa','—')}</b></td><td>{r.get('modelo','—')}</td>"
+        h += f"<td>{r.get('tipo','—').replace('FROTA_','')}</td><td>{r.get('fornecedor','—')}</td>"
+        h += f"<td style='text-align:right'>R$ {fmt(r.get('valor_unitario',0))}/dia</td>"
+        h += f"<td style='text-align:center;{cor_dias}'>{dias} dias</td>"
+        h += f"<td style='text-align:right;color:#ef4444;font-weight:700'>R$ {fmt(risco)}</td></tr>"
+    return h
+
+def html_gc_demanda():
+    if df_gc_demanda_diaria.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_gc_demanda_diaria.iterrows():
+        media = float(r.get('media_escalas_dia') or 0)
+        cor_media = "color:#ef4444;font-weight:700" if media > 50 else ("color:#f59e0b" if media > 30 else "color:#22c55e")
+        h += f"<tr><td><b>{r.get('gre','—')}</b></td><td style='text-align:center'>{int(r.get('dias_com_escala',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('total_escalas',0)):,}</td>"
+        h += f"<td style='text-align:center;{cor_media}'>{media}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('veiculos_distintos',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('veic_proprios',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('veic_terceirizados',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('veic_parceiros',0))}</td></tr>"
+    return h
+
+def html_gc_historico():
+    if df_gc_historico.empty: return "<tr><td colspan='6'>Sem dados</td></tr>"
+    h = ""
+    for _, r in df_gc_historico.iterrows():
+        h += f"<tr><td><b>{r.get('mes','—')}</b></td><td style='text-align:center;font-weight:700'>{int(r.get('novos',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('propria',0))}</td><td style='text-align:center'>{int(r.get('terceirizada',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('parceiro',0))}</td>"
+        h += f"<td style='text-align:right;color:#38bdf8;font-weight:700'>R$ {fmt(r.get('valor_diario',0))}</td></tr>"
+    return h
+
+# ─── COMENTÁRIOS AUTOMÁTICOS — GERENTE DE CONTRATOS ─────────────────────────
+
+def comentario_gc_recomendacao():
+    """Gera recomendação automática baseada no gap analysis"""
+    if df_gc_gap_gre.empty: return "Sem dados suficientes para recomendação."
+    sobrecarga = df_gc_gap_gre[df_gc_gap_gre['situacao'] == 'SOBRECARGA']
+    ociosa = df_gc_gap_gre[df_gc_gap_gre['situacao'] == 'FROTA OCIOSA']
+    sem_frota = df_gc_gap_gre[df_gc_gap_gre['situacao'] == 'SEM FROTA']
+    partes = []
+    if not sem_frota.empty:
+        gres = ", ".join(sem_frota['gre'].head(3).tolist())
+        partes.append(f"<b style='color:#a78bfa'>URGENTE:</b> {len(sem_frota)} GRE(s) sem frota ativa: {gres}. <b>Prioridade máxima para contratação imediata.</b>")
+    if not sobrecarga.empty:
+        gres = ", ".join(sobrecarga['gre'].head(3).tolist())
+        partes.append(f"<b style='color:#ef4444'>SOBRECARGA:</b> {len(sobrecarga)} GRE(s) com demanda superior à capacidade: {gres}. Recomenda-se <b>locação emergencial</b> ou redistribuição de frota ociosa.")
+    if not ociosa.empty:
+        gres = ", ".join(ociosa['gre'].head(3).tolist())
+        partes.append(f"<b style='color:#f59e0b'>OCIOSIDADE:</b> {len(ociosa)} GRE(s) com frota subutilizada: {gres}. Avaliar <b>redução de contratos</b> ou realocação para áreas em sobrecarga.")
+    if not partes:
+        return "<b style='color:#22c55e'>SITUAÇÃO ESTÁVEL:</b> A maioria das GREs apresenta equilíbrio entre demanda e oferta. Manter monitoramento mensal."
+    return "<br><br>".join(partes)
+
+def comentario_gc_custo():
+    if df_gc_custo_tipo.empty: return ""
+    melhor = df_gc_custo_tipo.loc[df_gc_custo_tipo['custo_por_escala'].idxmin()] if not df_gc_custo_tipo.empty else None
+    pior = df_gc_custo_tipo.loc[df_gc_custo_tipo['custo_por_escala'].idxmax()] if not df_gc_custo_tipo.empty else None
+    if melhor is None: return ""
+    txt = f"<b>Melhor custo-benefício:</b> {melhor['tipo'].replace('FROTA_','')} — R$ {fmt(melhor['custo_por_escala'])}/escala. "
+    if pior is not None:
+        txt += f"<b>Maior custo:</b> {pior['tipo'].replace('FROTA_','')} — R$ {fmt(pior['custo_por_escala'])}/escala. "
+    txt += "<br><b>Recomendação:</b> Para novas contratações, priorizar o modelo com menor custo por escala, desde que atenda às exigências de rastreamento e manutenção."
+    return txt
+
+# ─── KPIs GERENTE DE CONTRATOS ──────────────────────────────────────────────
+gc_total = int(df_gc_resumo['total_ativos'].iloc[0]) if not df_gc_resumo.empty else 0
+gc_valor_dia = float(df_gc_resumo['valor_diario_total'].iloc[0]) if not df_gc_resumo.empty else 0
+gc_valor_mes = gc_valor_dia * 22
+gc_vencer30 = len(df_gc_vencer[df_gc_vencer['alerta'].str.contains('30 dias', na=False)]) if not df_gc_vencer.empty else 0
+gc_vencer90 = len(df_gc_vencer) if not df_gc_vencer.empty else 0
+
+# Frota
+gc_frota_total = int(df_gc_frota_status['total'].sum()) if not df_gc_frota_status.empty else 0
+gc_frota_ativa = int(df_gc_frota_status['ativos'].sum()) if not df_gc_frota_status.empty else 0
+gc_frota_operando = int(df_gc_frota_status['em_operacao'].sum()) if not df_gc_frota_status.empty else 0
+gc_frota_ociosa = int(df_gc_frota_status['ociosos'].sum()) if not df_gc_frota_status.empty else 0
+
+# Ociosa com contrato
+gc_risco_ocioso = float(df_gc_ociosa_contrato['valor_risco_acumulado'].sum()) if not df_gc_ociosa_contrato.empty else 0
+
+# Custo
+gc_custo_medio = round(df_gc_custo_tipo['custo_por_escala'].mean(),2) if not df_gc_custo_tipo.empty else 0
+
+# Histórico contratação
+gc_hist_meses = df_gc_historico['mes'].tolist() if not df_gc_historico.empty else []
+gc_hist_novos = df_gc_historico['novos'].tolist() if not df_gc_historico.empty else []
+gc_hist_valor = [float(v) for v in df_gc_historico['valor_diario'].tolist()] if not df_gc_historico.empty else []
+
+# Demanda por tipo (para gráfico de pizza)
+gc_demanda_tipos = {'Própria':0,'Terceirizada':0,'Parceiro':0}
+if not df_gc_demanda_diaria.empty:
+    gc_demanda_tipos['Própria'] = int(df_gc_demanda_diaria['veic_proprios'].sum())
+    gc_demanda_tipos['Terceirizada'] = int(df_gc_demanda_diaria['veic_terceirizados'].sum())
+    gc_demanda_tipos['Parceiro'] = int(df_gc_demanda_diaria['veic_parceiros'].sum())
+
+# Frota por tipo para gráfico
+gc_frota_tipos = {'Própria':0,'Terceirizada':0,'Parceiro':0}
+if not df_gc_frota_status.empty:
+    for _, r in df_gc_frota_status.iterrows():
+        t = r['tipo'].replace('FROTA_','')
+        gc_frota_tipos[t] = int(r.get('ativos',0))
+
+# Gap por situacao (para gráfico)
+gc_gap_counts = df_gc_gap_gre['situacao'].value_counts().to_dict() if not df_gc_gap_gre.empty else {}
 
 # ─── HTML FINAL ─────────────────────────────────────────────────────────────
+gerado = datetime.now().strftime("%d/%m/%Y %H:%M")
+
 html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -1435,7 +1269,7 @@ body{{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var
 .kpi label{{font-size:10px;color:var(--mt);text-transform:uppercase;letter-spacing:.5px;font-weight:700;display:block}}
 .kpi .v{{font-size:22px;font-weight:700;margin-top:4px}}
 .kpi .sub{{font-size:10px;color:var(--mt);margin-top:2px}}
-.v-ok{{color:var(--ok)}}.v-wn{{color:var(--wn)}}.v-cr{{color:var(--cr)}}
+.v-ok{{color:var(--ok)}}.v-wn{{color:var(--wn)}}.v-cr{{color:var(--cr)}}.v-ac{{color:var(--ac)}}
 .card{{background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:16px;margin-bottom:14px}}
 .card h3{{font-size:12px;font-weight:700;color:var(--ac);margin-bottom:12px;
   padding-bottom:8px;border-bottom:1px solid var(--bd)}}
@@ -1473,6 +1307,10 @@ canvas{{max-height:270px}}
 .lc-wn{{background:rgba(245,158,11,.2);color:var(--wn)}}
 .lc-ok{{background:rgba(34,197,94,.2);color:var(--ok)}}
 .lc-nd{{background:rgba(100,116,139,.2);color:var(--mt)}}
+.gc-rec{{background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.3);border-radius:6px;padding:12px 14px;margin-bottom:14px;font-size:12px;color:#86efac;line-height:1.7}}
+.gc-rec b{{color:var(--ok)}}
+.gc-rec .item{{margin-bottom:6px;padding-left:16px;position:relative}}
+.gc-rec .item::before{{content:'▸';position:absolute;left:0;color:var(--ok)}}
 </style>
 </head>
 <body>
@@ -1491,6 +1329,7 @@ canvas{{max-height:270px}}
   <button onclick="tab('t8',this)">🧠 Prioridades</button>
   <button onclick="tab('t9',this)">🏆 Bonificação</button>
   <button onclick="tab('t10',this)">⛽ Combustível</button>
+  <button onclick="tab('t11',this)">📑 Gerente Contratos</button>
 </div>
 
 <!-- ABA 1: PAINEL EXECUTIVO -->
@@ -1523,9 +1362,7 @@ canvas{{max-height:270px}}
 <!-- ABA 2: REGIONAIS (GRE) -->
 <div id="t2" class="tab">
   <div class="info">
-    <b>📌 Como ler:</b> Cada linha é uma Regional de Ensino (GRE). As colunas mostram o % de escalas
-    com rastreamento ativo mês a mês. <b>Verde</b> = acima de 50%. <b>Laranja</b> = entre 15-50%.
-    <b>Vermelho</b> = abaixo de 15%. A tendência compara o último mês com o anterior.
+    <b>📌 Como ler:</b> Cada linha é uma Regional de Ensino (GRE). As colunas mostram o % de escalas com rastreamento ativo mês a mês. <b>Verde</b> = acima de 50%. <b>Laranja</b> = entre 15-50%. <b>Vermelho</b> = abaixo de 15%. A tendência compara o último mês com o anterior.
   </div>
   <div class="legenda-cores">
     <span class="lc lc-cr">0-14%: Crítico</span>
@@ -1560,10 +1397,7 @@ canvas{{max-height:270px}}
 <!-- ABA 3: CIDADES -->
 <div id="t3" class="tab">
   <div class="info">
-    <b>📌 Como ler:</b> Cada linha é um município. As colunas mostram o % de escalas com rastreamento
-    por mês. A coluna <b>Situação</b> classifica automaticamente com base na evolução.
-    <b>Rotas Suspeitas</b> = total de rotas com duração menor que 10 minutos no período.
-    Cidades ordenadas pela prioridade de atenção (pior primeiro).
+    <b>📌 Como ler:</b> Cada linha é um município. As colunas mostram o % de escalas com rastreamento por mês. A coluna <b>Situação</b> classifica automaticamente com base na evolução. <b>Rotas Suspeitas</b> = total de rotas com duração menor que 10 minutos no período. Cidades ordenadas pela prioridade de atenção (pior primeiro).
   </div>
   <div class="legenda-cores">
     <span class="lc lc-cr">0%: Sem registro</span>
@@ -1594,17 +1428,13 @@ canvas{{max-height:270px}}
 <!-- ABA 4: ROTAS SUSPEITAS -->
 <div id="t4" class="tab">
   <div class="alerta">
-    <b>⚠️ O que é uma Rota Suspeita?</b> Qualquer escala com início e fim de execução registrados,
-    mas com duração menor que 10 minutos. Uma rota escolar real leva no mínimo 20-30 minutos.
-    Rotas concluídas em menos de 10 minutos indicam abertura e fechamento irregular para registrar execução sem realizar a rota.
-    <b>100% dos casos identificados são de prestadores terceirizados.</b>
+    <b>⚠️ O que é uma Rota Suspeita?</b> Qualquer escala com início e fim de execução registrados, mas com duração menor que 10 minutos. Uma rota escolar real leva no mínimo 20-30 minutos. Rotas concluídas em menos de 10 minutos indicam abertura e fechamento irregular para registrar execução sem realizar a rota. <b>100% dos casos identificados são de prestadores terceirizados.</b>
   </div>
   <div class="card"><h3>📉 Evolução Mensal — Rotas Suspeitas e Sem Rastreamento</h3><p class="desc" style="border-left-color:var(--cr)">{comentario_fraude()}</p><canvas id="c_fr"></canvas></div>
   <div class="g2">
     <div class="card">
       <h3>🏢 Empresas com Maior % de Rotas Suspeitas</h3>
-      <p class="desc">Empresas ordenadas pelo percentual de rotas suspeitas sobre o total de escalas.
-      Percentual acima de 20% é considerado crítico e requer ação contratual imediata.</p>
+      <p class="desc">Empresas ordenadas pelo percentual de rotas suspeitas sobre o total de escalas. Percentual acima de 20% é considerado crítico e requer ação contratual imediata.</p>
       <div class="tw">
         <table>
           <thead><tr><th>Empresa</th><th>Mot.</th><th>Total Esc.</th><th>Suspeitas</th><th>%</th><th>Sem Rast.</th></tr></thead>
@@ -1629,9 +1459,7 @@ canvas{{max-height:270px}}
 <!-- ABA 5: CONTRATOS -->
 <div id="t5" class="tab">
   <div class="alerta">
-    <b>⚠️ Contratos sem Operação:</b> Veículos com contrato ativo mas sem motorista associado
-    e zero escalas nos últimos 30 dias. O valor informado é o valor diário do contrato —
-    cada dia sem execução representa esse valor em risco de pagamento sem prestação de serviço.
+    <b>⚠️ Contratos sem Operação:</b> Veículos com contrato ativo mas sem motorista associado e zero escalas nos últimos 30 dias. O valor informado é o valor diário do contrato — cada dia sem execução representa esse valor em risco de pagamento sem prestação de serviço.
   </div>
   <div class="g2">
     <div class="card"><h3>📈 Total de Escalas com Contrato — Abr a Ago/2026</h3><canvas id="c_ct2"></canvas></div>
@@ -1640,12 +1468,7 @@ canvas{{max-height:270px}}
   <div class="card">
     <h3>🌙 Contratos com Turno Noite — Risco de Pagamento em Sábado sem Aula</h3>
     <p class="desc">
-      <b>Sábado à noite é excepcionalmente raro ter aulas.</b> Contratos com turno Noite
-      ativo em sábados representam risco de pagamento indevido — especialmente quando o mesmo
-      contrato cobre Noite + outro turno, pois o prestador recebe a diária completa ao executar
-      qualquer turno. A coluna <b>Turnos do Contrato</b> mostra todas as combinações do item.
-      <b>Valor Pago Est.</b> = sábados executados × valor diário do contrato.
-      Solução: rever contratos com turno Noite para excluir sábados ou exigir comprovação de aula.
+      <b>Sábado à noite é excepcionalmente raro ter aulas.</b> Contratos com turno Noite ativo em sábados representam risco de pagamento indevido — especialmente quando o mesmo contrato cobre Noite + outro turno, pois o prestador recebe a diária completa ao executar qualquer turno. A coluna <b>Turnos do Contrato</b> mostra todas as combinações do item. <b>Valor Pago Est.</b> = sábados executados × valor diário do contrato. Solução: rever contratos com turno Noite para excluir sábados ou exigir comprovação de aula.
     </p>
     <div class="tw">
       <table>
@@ -1712,9 +1535,7 @@ canvas{{max-height:270px}}
     </div>
   </div>
   <div class="info">
-    <b>📌 Licenciamento Vencido</b> = veículo com ano de licenciamento anterior a 2026.
-    Veículo com licenciamento vencido não deveria estar em operação de transporte escolar.
-    <b>Com Multas</b> = registro de multa ativa no cadastro do veículo.
+    <b>📌 Licenciamento Vencido</b> = veículo com ano de licenciamento anterior a 2026. Veículo com licenciamento vencido não deveria estar em operação de transporte escolar. <b>Com Multas</b> = registro de multa ativa no cadastro do veículo.
   </div>
   <div class="card">
     <h3>📄 Situação Documental da Frota por Fornecedor</h3>
@@ -1729,8 +1550,7 @@ canvas{{max-height:270px}}
   <div class="g2">
     <div class="card">
       <h3>🔧 Manutenção por Fornecedor (2026)</h3>
-      <p class="desc"><b>Chamados Abertos</b> = aguardando solução. <b>Em Oficina</b> = veículo parado para conserto.
-      <b>Média de Dias</b> = tempo médio entre abertura do chamado e entrega do veículo.</p>
+      <p class="desc"><b>Chamados Abertos</b> = aguardando solução. <b>Em Oficina</b> = veículo parado para conserto. <b>Média de Dias</b> = tempo médio entre abertura do chamado e entrega do veículo.</p>
       <div class="tw">
         <table>
           <thead><tr><th>Fornecedor</th><th>Chamados</th><th>Abertos</th><th>Oficina</th><th>Veíc.</th><th>Média Dias</th></tr></thead>
@@ -1755,9 +1575,7 @@ canvas{{max-height:270px}}
 <div id="t7" class="tab">
   <div class="card">
     <h3>👤 Motoristas — % Com Rastreamento (piores primeiro, desde Abr/2026)</h3>
-    <p class="desc">Motoristas com pelo menos 20 escalas no período. <b>% Com Rastreamento</b> = proporção de escalas
-    registradas via app ou link. Abaixo de 20% em vermelho, 20-50% em laranja, acima de 50% em verde.
-    <b>Rotas Suspeitas</b> = duração menor que 10 minutos. <b>Sem Rastreamento</b> = confirmação manual.</p>
+    <p class="desc">Motoristas com pelo menos 20 escalas no período. <b>% Com Rastreamento</b> = proporção de escalas registradas via app ou link. Abaixo de 20% em vermelho, 20-50% em laranja, acima de 50% em verde. <b>Rotas Suspeitas</b> = duração menor que 10 minutos. <b>Sem Rastreamento</b> = confirmação manual.</p>
     <input class="src" id="s_mt" oninput="fil('s_mt','t_mt')" placeholder="Buscar motorista, cidade, empresa, GRE...">
     <div class="tw">
       <table id="t_mt">
@@ -1792,13 +1610,7 @@ canvas{{max-height:270px}}
 <!-- ABA 8: PRIORIDADES -->
 <div id="t8" class="tab">
   <div class="info">
-    <b>🧠 Como funciona o Score de Prioridade:</b>
-    Calculado automaticamente combinando quatro fatores:
-    <b>índice atual de rastreamento</b> (peso 50%) +
-    <b>queda em relação ao mês anterior</b> (peso 30%) +
-    <b>% de rotas suspeitas</b> (peso 20%).
-    Quanto maior o score, maior a urgência de intervenção. A <b>Ação Recomendada</b>
-    é gerada automaticamente com base na situação classificada.
+    <b>🧠 Como funciona o Score de Prioridade:</b> Calculado automaticamente combinando quatro fatores: <b>índice atual de rastreamento</b> (peso 50%) + <b>queda em relação ao mês anterior</b> (peso 30%) + <b>% de rotas suspeitas</b> (peso 20%). Quanto maior o score, maior a urgência de intervenção. A <b>Ação Recomendada</b> é gerada automaticamente com base na situação classificada.
   </div>
   <div class="card">
     <h3>🎯 Ranking de Prioridade de Intervenção — Por Cidade (Abr-Ago/2026)</h3>
@@ -1817,11 +1629,7 @@ canvas{{max-height:270px}}
   </div>
   <div class="card">
     <h3>👮 Desempenho por Fiscal Responsável — Abr-Ago/2026</h3>
-    <p class="desc">
-      <b>Abr-Jun/26</b> = % de rastreamento no segundo trimestre.
-      <b>Jul-Ago/26</b> = % atual. A tendência mostra se a área do fiscal está melhorando ou piorando.
-      <b>Rotas Suspeitas</b> e <b>Sem Rastreamento</b> são totais acumulados desde abril.
-    </p>
+    <p class="desc"><b>Abr-Jun/26</b> = % de rastreamento no segundo trimestre. <b>Jul-Ago/26</b> = % atual. A tendência mostra se a área do fiscal está melhorando ou piorando. <b>Rotas Suspeitas</b> e <b>Sem Rastreamento</b> são totais acumulados desde abril.</p>
     <div class="tw">
       <table>
         <thead><tr><th>Regional (GRE)</th><th>Fiscal Responsável</th><th style="text-align:center">Total Esc.</th><th style="text-align:center">Abr-Jun/26</th><th style="text-align:center">Jul-Ago/26</th><th style="text-align:center">Rotas Suspeitas</th><th style="text-align:center">Sem Rastreamento</th></tr></thead>
@@ -1832,26 +1640,75 @@ canvas{{max-height:270px}}
   <div class="card">
     <h3>📊 Diagnóstico Geral: Prestadores vs Frota Própria</h3>
     <p class="desc" style="border-left-color:var(--cr)">
-      <b style="color:var(--cr)">100% das irregularidades identificadas são de prestadores terceirizados.</b>
-      Motoristas da frota própria (sem vínculo com fornecedor) apresentam irregularidade próxima de zero.
-      Isso indica que o problema não é operacional — é estrutural no modelo de terceirização.<br><br>
-      <b style="color:var(--wn)">Empresas com maior risco imediato:</b>
-      J COUTINHO DE SOUSA FILHO (97% de rotas suspeitas) · ANTONIO CARLOS REIS SARAIVA (74%) · INES DE SALES RESENDE (59%).<br><br>
-      <b style="color:var(--ac)">Recomendação estratégica:</b>
-      Incluir cláusula contratual vinculando pagamento ao índice mínimo de rastreamento (sugerido: 60%).
-      Prestadores abaixo desse índice por dois meses consecutivos devem receber notificação formal
-      com prazo de 30 dias para adequação, seguida de processo de glosa caso não haja melhora.
+      <b style="color:var(--cr)">100% das irregularidades identificadas são de prestadores terceirizados.</b> Motoristas da frota própria (sem vínculo com fornecedor) apresentam irregularidade próxima de zero. Isso indica que o problema não é operacional — é estrutural no modelo de terceirização.<br><br>
+      <b style="color:var(--wn)">Empresas com maior risco imediato:</b> J COUTINHO DE SOUSA FILHO (97% de rotas suspeitas) · ANTONIO CARLOS REIS SARAIVA (74%) · INES DE SALES RESENDE (59%).<br><br>
+      <b style="color:var(--ac)">Recomendação estratégica:</b> Incluir cláusula contratual vinculando pagamento ao índice mínimo de rastreamento (sugerido: 60%). Prestadores abaixo desse índice por dois meses consecutivos devem receber notificação formal com prazo de 30 dias para adequação, seguida de processo de glosa caso não haja melhora.
     </p>
+  </div>
+</div>
+
+<!-- ABA 9: BONIFICAÇÃO -->
+<div id="t9" class="tab">
+  <div class="info">
+    <b>📌 Como funciona o Score de Bonificação:</b> Calculado por motorista desde Abr/2026 combinando dois fatores: <b>% de rastreamento</b> (peso positivo) e <b>% de rotas suspeitas</b> (peso negativo, conta dobrado). Fórmula: Score = % Rastreado − (% Suspeitas × 2). Score 70+ = excelente · 50-69 = bom · abaixo de 50 = atenção. Mínimo de 30 escalas no período para entrar no ranking. <b>Combustível:</b> dado em revisão — valores inconsistentes identificados no banco de origem.
+  </div>
+  <div class="g3">
+    <div class="kpi"><label>🏆 Top Cidade</label><div class="v v-ok" style="font-size:16px">{cidade_top}</div><div class="sub">maior score médio de bonificação</div></div>
+    <div class="kpi"><label>🏆 Top GRE</label><div class="v v-ok" style="font-size:16px">{gre_top}</div><div class="sub">maior score médio de bonificação</div></div>
+    <div class="kpi"><label>Motoristas no Ranking</label><div class="v">{n_mot_bonif}</div><div class="sub">com mín. 30 escalas em Abr-Ago/26</div></div>
+  </div>
+  <div class="card">
+    <h3>🏆 Ranking de Motoristas — Melhores Índices Operacionais (Abr-Ago/2026)</h3>
+    <p class="desc">Motoristas com maior score de bonificação. São referências de boa prática operacional que podem servir de modelo para treinamentos e incentivos.</p>
+    <input class="src" id="s_bon" oninput="fil('s_bon','t_bon')" placeholder="Buscar motorista, cidade, GRE...">
+    <div class="tw">
+      <table id="t_bon">
+        <thead><tr>
+          <th style="text-align:center">#</th><th>Motorista</th><th>Empresa</th><th>Cidade</th><th>GRE</th>
+          <th style="text-align:center">Escalas</th><th style="text-align:center">% Rastreado</th>
+          <th style="text-align:center">Suspeitas</th><th style="text-align:center">% Suspeitas</th><th style="text-align:center">Score</th>
+        </tr></thead>
+        <tbody>{html_bonif_mot()}</tbody>
+      </table>
+    </div>
+  </div>
+  <div class="g2">
+    <div class="card">
+      <h3>🏆 Ranking por GRE — Score Médio de Bonificação</h3>
+      <p class="desc">Regionais ordenadas pelo score médio de bonificação de seus motoristas. A coluna <b>Fiscal</b> é responsável pela área.</p>
+      <div class="tw">
+        <table>
+          <thead><tr>
+            <th style="text-align:center">#</th><th>GRE</th><th>Fiscal</th>
+            <th style="text-align:center">Motoristas</th><th style="text-align:center">% Rastreado</th>
+            <th style="text-align:center">% Suspeitas</th><th style="text-align:center">Score</th>
+          </tr></thead>
+          <tbody>{html_bonif_gre()}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h3>🏆 Ranking por Cidade — Score Médio de Bonificação</h3>
+      <p class="desc">Cidades ordenadas pelo score médio de bonificação. Cidades no topo são referência de boa adesão ao rastreamento.</p>
+      <input class="src" id="s_bcid" oninput="fil('s_bcid','t_bcid')" placeholder="Filtrar cidade...">
+      <div class="tw">
+        <table id="t_bcid">
+          <thead><tr>
+            <th style="text-align:center">#</th><th>Cidade</th>
+            <th style="text-align:center">Motoristas</th><th style="text-align:center">Escalas</th>
+            <th style="text-align:center">% Rastreado</th><th style="text-align:center">% Suspeitas</th><th style="text-align:center">Score</th>
+          </tr></thead>
+          <tbody>{html_bonif_cidade()}</tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </div>
 
 <!-- ABA 10: COMBUSTÍVEL -->
 <div id="t10" class="tab">
   <div class="info">
-    <b>📌 Como ler:</b> Gasto de combustível cruzado com escalas executadas no mesmo mês.
-    <b>R$/Escala</b> = eficiência real do combustível por rota executada.
-    Valores altos de R$/Escala em meses com poucas escalas indicam abastecimento sem operação proporcional.
-    <b>Dados validados:</b> filtro de 0-500 litros e R$ 0-5.000 por abastecimento.
+    <b>📌 Como ler:</b> Gasto de combustível cruzado com escalas executadas no mesmo mês. <b>R$/Escala</b> = eficiência real do combustível por rota executada. Valores altos de R$/Escala em meses com poucas escalas indicam abastecimento sem operação proporcional. <b>Dados validados:</b> filtro de 0-500 litros e R$ 0-5.000 por abastecimento.
   </div>
   <div class="card">
     <h3>📊 Análise Automática</h3>
@@ -1864,13 +1721,8 @@ canvas{{max-height:270px}}
       <table>
         <thead><tr>
           <th>Regional (GRE)</th><th>Fiscal</th>
-          <th style="text-align:right">Fev/26</th>
-          <th style="text-align:right">Mar/26</th>
-          <th style="text-align:right">Abr/26</th>
-          <th style="text-align:right">Mai/26</th>
-          <th style="text-align:right">Jun/26</th>
-          <th style="text-align:right">Jul/26</th>
-          <th style="text-align:right">Ago/26</th>
+          <th style="text-align:right">Fev/26</th><th style="text-align:right">Mar/26</th><th style="text-align:right">Abr/26</th>
+          <th style="text-align:right">Mai/26</th><th style="text-align:right">Jun/26</th><th style="text-align:right">Jul/26</th><th style="text-align:right">Ago/26</th>
           <th style="text-align:right;color:#38bdf8">Total</th>
         </tr></thead>
         <tbody>{html_comb_gre_pivo()}</tbody>
@@ -1879,17 +1731,11 @@ canvas{{max-height:270px}}
   </div>
   <div class="card">
     <h3>📊 Total Geral de Combustível — Mensal (2026)</h3>
-    <p class="desc">Total consolidado de todos os abastecimentos do período, incluindo todas as GREs.
-    Referência para confronto com o sistema operacional.
-    <b>Convênio ProFrotas</b> = abastecimentos registrados via sistema ProFrotas (id_profrotas preenchido).</p>
+    <p class="desc">Total consolidado de todos os abastecimentos do período, incluindo todas as GREs. Referência para confronto com o sistema operacional. <b>Convênio ProFrotas</b> = abastecimentos registrados via sistema ProFrotas (id_profrotas preenchido).</p>
     <div class="tw">
       <table>
         <thead><tr>
-          <th>Mês</th>
-          <th style="text-align:center">Lançamentos</th>
-          <th style="text-align:right">Litros</th>
-          <th style="text-align:right">Valor Total</th>
-          <th style="text-align:center">Convênio ProFrotas</th>
+          <th>Mês</th><th style="text-align:center">Lançamentos</th><th style="text-align:right">Litros</th><th style="text-align:right">Valor Total</th><th style="text-align:center">Convênio ProFrotas</th>
         </tr></thead>
         <tbody>{html_comb_total()}</tbody>
       </table>
@@ -1902,13 +1748,8 @@ canvas{{max-height:270px}}
       <table>
         <thead><tr>
           <th>Empresa</th><th style="text-align:center">Mot.</th>
-          <th style="text-align:right">Fev/26</th>
-          <th style="text-align:right">Mar/26</th>
-          <th style="text-align:right">Abr/26</th>
-          <th style="text-align:right">Mai/26</th>
-          <th style="text-align:right">Jun/26</th>
-          <th style="text-align:right">Jul/26</th>
-          <th style="text-align:right">Ago/26</th>
+          <th style="text-align:right">Fev/26</th><th style="text-align:right">Mar/26</th><th style="text-align:right">Abr/26</th>
+          <th style="text-align:right">Mai/26</th><th style="text-align:right">Jun/26</th><th style="text-align:right">Jul/26</th><th style="text-align:right">Ago/26</th>
           <th style="text-align:right;color:#38bdf8">Total</th>
         </tr></thead>
         <tbody>{html_comb_emp_pivo()}</tbody>
@@ -1922,17 +1763,10 @@ canvas{{max-height:270px}}
     <div class="tw">
       <table id="t_cm">
         <thead><tr>
-          <th style="text-align:center">#</th><th>Motorista</th><th>Empresa</th>
-          <th>Cidade</th><th>GRE</th>
-          <th style="text-align:right">Fev/26</th>
-          <th style="text-align:right">Mar/26</th>
-          <th style="text-align:right">Abr/26</th>
-          <th style="text-align:right">Mai/26</th>
-          <th style="text-align:right">Jun/26</th>
-          <th style="text-align:right">Jul/26</th>
-          <th style="text-align:right">Ago/26</th>
-          <th style="text-align:right;color:#38bdf8">Total</th>
-          <th style="text-align:right">R$/Escala</th>
+          <th style="text-align:center">#</th><th>Motorista</th><th>Empresa</th><th>Cidade</th><th>GRE</th>
+          <th style="text-align:right">Fev/26</th><th style="text-align:right">Mar/26</th><th style="text-align:right">Abr/26</th>
+          <th style="text-align:right">Mai/26</th><th style="text-align:right">Jun/26</th><th style="text-align:right">Jul/26</th><th style="text-align:right">Ago/26</th>
+          <th style="text-align:right;color:#38bdf8">Total</th><th style="text-align:right">R$/Escala</th>
         </tr></thead>
         <tbody>{html_comb_mot_pivo()}</tbody>
       </table>
@@ -1940,88 +1774,162 @@ canvas{{max-height:270px}}
   </div>
 </div>
 
-<!-- ABA 9: BONIFICAÇÃO -->
-<div id="t9" class="tab">
+<!-- ABA 11: GERENTE DE CONTRATOS -->
+<div id="t11" class="tab">
   <div class="info">
-    <b>📌 Como funciona o Score de Bonificação:</b>
-    Calculado por motorista desde Abr/2026 combinando dois fatores:
-    <b>% de rastreamento</b> (peso positivo) e <b>% de rotas suspeitas</b> (peso negativo, conta dobrado).
-    Fórmula: Score = % Rastreado − (% Suspeitas × 2).
-    Score 70+ = excelente · 50-69 = bom · abaixo de 50 = atenção.
-    Mínimo de 30 escalas no período para entrar no ranking.
-    <b>Combustível:</b> dado em revisão — valores inconsistentes identificados no banco de origem.
+    <b>📌 Painel do Gerente de Contratos:</b> Visão consolidada para decisão sobre <b>contratação, locação e frota própria/parceira</b>. 
+    Acompanhe contratos a vencer, frota disponível vs ocupada, custo por tipo de frota e recomendações automáticas de contratação baseadas em demanda real.
   </div>
 
-  <div class="g3">
-    <div class="kpi"><label>🏆 Top Cidade</label>
-      <div class="v v-ok" style="font-size:16px">{cidade_top}</div>
-      <div class="sub">maior score médio de bonificação</div>
+  <!-- KPIs Gerente de Contratos -->
+  <div class="kpi-grid">
+    <div class="kpi"><label>Contratos Ativos</label><div class="v v-ac">{gc_total:,}</div><div class="sub">em vigência</div></div>
+    <div class="kpi"><label>Valor Comprometido</label><div class="v v-ac">R$ {fmt(gc_valor_mes)}</div><div class="sub">estimado/mês (22 dias úteis)</div></div>
+    <div class="kpi"><label>Contratos a Vencer (30d)</label><div class="v {'v-cr' if gc_vencer30>5 else 'v-wn'}">{gc_vencer30}</div><div class="sub">urgentes para renovação</div></div>
+    <div class="kpi"><label>Contratos a Vencer (90d)</label><div class="v v-wn">{gc_vencer90}</div><div class="sub">total no horizonte</div></div>
+    <div class="kpi"><label>Frota Total Ativa</label><div class="v v-ok">{gc_frota_ativa}</div><div class="sub">veículos disponíveis</div></div>
+    <div class="kpi"><label>Frota em Operação</label><div class="v v-ok">{gc_frota_operando}</div><div class="sub">rodando nos últimos 30 dias</div></div>
+    <div class="kpi"><label>Frota Ociosa</label><div class="v {'v-cr' if gc_frota_ociosa>20 else 'v-wn'}">{gc_frota_ociosa}</div><div class="sub">ativos sem operação</div></div>
+    <div class="kpi"><label>Risco Ocioso Acumulado</label><div class="v v-cr">R$ {fmt(gc_risco_ocioso)}</div><div class="sub">pago sem prestação de serviço</div></div>
+  </div>
+
+  <!-- Recomendação Automática -->
+  <div class="gc-rec">
+    <b>🧠 RECOMENDAÇÃO AUTOMÁTICA DE CONTRATAÇÃO:</b><br><br>
+    {comentario_gc_recomendacao()}
+  </div>
+
+  <div class="g2">
+    <!-- Frota por Tipo -->
+    <div class="card">
+      <h3>🚌 Frota Disponível vs Ocupada por Tipo</h3>
+      <p class="desc">
+        <b>Em Operação</b> = veículo ativo com escalas nos últimos 30 dias. 
+        <b>Ocioso</b> = ativo mas sem escalas. <b>Com Contrato</b> = vinculado a contrato ativo. 
+        <b>Sem Contrato</b> = disponível para nova contratação.
+      </p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Tipo de Frota</th><th style="text-align:center">Total</th><th style="text-align:center">Ativos</th><th style="text-align:center">Inativos</th><th style="text-align:center">Em Operação</th><th style="text-align:center">Ociosos</th><th style="text-align:center">C/ Contrato</th><th style="text-align:center">S/ Contrato</th></tr></thead>
+          <tbody>{html_gc_frota_status()}</tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px;height:200px"><canvas id="c_gc_frota"></canvas></div>
     </div>
-    <div class="kpi"><label>🏆 Top GRE</label>
-      <div class="v v-ok" style="font-size:16px">{gre_top}</div>
-      <div class="sub">maior score médio de bonificação</div>
-    </div>
-    <div class="kpi"><label>Motoristas no Ranking</label>
-      <div class="v">{n_mot_bonif}</div>
-      <div class="sub">com mín. 30 escalas em Abr-Ago/26</div>
+
+    <!-- Custo Comparativo -->
+    <div class="card">
+      <h3>💰 Custo Médio por Tipo de Frota (Últimos 3 Meses)</h3>
+      <p class="desc" style="border-left-color:var(--ac)">{comentario_gc_custo()}</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Tipo</th><th style="text-align:center">Escalas Média</th><th style="text-align:center">Veíc. Média</th><th style="text-align:right">Custo Mensal</th><th style="text-align:right">R$/Escala</th><th style="text-align:right">R$/Veículo</th></tr></thead>
+          <tbody>{html_gc_custo_tipo()}</tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px;height:200px"><canvas id="c_gc_custo"></canvas></div>
     </div>
   </div>
 
+  <!-- Contratos a Vencer -->
   <div class="card">
-    <h3>🏆 Ranking de Motoristas — Melhores Índices Operacionais (Abr-Ago/2026)</h3>
-    <p class="desc">Motoristas com maior score de bonificação. São referências de boa prática operacional
-    que podem servir de modelo para treinamentos e incentivos.</p>
-    <input class="src" id="s_bon" oninput="fil('s_bon','t_bon')" placeholder="Buscar motorista, cidade, GRE...">
+    <h3>⏰ Contratos a Vencer nos Próximos 90 Dias</h3>
+    <p class="desc">
+      <b>🔴 Até 30 dias:</b> Renovação urgente — risco de interrupção do serviço. 
+      <b>🟠 31-60 dias:</b> Iniciar processo de renovação ou substituição. 
+      <b>🟡 61-90 dias:</b> Monitorar e planejar.
+    </p>
+    <input class="src" id="s_gc_v" oninput="fil('s_gc_v','t_gc_v')" placeholder="Filtrar por GRE, placa, fornecedor...">
     <div class="tw">
-      <table id="t_bon">
-        <thead><tr>
-          <th style="text-align:center">#</th><th>Motorista</th><th>Empresa</th>
-          <th>Cidade</th><th>GRE</th>
-          <th style="text-align:center">Escalas</th>
-          <th style="text-align:center">% Rastreado</th>
-          <th style="text-align:center">Suspeitas</th>
-          <th style="text-align:center">% Suspeitas</th>
-          <th style="text-align:center">Score</th>
-        </tr></thead>
-        <tbody>{html_bonif_mot()}</tbody>
+      <table id="t_gc_v">
+        <thead><tr><th>Alerta</th><th>Contrato</th><th>GRE</th><th>Placa</th><th>Fornecedor</th><th>Tipo</th><th>Valor/Dia</th><th>Vencimento</th></tr></thead>
+        <tbody>{html_gc_vencer()}</tbody>
       </table>
     </div>
   </div>
 
   <div class="g2">
+    <!-- Gap Analysis GRE -->
     <div class="card">
-      <h3>🏆 Ranking por GRE — Score Médio de Bonificação</h3>
-      <p class="desc">Regionais ordenadas pelo score médio de bonificação de seus motoristas.
-      A coluna <b>Fiscal</b> é responsável pela área.</p>
+      <h3>📊 Demanda vs Oferta por GRE (Últimos 30 Dias)</h3>
+      <p class="desc">
+        <b>Frota Ativa</b> = veículos com status ativo na GRE. <b>Frota Operando</b> = veículos que registraram escalas. 
+        <b>Veículos Usados</b> = distintos que apareceram nas escalas. 
+        <b>Situação:</b> <span style="color:#ef4444;font-weight:700">SOBRECARGA</span> = demanda > 120% da frota · 
+        <span style="color:#f59e0b;font-weight:700">LIMITE</span> = >90% · 
+        <span style="color:#f59e0b">OCIOSA</span> = <50% · 
+        <span style="color:#22c55e">EQUILIBRADO</span> = entre 50-90%.
+      </p>
       <div class="tw">
         <table>
-          <thead><tr>
-            <th style="text-align:center">#</th><th>GRE</th><th>Fiscal</th>
-            <th style="text-align:center">Motoristas</th>
-            <th style="text-align:center">% Rastreado</th>
-            <th style="text-align:center">% Suspeitas</th>
-            <th style="text-align:center">Score</th>
-          </tr></thead>
-          <tbody>{html_bonif_gre()}</tbody>
+          <thead><tr><th>GRE</th><th style="text-align:center">Frota Ativa</th><th style="text-align:center">Operando</th><th style="text-align:center">Escalas 30d</th><th style="text-align:center">Veíc. Usados</th><th style="text-align:center">Utilização</th><th>Situação</th></tr></thead>
+          <tbody>{html_gc_gap_gre()}</tbody>
         </table>
       </div>
+      <div style="margin-top:12px;height:220px"><canvas id="c_gc_gap"></canvas></div>
+    </div>
+
+    <!-- Demanda Diária -->
+    <div class="card">
+      <h3>📈 Demanda Diária Média por GRE (Últimos 30 Dias)</h3>
+      <p class="desc">
+        <b>Média Escalas/Dia</b> = volume médio diário de serviço. Útil para dimensionar a frota necessária. 
+        Uma frota escolar típica opera 1-2 escalas por veículo/dia. Se a média de escalas/dia for maior que a frota disponível, há necessidade de ampliação.
+      </p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>GRE</th><th style="text-align:center">Dias c/ Escala</th><th style="text-align:center">Total Escalas</th><th style="text-align:center">Média/Dia</th><th style="text-align:center">Total Veíc.</th><th style="text-align:center">Próprios</th><th style="text-align:center">Terc.</th><th style="text-align:center">Parc.</th></tr></thead>
+          <tbody>{html_gc_demanda()}</tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px;height:220px"><canvas id="c_gc_demanda"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Frota Ociosa com Contrato -->
+  <div class="card">
+    <h3>🚨 Frota Ociosa com Contrato Ativo (Parada +30 dias)</h3>
+    <p class="desc">
+      Veículos com contrato ativo, status ativo, mas sem escalas nos últimos 30 dias. 
+      <b>Dias Parado</b> = tempo desde a última rota. <b>Valor Risco</b> = valor diário × dias parado (estimativa do prejuízo acumulado).
+      Recomendação: <b>suspender pagamento</b> ou <b>rescindir contrato</b> se não houver justificativa operacional.
+    </p>
+    <input class="src" id="s_gc_o" oninput="fil('s_gc_o','t_gc_o')" placeholder="Filtrar por GRE, placa, fornecedor...">
+    <div class="tw">
+      <table id="t_gc_o">
+        <thead><tr><th>GRE</th><th>Placa</th><th>Modelo</th><th>Tipo</th><th>Fornecedor</th><th>Valor/Dia</th><th style="text-align:center">Dias Parado</th><th style="text-align:right">Risco Acumulado</th></tr></thead>
+        <tbody>{html_gc_ociosa()}</tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Histórico de Contratação -->
+  <div class="g2">
+    <div class="card">
+      <h3>📅 Histórico de Contratação por Mês (2026)</h3>
+      <p class="desc">Novos contratos ativos iniciados em cada mês, discriminados por tipo de frota.</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Mês</th><th style="text-align:center">Novos Contratos</th><th style="text-align:center">Própria</th><th style="text-align:center">Terceirizada</th><th style="text-align:center">Parceiro</th><th style="text-align:right">Valor Diário</th></tr></thead>
+          <tbody>{html_gc_historico()}</tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px;height:220px"><canvas id="c_gc_hist"></canvas></div>
     </div>
     <div class="card">
-      <h3>🏆 Ranking por Cidade — Score Médio de Bonificação</h3>
-      <p class="desc">Cidades ordenadas pelo score médio de bonificação.
-      Cidades no topo são referência de boa adesão ao rastreamento.</p>
-      <input class="src" id="s_bcid" oninput="fil('s_bcid','t_bcid')" placeholder="Filtrar cidade...">
+      <h3>📋 Todos os Contratos Ativos — Situação Detalhada</h3>
+      <p class="desc">
+        <b>Escalas 30d/7d</b> = volume recente de operação. <b>Situação:</b> 
+        <span style="color:#22c55e">ATIVO</span> = operando normalmente · 
+        <span style="color:#f59e0b;font-weight:700">PARADO +30D</span> = sem escalas — avaliar manutenção do contrato · 
+        <span style="color:#ef4444;font-weight:700">VENCENDO</span> = prazo curto · 
+        <span style="color:#a78bfa;font-weight:700">VEÍCULO INATIVO</span> = cadastro inativo com contrato ativo — inconsistência.
+      </p>
+      <input class="src" id="s_gc_d" oninput="fil('s_gc_d','t_gc_d')" placeholder="Filtrar por GRE, placa, contrato, situação...">
       <div class="tw">
-        <table id="t_bcid">
-          <thead><tr>
-            <th style="text-align:center">#</th><th>Cidade</th>
-            <th style="text-align:center">Motoristas</th>
-            <th style="text-align:center">Escalas</th>
-            <th style="text-align:center">% Rastreado</th>
-            <th style="text-align:center">% Suspeitas</th>
-            <th style="text-align:center">Score</th>
-          </tr></thead>
-          <tbody>{html_bonif_cidade()}</tbody>
+        <table id="t_gc_d">
+          <thead><tr><th>ID</th><th>Nº Contrato</th><th>GRE</th><th>Placa</th><th>Fornecedor</th><th>Tipo</th><th>Valor/Dia</th><th>Turno</th><th style="text-align:center">Esc. 30d</th><th style="text-align:center">Esc. 7d</th><th>Situação</th></tr></thead>
+          <tbody>{html_gc_cont_detalhes()}</tbody>
         </table>
       </div>
     </div>
@@ -2046,39 +1954,29 @@ const C={{
   line:(id,labels,datasets)=>new Chart(document.getElementById(id),{{
     type:'line',data:{{labels,datasets}},
     options:{{responsive:true,plugins:{{legend:{{labels:{{color:'#94a3b8',font:{{size:11}}}}}}}},
-      scales:{{x:{{ticks:{{color:'#64748b',font:{{size:10}}}}}},y:{{ticks:{{color:'#64748b',font:{{size:10}}}}}}}}}}
+      scales:{{x:{{ticks:{{color:'#64748b',font:{{size:10}}}}}},y:{{ticks:{{color:'#64748b',font:{{size:10}}}}}}}}}
   }}),
   bar:(id,labels,datasets)=>new Chart(document.getElementById(id),{{
     type:'bar',data:{{labels,datasets}},
     options:{{responsive:true,plugins:{{legend:{{labels:{{color:'#94a3b8',font:{{size:11}}}}}}}},
-      scales:{{x:{{ticks:{{color:'#64748b',font:{{size:10}}}}}},y:{{ticks:{{color:'#64748b',font:{{size:10}}}}}}}}}}
+      scales:{{x:{{ticks:{{color:'#64748b',font:{{size:10}}}}}},y:{{ticks:{{color:'#64748b',font:{{size:10}}}}}}}}}
+  }}),
+  pie:(id,labels,data,colors)=>new Chart(document.getElementById(id),{{
+    type:'doughnut',data:{{labels,datasets:[{{data,backgroundColor:colors,borderWidth:0}}]}},
+    options:{{responsive:true,plugins:{{legend:{{position:'right',labels:{{color:'#94a3b8',font:{{size:11}}}}}}}}}}
   }})
 }};
 
-const m={jd(meses_ev)},tot={jd(ev_tot)},rast={jd(ev_rast)},
-      pct_r={jd(ev_pct_rast)},pct_s={jd(ev_pct_susp)},sem_r={jd(ev_sem)};
-
-C.bar('c_esc',m,[
-  {{label:'Total',data:tot,backgroundColor:'rgba(56,189,248,.25)',borderColor:'#38bdf8',borderWidth:1}},
-  {{label:'Com Rastreamento',data:rast,backgroundColor:'rgba(34,197,94,.3)',borderColor:'#22c55e',borderWidth:1}}
-]);
-C.line('c_pct',m,[
-  {{label:'% Com Rastreamento',data:pct_r,borderColor:'#22c55e',backgroundColor:'rgba(34,197,94,.08)',fill:true,tension:.3}},
-  {{label:'% Rotas Suspeitas',data:pct_s,borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.08)',fill:true,tension:.3}}
-]);
+// Gráficos originais
+const m={jd(meses_ev)},tot={jd(ev_tot)},rast={jd(ev_rast)},pct_r={jd(ev_pct_rast)},pct_s={jd(ev_pct_susp)},sem_r={jd(ev_sem)};
+C.bar('c_esc',m,[{{label:'Total',data:tot,backgroundColor:'rgba(56,189,248,.25)',borderColor:'#38bdf8',borderWidth:1}},{{label:'Com Rastreamento',data:rast,backgroundColor:'rgba(34,197,94,.3)',borderColor:'#22c55e',borderWidth:1}}]);
+C.line('c_pct',m,[{{label:'% Com Rastreamento',data:pct_r,borderColor:'#22c55e',backgroundColor:'rgba(34,197,94,.08)',fill:true,tension:.3}},{{label:'% Rotas Suspeitas',data:pct_s,borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.08)',fill:true,tension:.3}}]);
 C.bar('c_sem',m,[{{label:'Sem Rastreamento',data:sem_r,backgroundColor:'rgba(245,158,11,.35)',borderColor:'#f59e0b',borderWidth:1}}]);
 
 const cm={jd(cont_m)},ct={jd(cont_t)},ca={jd(cont_a)},cs={jd(cont_s)};
 C.line('c_ct2',cm,[{{label:'Escalas c/ Contrato',data:ct,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.08)',fill:true,tension:.3}}]);
-C.bar('c_ct3',cm,[
-  {{label:'Total',data:ct,backgroundColor:'rgba(56,189,248,.25)',borderColor:'#38bdf8',borderWidth:1}},
-  {{label:'Sem Rastreamento',data:cs,backgroundColor:'rgba(245,158,11,.35)',borderColor:'#f59e0b',borderWidth:1}},
-  {{label:'Anuladas',data:ca,backgroundColor:'rgba(239,68,68,.25)',borderColor:'#ef4444',borderWidth:1}}
-]);
-C.line('c_fr',{jd(fr_m)},[
-  {{label:'Rotas Suspeitas (<10min)',data:{jd(fr_s)},borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.08)',fill:true,tension:.3}},
-  {{label:'Sem Rastreamento',data:{jd(fr_sr)},borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.08)',fill:true,tension:.3}}
-]);
+C.bar('c_ct3',cm,[{{label:'Total',data:ct,backgroundColor:'rgba(56,189,248,.25)',borderColor:'#38bdf8',borderWidth:1}},{{label:'Sem Rastreamento',data:cs,backgroundColor:'rgba(245,158,11,.35)',borderColor:'#f59e0b',borderWidth:1}},{{label:'Anuladas',data:ca,backgroundColor:'rgba(239,68,68,.25)',borderColor:'#ef4444',borderWidth:1}}]);
+C.line('c_fr',{jd(fr_m)},[{{label:'Rotas Suspeitas (<10min)',data:{jd(fr_s)},borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.08)',fill:true,tension:.3}},{{label:'Sem Rastreamento',data:{jd(fr_sr)},borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.08)',fill:true,tension:.3}}]);
 
 // Gráfico GRE
 const gd={jd(df_gre_hist.to_dict('records') if not df_gre_hist.empty else [])};
@@ -2090,6 +1988,41 @@ C.line('c_gre',gmu,gns.map((g,i)=>{{
   gd.filter(r=>r.gre===g).forEach(r=>mp[r.mes]=r.pct);
   return{{label:g,data:gmu.map(m=>mp[m]||0),borderColor:cs2[i%cs2.length],backgroundColor:'transparent',tension:.3,borderWidth:2}};
 }}));
+
+// ─── GRÁFICOS GERENTE DE CONTRATOS ─────────────────────────────────────────
+
+// Frota por tipo (doughnut)
+const frotaLabels = {jd(list(gc_frota_tipos.keys()))};
+const frotaData = {jd(list(gc_frota_tipos.values()))};
+C.pie('c_gc_frota', frotaLabels, frotaData, ['#22c55e','#f59e0b','#a78bfa']);
+
+// Custo por tipo (bar)
+const custoLabels = {jd(df_gc_custo_tipo['tipo'].tolist() if not df_gc_custo_tipo.empty else [])};
+const custoData = {jd([float(v) for v in df_gc_custo_tipo['custo_por_escala'].tolist()] if not df_gc_custo_tipo.empty else [])};
+C.bar('c_gc_custo', custoLabels.map(l=>l.replace('FROTA_','')), [{{label:'R$/Escala',data:custoData,backgroundColor:['rgba(34,197,94,.4)','rgba(245,158,11,.4)','rgba(167,139,250,.4)'],borderColor:['#22c55e','#f59e0b','#a78bfa'],borderWidth:1}}]);
+
+// Gap por situação (bar horizontal via bar com indexAxis)
+const gapLabels = {jd(list(gc_gap_counts.keys()))};
+const gapData = {jd(list(gc_gap_counts.values()))};
+new Chart(document.getElementById('c_gc_gap'), {{
+  type:'bar',
+  data:{{labels:gapLabels,datasets:[{{label:'GREs',data:gapData,backgroundColor:gapLabels.map(l=>{{const c={{'SOBRECARGA':'#ef4444','FROTA OCIOSA':'#f59e0b','LIMITE':'#f97316','EQUILIBRADO':'#22c55e','SEM FROTA':'#a78bfa'}};return c[l]||'#64748b';}}),borderWidth:0}}]}},
+  options:{{indexAxis:'y',responsive:true,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{color:'#64748b'}}}},y:{{ticks:{{color:'#94a3b8'}}}}}}}
+}});
+
+// Demanda diária (bar)
+const demLabels = {jd(df_gc_demanda_diaria['gre'].tolist() if not df_gc_demanda_diaria.empty else [])};
+const demData = {jd([float(v) for v in df_gc_demanda_diaria['media_escalas_dia'].tolist()] if not df_gc_demanda_diaria.empty else [])};
+C.bar('c_gc_demanda', demLabels, [{{label:'Média Escalas/Dia',data:demData,backgroundColor:'rgba(56,189,248,.35)',borderColor:'#38bdf8',borderWidth:1}}]);
+
+// Histórico contratação (line)
+const histM = {jd(gc_hist_meses)};
+const histN = {jd(gc_hist_novos)};
+const histV = {jd(gc_hist_valor)};
+C.line('c_gc_hist', histM, [
+  {{label:'Novos Contratos',data:histN,borderColor:'#38bdf8',backgroundColor:'rgba(56,189,248,.08)',fill:true,tension:.3}},
+  {{label:'Valor Diário (R$)',data:histV,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.08)',fill:true,tension:.3,yAxisID:'y1'}}
+]);
 </script>
 </body>
 </html>"""
