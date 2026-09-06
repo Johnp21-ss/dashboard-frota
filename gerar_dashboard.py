@@ -1141,6 +1141,45 @@ GROUP BY data, contrato_rota_id, contrato_id
 ORDER BY data, valor_diaria DESC, contrato_rota_id
 """, pd.DataFrame())
 
+# 15) CONSOLIDADO OPERACIONAL DIÁRIO — BASE REAL DE EXECUÇÃO
+# Aqui NÃO existe valor financeiro. É o retrato da operação realizada no dia.
+# Uma execução é um registro em rotas_escalarota.
+# Um Contrato Rota pode aparecer em várias escalas/viagens no mesmo dia;
+# por isso, contratos_rota_executados usa COUNT(DISTINCT contrato_rota_id).
+df_gc_operacao_diaria = safe_read("""
+SELECT
+    e.data::date AS data,
+    COUNT(*) AS execucoes,
+    COUNT(DISTINCT e.contrato_rota_id) FILTER (WHERE e.contrato_rota_id IS NOT NULL) AS contratos_rota_executados,
+    COUNT(DISTINCT e.rota_id) FILTER (WHERE e.rota_id IS NOT NULL) AS rotas_viagens,
+    COUNT(DISTINCT e.motorista_id) FILTER (WHERE e.motorista_id IS NOT NULL) AS motoristas,
+    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE e.veiculo_execucao_id IS NOT NULL) AS veiculos
+FROM airbyte.rotas_escalarota e
+WHERE e.data >= DATE '2026-01-01'
+  AND e.data <= CURRENT_DATE
+  AND e.anulada = false
+GROUP BY e.data::date
+ORDER BY e.data::date
+""", pd.DataFrame())
+
+# 16) CONSOLIDADO OPERACIONAL MENSAL — DISTINTOS NO MÊS
+# Não somamos contratos-rota dos dias, porque o mesmo contrato pode operar em vários dias.
+df_gc_operacao_mensal = safe_read("""
+SELECT
+    DATE_TRUNC('month', e.data)::date AS mes,
+    COUNT(*) AS execucoes,
+    COUNT(DISTINCT e.contrato_rota_id) FILTER (WHERE e.contrato_rota_id IS NOT NULL) AS contratos_rota_executados,
+    COUNT(DISTINCT e.rota_id) FILTER (WHERE e.rota_id IS NOT NULL) AS rotas_viagens,
+    COUNT(DISTINCT e.motorista_id) FILTER (WHERE e.motorista_id IS NOT NULL) AS motoristas,
+    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE e.veiculo_execucao_id IS NOT NULL) AS veiculos
+FROM airbyte.rotas_escalarota e
+WHERE e.data >= DATE '2026-01-01'
+  AND e.data <= CURRENT_DATE
+  AND e.anulada = false
+GROUP BY DATE_TRUNC('month', e.data)::date
+ORDER BY mes
+""", pd.DataFrame())
+
 conn.close()
 print("✅ Queries concluídas. Processando...")
 
@@ -1757,6 +1796,31 @@ def _gc_fmt_data(data_iso):
         return str(data_iso)
 
 
+# Monta os consolidados operacionais para o calendário financeiro.
+gc_oper_dia = {}
+if not df_gc_operacao_diaria.empty:
+    for _, r in df_gc_operacao_diaria.iterrows():
+        data_iso = _gc_date_str(r.get('data'))
+        gc_oper_dia[data_iso] = {
+            'execucoes': _gc_int(r.get('execucoes')),
+            'contratos': _gc_int(r.get('contratos_rota_executados')),
+            'rotas': _gc_int(r.get('rotas_viagens')),
+            'motoristas': _gc_int(r.get('motoristas')),
+            'veiculos': _gc_int(r.get('veiculos')),
+        }
+
+gc_oper_mes = {}
+if not df_gc_operacao_mensal.empty:
+    for _, r in df_gc_operacao_mensal.iterrows():
+        mes_iso = _gc_date_str(r.get('mes'))[:7]
+        gc_oper_mes[mes_iso] = {
+            'execucoes': _gc_int(r.get('execucoes')),
+            'contratos': _gc_int(r.get('contratos_rota_executados')),
+            'rotas': _gc_int(r.get('rotas_viagens')),
+            'motoristas': _gc_int(r.get('motoristas')),
+            'veiculos': _gc_int(r.get('veiculos')),
+        }
+
 # Monta o calendário mensal/dia a partir dos dados reais consultados no banco.
 gc_pag_dia = {}
 if not df_gc_pagamento_diario.empty:
@@ -1809,7 +1873,8 @@ for ano in range(2026, _gc_hoje.year + 1):
         for d in range(1, limite_dia + 1):
             data_iso = f"{ano:04d}-{mes_num:02d}-{d:02d}"
             info = gc_pag_dia.get(data_iso, {'contratos':0,'valor':0.0})
-            tem = info['contratos'] > 0
+            oper = gc_oper_dia.get(data_iso, {'execucoes':0,'contratos':0,'rotas':0,'motoristas':0,'veiculos':0})
+            tem = oper['execucoes'] > 0
             if tem:
                 dias_com_operacao += 1
                 total_diarias += info['valor']
@@ -1817,11 +1882,17 @@ for ano in range(2026, _gc_hoje.year + 1):
             dias.append({
                 'data': data_iso,
                 'label': _gc_fmt_data(data_iso),
-                'contratos': info['contratos'],
+                'execucoes': oper['execucoes'],
+                'contratos_executados': oper['contratos'],
+                'rotas': oper['rotas'],
+                'motoristas': oper['motoristas'],
+                'veiculos': oper['veiculos'],
+                'contratos_diaria': info['contratos'],
                 'valor': info['valor'],
                 'detalhes': gc_pag_detalhes.get(data_iso, []),
             })
         mens = gc_pag_mensal.get(ym, {'contratos':0,'valor':0.0})
+        oper_mes = gc_oper_mes.get(ym, {'execucoes':0,'contratos':0,'rotas':0,'motoristas':0,'veiculos':0})
         dias_com_valor = [d for d in dias if d['valor'] > 0]
         maior_dia = max(dias_com_valor, key=lambda d: d['valor'], default={'data':'—','label':'—','valor':0.0,'contratos':0})
         menor_dia = min(dias_com_valor, key=lambda d: d['valor'], default={'data':'—','label':'—','valor':0.0,'contratos':0})
@@ -1830,6 +1901,11 @@ for ano in range(2026, _gc_hoje.year + 1):
             'nome': _gc_mes_nome(ym),
             'dias': dias,
             'dias_com_operacao': dias_com_operacao,
+            'execucoes': oper_mes['execucoes'],
+            'contratos_rota_executados': oper_mes['contratos'],
+            'rotas_viagens': oper_mes['rotas'],
+            'motoristas': oper_mes['motoristas'],
+            'veiculos': oper_mes['veiculos'],
             'contratos_rota_diaria': total_contratos_diaria,
             'valor_diarias': total_diarias,
             'contratos_mensais': mens['contratos'],
@@ -1852,38 +1928,54 @@ def html_gc_pagamento_calendario():
           <summary>
             <span class='gc-month-title'>📅 {mes['nome']}</span>
             <span class='gc-month-metrics'>
+              <span>{mes['execucoes']:,} execuções</span>
+              <span>{mes['contratos_rota_executados']:,} Contratos Rota</span>
               <span>{mes['dias_com_operacao']} dias c/ operação</span>
-              <span>{mes['contratos_rota_diaria']:,} diárias registradas</span>
               <strong>R$ {fmt(mes['total_previsto'])}</strong>
             </span>
           </summary>
           <div class='gc-month-body'>
             <div class='gc-month-cards'>
+              <div class='gc-mini'><label>Execuções realizadas</label><b>{mes['execucoes']:,}</b><span>escalas não anuladas</span></div>
+              <div class='gc-mini'><label>Contratos Rota executados</label><b>{mes['contratos_rota_executados']:,}</b><span>distintos no mês</span></div>
               <div class='gc-mini'><label>Diárias previstas</label><b>R$ {fmt(mes['valor_diarias'])}</b><span>{mes['contratos_rota_diaria']:,} Contratos Rota-dia</span></div>
               <div class='gc-mini'><label>Mensalidades previstas</label><b>R$ {fmt(mes['valor_mensal'])}</b><span>{mes['contratos_mensais']:,} contratos rota mensais</span></div>
-              <div class='gc-mini'><label>Maior dia de pagamento</label><b>R$ {fmt(mes['maior_dia']['valor'])}</b><span>{mes['maior_dia']['label']} · {mes['maior_dia']['contratos']:,} contratos rota</span></div>
-              <div class='gc-mini'><label>Menor dia com pagamento</label><b>R$ {fmt(mes['menor_dia']['valor'])}</b><span>{mes['menor_dia']['label']} · {mes['menor_dia']['contratos']:,} contratos rota</span></div>
               <div class='gc-mini gc-mini-total'><label>Total previsto</label><b>R$ {fmt(mes['total_previsto'])}</b><span>execução registrada no mês</span></div>
             </div>
             <div class='gc-day-list'>
         """
         for dia in mes['dias']:
-            zero = dia['contratos'] == 0
+            zero = dia['execucoes'] == 0
             cls = ' gc-day-zero' if zero else ''
             h += f"""
               <details class='gc-day{cls}'>
                 <summary>
                   <span class='gc-day-date'>{dia['label']}</span>
-                  <span class='gc-day-count'>{dia['contratos']:,} Contratos Rota</span>
+                  <span class='gc-day-count'>
+                    <b>{dia['execucoes']:,}</b> execuções · <b>{dia['contratos_executados']:,}</b> Contratos Rota ·
+                    <b>{dia['contratos_diaria']:,}</b> diárias · <b>{dia['veiculos']:,}</b> veículos
+                  </span>
                   <strong class='gc-day-value'>{'—' if zero else 'R$ '+fmt(dia['valor'])}</strong>
                 </summary>
             """
             if zero:
-                h += "<div class='gc-day-empty'>Nenhuma diária registrada para este dia.</div>"
+                h += "<div class='gc-day-empty'>Nenhuma execução não anulada registrada para este dia.</div>"
             else:
-                h += """
+                h += f"""
                   <div class='gc-day-detail'>
-                    <div class='gc-day-note'>Regra: <b>1 diária por Contrato Rota no dia</b>. Várias escalas do mesmo Contrato Rota não multiplicam o valor.</div>
+                    <div class='gc-day-stats'>
+                      <span><b>Execuções:</b> {dia['execucoes']:,}</span>
+                      <span><b>Contratos Rota executados:</b> {dia['contratos_executados']:,}</span>
+                      <span><b>Rotas/viagens:</b> {dia['rotas']:,}</span>
+                      <span><b>Motoristas:</b> {dia['motoristas']:,}</span>
+                      <span><b>Veículos:</b> {dia['veiculos']:,}</span>
+                      <span><b>Diárias faturáveis:</b> {dia['contratos_diaria']:,}</span>
+                      <span><b>Previsão de diárias:</b> R$ {fmt(dia['valor'])}</span>
+                    </div>
+                    <div class='gc-day-note'>
+                      <b>Regra de pagamento:</b> para DIÁRIA, o valor é contado uma única vez por <b>Contrato Rota + dia</b>.
+                      O mesmo Contrato Rota pode estar em várias rotas/viagens e várias escalas no dia sem duplicar a diária.
+                    </div>
                     <div class='tw'>
                       <table>
                         <thead><tr><th>Contrato Rota</th><th>Contrato Mestre</th><th>Fornecedor</th><th>GRE</th><th>Motorista(s)</th><th>Placa(s)</th><th>Execuções</th><th style='text-align:right'>Valor da Diária</th></tr></thead>
@@ -1892,7 +1984,7 @@ def html_gc_pagamento_calendario():
                 for det in dia['detalhes']:
                     h += f"<tr><td><b>#{det['contrato_rota']}</b></td><td>#{det['contrato_mestre']}</td><td>{det['fornecedor']}</td><td>{det['gre']}</td><td>{det['motoristas']}</td><td>{det['placas']}</td><td style='text-align:center'>{det['execucoes']}</td><td style='text-align:right;color:#38bdf8;font-weight:700'>R$ {fmt(det['valor'])}</td></tr>"
                 if not dia['detalhes']:
-                    h += "<tr><td colspan='8'>Detalhamento não disponível.</td></tr>"
+                    h += "<tr><td colspan='8'>Detalhamento das diárias não disponível.</td></tr>"
                 h += """
                         </tbody>
                       </table>
@@ -1918,10 +2010,10 @@ def comentario_gc_pagamento_calendario():
     maior = max(meses_com_valor, key=lambda x: x['total_previsto'])
     menor = min(meses_com_valor, key=lambda x: x['total_previsto'])
     return (
-        f"<b>Leitura financeira:</b> {atual['nome']} registra <b>R$ {fmt(atual['total_previsto'])}</b> em previsão de pagamento "
-        f"com base nas execuções registradas. O maior total do período é <b>{maior['nome']}</b> (R$ {fmt(maior['total_previsto'])}). "
+        f"<b>Leitura operacional-financeira:</b> {atual['nome']} registra <b>{atual['execucoes']:,} execuções</b> não anuladas e <b>{atual['contratos_rota_executados']:,} Contratos Rota distintos</b> no mês, gerando <b>R$ {fmt(atual['total_previsto'])}</b> em previsão. "
+        f"O maior total do período é <b>{maior['nome']}</b> (R$ {fmt(maior['total_previsto'])}). "
         f"No mês com menor total observado, <b>{menor['nome']}</b>, foram previstos R$ {fmt(menor['total_previsto'])}. "
-        f"No detalhe diário, cada <b>Contrato Rota</b> conta apenas uma vez por dia na modalidade DIARIA, mesmo que haja várias escalas/execuções."
+        f"No detalhe diário, cada <b>Contrato Rota</b> conta apenas uma vez por dia na modalidade DIARIA, mesmo que o mesmo contrato esteja em várias rotas/viagens e várias escalas."
     )
 
 # ─── COMENTÁRIOS AUTOMÁTICOS — GERENTE DE CONTRATOS ─────────────────────────
@@ -2198,6 +2290,9 @@ canvas{{max-height:270px}}
 .gc-day-zero .gc-day-value{{color:#334155}}
 .gc-day-detail{{padding:0 10px 10px}}
 .gc-day-note{{font-size:10px;color:var(--mt);padding:8px;background:var(--s1);border-left:3px solid var(--wn);margin-bottom:8px}}
+.gc-day-stats{{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}}
+.gc-day-stats span{{font-size:10px;color:var(--mt);background:var(--s1);border:1px solid var(--bd);padding:5px 7px;border-radius:5px}}
+.gc-day-stats b{{color:var(--tx)}}
 .gc-day-empty{{padding:8px 10px 12px;color:var(--mt);font-size:11px}}
 @media(max-width:900px){{.gc-month-cards{{grid-template-columns:1fr}}.gc-month>summary{{align-items:flex-start;flex-direction:column}}.gc-month-metrics{{justify-content:flex-start}}.gc-day>summary{{grid-template-columns:1fr auto}}.gc-day-count{{grid-column:1}}.gc-day-value{{grid-column:2;grid-row:1 / span 2;align-self:center}}}}
 
@@ -2754,7 +2849,7 @@ canvas{{max-height:270px}}
     <h3>💳 Previsão de Pagamento por Execução — Mês → Dias → Contratos Rota</h3>
     <p class="desc" style="border-left-color:var(--ac)">{comentario_gc_pagamento_calendario()}</p>
     <p class="desc" style="border-left-color:var(--wn)">
-      <b>Como calcular:</b> DIÁRIA = 1 valor por <b>Contrato Rota + dia</b> com pelo menos uma execução não anulada. MENSAL = 1 valor por <b>Contrato Rota + mês</b> com pelo menos uma execução não anulada. Portanto, várias escalas do mesmo contrato rota no mesmo dia não multiplicam o pagamento. O calendário mostra a previsão baseada na <b>execução efetivamente registrada</b>, não uma projeção fixa de 22 dias.
+      <b>Como calcular:</b> a operação diária vem diretamente de <b>rotas_escalarota</b>. DIÁRIA = 1 valor por <b>Contrato Rota + dia</b> com pelo menos uma execução não anulada. MENSAL = 1 valor por <b>Contrato Rota + mês</b> com pelo menos uma execução não anulada. O mesmo Contrato Rota pode aparecer em várias rotas/viagens e várias escalas, mas <b>não multiplica o valor da diária</b>. O calendário mostra a previsão baseada na <b>execução efetivamente registrada</b>, não uma projeção fixa de 22 dias.
     </p>
     {html_gc_pagamento_calendario()}
   </div>
