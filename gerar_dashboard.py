@@ -541,6 +541,7 @@ SELECT
 
     COUNT(DISTINCT v.id) FILTER (
         WHERE v.status = 'A'
+          AND v.tipo_contrato_locacao IN ('FROTA_TERCEIRIZADA','FROTA_LOCADA')
           AND NOT EXISTS (
               SELECT 1
                 FROM airbyte.contratos_itemcontrato ci2
@@ -803,21 +804,61 @@ WHERE ci.status = 'ATIVO'
     'qtd_diaria':0,'valor_diaria_dia':0,'qtd_mensal':0,'valor_mensal':0,'itens_ativos':0
 }]))
 
-# 8) ITENS ATIVOS SEM TIPO DE FROTA — PARA NÃO SUMIREM DO CONTROLE
-# São contratos rota ativos sem vínculo classificável de frota.
-df_gc_sem_tipo = safe_read("""
+# 8) RANKING DOS TERCEIRIZADOS — QUANTIDADE DE CONTRATOS ROTA E VALOR DIÁRIO
+# O fornecedor vem preferencialmente do contrato mestre. Só entram contratos rota ativos
+# de veículos classificados como FROTA_TERCEIRIZADA.
+df_gc_rank_terceiros = safe_read("""
 SELECT
-    COUNT(*) AS itens,
-    COUNT(*) FILTER (WHERE ci.veiculo_id IS NULL) AS sem_veiculo,
-    COALESCE(SUM(ci.valor_unitario),0) AS valor_total
+    COALESCE(f.nome,'SEM FORNECEDOR') AS fornecedor,
+    COUNT(DISTINCT ci.id) AS contratos_rota,
+    COUNT(DISTINCT ci.veiculo_id) AS veiculos,
+    COALESCE(SUM(ci.valor_unitario) FILTER (WHERE ci.modalidade_pagamento = 'DIARIA'),0) AS valor_diaria_dia,
+    COUNT(DISTINCT ci.id) FILTER (WHERE ci.modalidade_pagamento = 'DIARIA') AS qtd_diaria,
+    COALESCE(SUM(ci.valor_unitario) FILTER (WHERE ci.modalidade_pagamento = 'MENSAL'),0) AS valor_mensal,
+    COUNT(DISTINCT ci.id) FILTER (WHERE ci.modalidade_pagamento = 'MENSAL') AS qtd_mensal
 FROM airbyte.contratos_itemcontrato ci
-JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id AND c.status = 'A'
-LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+JOIN airbyte.contratos_contrato c
+  ON c.id = ci.contrato_id AND c.status = 'A'
+JOIN airbyte.veiculos_veiculo v
+  ON v.id = ci.veiculo_id
+LEFT JOIN airbyte.motoristas_fornecedor f
+  ON f.id = COALESCE(c.fornecedor_id, v.fornecedor_id)
 WHERE ci.status = 'ATIVO'
-  AND (v.id IS NULL OR v.tipo_contrato_locacao IS NULL)
-""", pd.DataFrame([{'itens':0,'sem_veiculo':0,'valor_total':0}]))
+  AND v.tipo_contrato_locacao = 'FROTA_TERCEIRIZADA'
+GROUP BY COALESCE(f.nome,'SEM FORNECEDOR')
+HAVING COUNT(DISTINCT ci.id) > 0
+ORDER BY contratos_rota DESC, valor_diaria_dia DESC
+LIMIT 20
+""", pd.DataFrame())
 
-# 9) HISTÓRICO REAL DE CONTRATOS MESTRES EM VIGÊNCIA POR MÊS
+# 9) CONTRATOS ROTA ATIVOS SEM PLACA
+# Controle específico dos itens ativos que ainda não possuem veículo/placa vinculada.
+df_gc_sem_placa = safe_read("""
+SELECT
+    c.id AS contrato_id,
+    ci.id AS contrato_rota_id,
+    g.nome AS gre,
+    COALESCE(f.nome,'SEM FORNECEDOR') AS fornecedor,
+    ci.modalidade_pagamento,
+    ci.valor_unitario,
+    c.data_inicio,
+    c.data_fim
+FROM airbyte.contratos_itemcontrato ci
+JOIN airbyte.contratos_contrato c
+  ON c.id = ci.contrato_id
+LEFT JOIN airbyte.veiculos_veiculo v
+  ON v.id = ci.veiculo_id
+LEFT JOIN airbyte.motoristas_fornecedor f
+  ON f.id = c.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g
+  ON g.id = ci.gre_id
+WHERE ci.status = 'ATIVO'
+  AND c.status = 'A'
+  AND (ci.veiculo_id IS NULL OR v.id IS NULL OR v.placa IS NULL)
+ORDER BY g.nome, f.nome, c.id, ci.id
+""", pd.DataFrame())
+
+# 10) HISTÓRICO REAL DE CONTRATOS MESTRES EM VIGÊNCIA POR MÊS
 # Não restringimos pelo status atual: um contrato encerrado hoje pode ter estado ativo em meses anteriores.
 df_gc_historico = safe_read("""
 WITH meses AS (
@@ -843,63 +884,7 @@ GROUP BY m.mes
 ORDER BY m.mes
 """, pd.DataFrame())
 
-# 10) DETALHAMENTO DOS CONTRATOS ROTA ATIVOS
-# A tabela não possui numero_contrato; usamos CONTRATO MESTRE (c.id) + CONTRATO ROTA (ci.id).
-df_gc_cont_detalhes = safe_read("""
-SELECT
-    c.id AS contrato_id,
-    ci.id AS contrato_rota_id,
-    c.tipo AS contrato_tipo,
-    c.data_inicio,
-    c.data_fim,
-    g.nome AS gre,
-    COALESCE(f.nome,'FROTA PRÓPRIA') AS fornecedor,
-    v.placa,
-    v.modelo,
-    v.ano,
-    v.status AS veiculo_status,
-    COALESCE(v.tipo_contrato_locacao,'SEM TIPO') AS tipo_frota,
-    ci.modalidade_pagamento,
-    ci.valor_unitario,
-    STRING_AGG(DISTINCT ct.nome, ', ') AS turnos,
-    (SELECT COUNT(*)
-       FROM airbyte.rotas_escalarota e
-      WHERE e.contrato_rota_id = ci.id
-        AND e.data >= CURRENT_DATE - INTERVAL '30 days'
-        AND e.anulada = false) AS escalas_30d,
-    (SELECT COUNT(*)
-       FROM airbyte.rotas_escalarota e
-      WHERE e.contrato_rota_id = ci.id
-        AND e.data >= CURRENT_DATE - INTERVAL '7 days'
-        AND e.anulada = false) AS escalas_7d,
-    CASE
-        WHEN v.id IS NULL THEN 'SEM VEÍCULO'
-        WHEN v.status <> 'A' THEN 'VEÍCULO INATIVO'
-        WHEN NOT EXISTS (
-            SELECT 1 FROM airbyte.rotas_escalarota e
-             WHERE e.contrato_rota_id = ci.id
-               AND e.data >= CURRENT_DATE - INTERVAL '30 days'
-               AND e.anulada = false
-        ) THEN 'PARADO +30D'
-        ELSE 'ATIVO'
-    END AS situacao
-FROM airbyte.contratos_itemcontrato ci
-JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
-LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
-LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
-LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
-LEFT JOIN airbyte.contratos_itemcontrato_turnos cit ON cit.itemcontrato_id = ci.id
-LEFT JOIN airbyte.contratos_turno ct ON ct.id = cit.turno_id
-WHERE c.status = 'A' AND ci.status = 'ATIVO'
-GROUP BY
-    c.id, ci.id, c.tipo, c.data_inicio, c.data_fim, g.nome, f.nome,
-    v.placa, v.modelo, v.ano, v.status, v.tipo_contrato_locacao,
-    ci.modalidade_pagamento, ci.valor_unitario
-ORDER BY
-    CASE WHEN v.status <> 'A' THEN 0 WHEN v.id IS NULL THEN 1 ELSE 2 END,
-    g.nome, c.id, ci.id
-LIMIT 400
-""", pd.DataFrame())
+# 10) Mantido como marcador lógico: os blocos seguintes passam a ser numerados a partir do alerta de inativos.
 
 # 11) VEÍCULOS INATIVOS COM CONTRATOS ATIVOS — ALERTA PRIORITÁRIO
 # Inclui status I e S, pois ambos não são status ativo.
@@ -1484,23 +1469,36 @@ def html_gc_custo_tipo():
     return h
 
 
-def html_gc_cont_detalhes():
-    if df_gc_cont_detalhes.empty: return "<tr><td colspan='12'>Sem dados</td></tr>"
+def html_gc_rank_terceiros_quantidade():
+    if df_gc_rank_terceiros.empty:
+        return "<tr><td colspan='4'>Sem dados</td></tr>"
     h = ""
-    for _, r in df_gc_cont_detalhes.iterrows():
-        sit = r.get('situacao','')
-        cores_sit = {'VEÍCULO INATIVO':'color:#ef4444;font-weight:700','VEICULO INATIVO':'color:#ef4444;font-weight:700','PARADO +30D':'color:#f59e0b;font-weight:700','SEM VEÍCULO':'color:#a78bfa;font-weight:700','ATIVO':'color:#22c55e'}
-        cor = cores_sit.get(sit, '')
-        esc30 = int(r.get('escalas_30d',0) or 0)
-        esc7 = int(r.get('escalas_7d',0) or 0)
-        modalidade = r.get('modalidade_pagamento','—') or '—'
-        tipo = str(r.get('tipo_frota','SEM TIPO') or 'SEM TIPO').replace('FROTA_','')
+    for i, (_, r) in enumerate(df_gc_rank_terceiros.sort_values(['contratos_rota','valor_diaria_dia'], ascending=[False,False]).head(10).iterrows()):
+        medal = "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else f"#{i+1}"))
+        h += f"<tr><td style='text-align:center;font-weight:700'>{medal}</td><td><b>{r.get('fornecedor','SEM FORNECEDOR')}</b></td><td style='text-align:center'>{int(r.get('contratos_rota',0)):,}</td><td style='text-align:center'>{int(r.get('veiculos',0)):,}</td></tr>"
+    return h
+
+
+def html_gc_rank_terceiros_valor():
+    if df_gc_rank_terceiros.empty:
+        return "<tr><td colspan='5'>Sem dados</td></tr>"
+    base = df_gc_rank_terceiros.sort_values(['valor_diaria_dia','contratos_rota'], ascending=[False,False]).head(10)
+    h = ""
+    for i, (_, r) in enumerate(base.iterrows()):
+        medal = "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else f"#{i+1}"))
+        h += f"<tr><td style='text-align:center;font-weight:700'>{medal}</td><td><b>{r.get('fornecedor','SEM FORNECEDOR')}</b></td><td style='text-align:center'>{int(r.get('qtd_diaria',0)):,}</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ {fmt(r.get('valor_diaria_dia',0))}</td><td style='text-align:center'>/ dia</td></tr>"
+    return h
+
+
+def html_gc_sem_placa():
+    if df_gc_sem_placa.empty:
+        return "<tr><td colspan='9'>Nenhum contrato rota ativo sem placa vinculada.</td></tr>"
+    h = ""
+    for _, r in df_gc_sem_placa.iterrows():
+        modal = str(r.get('modalidade_pagamento','') or '—')
         val = float(r.get('valor_unitario') or 0)
-        unidade = '/dia' if modalidade == 'DIARIA' else '/mês' if modalidade == 'MENSAL' else ''
-        h += f"<tr><td><b>#{r.get('contrato_id','—')}</b></td><td><b>#{r.get('contrato_rota_id','—')}</b></td>"
-        h += f"<td>{r.get('gre','—')}</td><td><b>{r.get('placa','—')}</b></td><td>{r.get('fornecedor','—')}</td>"
-        h += f"<td>{tipo}</td><td>{modalidade}</td><td>R$ {fmt(val)}{unidade}</td><td>{r.get('turnos','—') or '—'}</td>"
-        h += f"<td style='text-align:center;color:#38bdf8;font-weight:700'>{esc30}</td><td style='text-align:center'>{esc7}</td><td style='{cor}'>{sit}</td></tr>"
+        unidade = '/dia' if modal == 'DIARIA' else '/mês' if modal == 'MENSAL' else ''
+        h += f"<tr><td><b>#{r.get('contrato_rota_id','—')}</b></td><td style='text-align:center'>#{r.get('contrato_id','—')}</td><td>{r.get('gre','—')}</td><td>{r.get('fornecedor','—')}</td><td>{modal}</td><td style='text-align:right'>R$ {fmt(val)}{unidade}</td><td>{str(r.get('data_inicio',''))[:10] if r.get('data_inicio') else '—'}</td><td>{str(r.get('data_fim',''))[:10] if r.get('data_fim') else '—'}</td><td style='color:#a78bfa;font-weight:700'>SEM PLACA</td></tr>"
     return h
 
 
@@ -1587,7 +1585,7 @@ def comentario_gc_frota_analise():
     p_oci = round(ociosa / ativa * 100, 1)
     partes = [f"<b>Frota ativa:</b> {ativa:,} veículos; <b>em operação:</b> {oper:,} ({utiliz}%)."]
     partes.append(f"<b>Ociosa com contrato:</b> {ociosa:,} ({p_oci}%). É o grupo que merece revisão de alocação e pagamento.")
-    partes.append(f"<b>Disponível sem contrato:</b> {disp:,}. Não é sinônimo de ociosidade; representa capacidade ativa sem contrato vigente.")
+    partes.append(f"<b>Frota comercial disponível:</b> {disp:,}. Considera somente veículos ativos <b>terceirizados + locados</b> sem contrato vigente; não inclui frota própria ou parceira.")
     if inat > 0:
         partes.append(f"<b style='color:#ef4444'>Alerta crítico:</b> {inat:,} veículo(s) inativo(s) possuem contrato ativo. Isso deve ser tratado antes de qualquer renovação ou nova contratação.")
     if propria_contrato > 0:
@@ -1676,11 +1674,10 @@ def comentario_gc_recomendacao():
         propria = int(r.get('propria_com_contrato',0) or 0)
         if propria:
             partes.append(f"<b>3. Revisar {propria:,} vínculo(s) de frota própria com contrato</b> para eliminar custo contratual indevido.")
-    if not df_gc_sem_tipo.empty:
-        st = df_gc_sem_tipo.iloc[0]
-        itens = int(st.get('itens',0) or 0)
+    if not df_gc_sem_placa.empty:
+        itens = len(df_gc_sem_placa)
         if itens:
-            partes.append(f"<b>4. Classificar {itens:,} contrato(s) rota sem tipo de frota</b> antes de fechar a previsão financeira.")
+            partes.append(f"<b>4. Regularizar {itens:,} contrato(s) rota ativo(s) sem placa</b> antes de considerar o item regularizado para operação.")
     partes.append("<b>5. Manter frota locada separada dos terceirizados</b> e comparar seu custo com a alternativa de frota própria/terceirizada.")
     return "<br><br>".join(partes)
 
@@ -1712,8 +1709,9 @@ gc_loc_vd = float(df_gc_fin_locada['valor_diaria_dia'].iloc[0]) if not df_gc_fin
 gc_loc_qm = int(df_gc_fin_locada['qtd_mensal'].iloc[0]) if not df_gc_fin_locada.empty else 0
 gc_loc_vm = float(df_gc_fin_locada['valor_mensal'].iloc[0]) if not df_gc_fin_locada.empty else 0
 
-gc_sem_tipo = int(df_gc_sem_tipo['itens'].iloc[0]) if not df_gc_sem_tipo.empty else 0
-gc_sem_veiculo = int(df_gc_sem_tipo['sem_veiculo'].iloc[0]) if not df_gc_sem_tipo.empty else 0
+gc_sem_placa = len(df_gc_sem_placa) if not df_gc_sem_placa.empty else 0
+
+gc_rank_fornecedores = len(df_gc_rank_terceiros) if not df_gc_rank_terceiros.empty else 0
 
 gc_inat_contrato = len(df_gc_inativos_contrato) if not df_gc_inativos_contrato.empty else 0
 
@@ -1825,6 +1823,7 @@ canvas{{max-height:270px}}
 .gc-rec b{{color:var(--ok)}}
 .gc-rec .item{{margin-bottom:6px;padding-left:16px;position:relative}}
 .gc-rec .item::before{{content:'▸';position:absolute;left:0;color:var(--ok)}}
+.rank-table td{{padding:7px 8px}}
 .gc-analysis{{border-color:rgba(56,189,248,.35)}}
 .gc-analysis .desc{{margin-top:8px}}
 </style>
@@ -2298,13 +2297,13 @@ canvas{{max-height:270px}}
 
   <div class="kpi-grid">
     <div class="kpi"><label>Contratos Ativos</label><div class="v v-ac">{gc_total:,}</div><div class="sub">contratos mestres</div></div>
-    <div class="kpi"><label>Contratos Rota Ativos</label><div class="v v-ac">{gc_itens_ativos:,}</div><div class="sub">itens dos contratos mestres</div></div>
+    <div class="kpi"><label>Contratos Rota Ativos</label><div class="v v-ac">{gc_itens_ativos:,}</div><div class="sub">contratos rota ativos</div></div>
     <div class="kpi"><label>Previsão Terceirizados</label><div class="v v-ac">R$ {fmt(gc_fin_total_mes)}</div><div class="sub">R$ {fmt(gc_fin_vd)}/dia + R$ {fmt(gc_fin_vm)}/mês</div></div>
     <div class="kpi"><label>Frota Total Ativa</label><div class="v v-ok">{gc_frota_ativa:,}</div><div class="sub">status A no cadastro</div></div>
     <div class="kpi"><label>Frota em Operação</label><div class="v v-ok">{gc_frota_operando:,}</div><div class="sub">últimos 30 dias</div></div>
     <div class="kpi"><label>Frota Ociosa c/ Contrato</label><div class="v {'v-cr' if gc_frota_ociosa>20 else 'v-wn'}">{gc_frota_ociosa:,}</div><div class="sub">ativa + contrato + sem rota</div></div>
     <div class="kpi"><label>Inativos c/ Contrato</label><div class="v v-cr">{gc_frota_inat_contrato:,}</div><div class="sub">inconsistência contratual</div></div>
-    <div class="kpi"><label>Disponível sem Contrato</label><div class="v v-ac">{gc_frota_sem_contrato:,}</div><div class="sub">ativo sem contrato vigente</div></div>
+    <div class="kpi"><label>Frota Comercial Disponível</label><div class="v v-ac">{gc_frota_sem_contrato:,}</div><div class="sub">terceirizados + locados sem contrato</div></div>
   </div>
 
   <div class="g2">
@@ -2314,7 +2313,7 @@ canvas{{max-height:270px}}
 
   <div class="g2">
     <div class="kpi"><label>Frota Própria c/ Contrato</label><div class="v {'v-cr' if gc_propria_com_contrato>0 else 'v-ok'}">{gc_propria_com_contrato:,}</div><div class="sub">vínculo que deve ser auditado</div></div>
-    <div class="kpi"><label>Frota Locada c/ Contrato</label><div class="v v-wn">{gc_locada_com_contrato:,}</div><div class="sub">mantida separada dos terceiros</div></div>
+    <div class="kpi"><label>Frota Locada c/ Contrato</label><div class="v v-wn">{gc_locada_com_contrato:,}</div><div class="sub">analisada separadamente</div></div>
   </div>
 
   <div class="card gc-analysis">
@@ -2336,7 +2335,7 @@ canvas{{max-height:270px}}
       <p class="desc">
         <b>Em Operação</b> = veículo ativo com rota não anulada nos últimos 30 dias.
         <b>Ocioso c/ Contrato</b> = ativo, contrato vigente e sem rota nos últimos 30 dias.
-        <b>Sem Contrato</b> = ativo no cadastro e sem contrato vigente. Em <b>Frota Própria</b>, não ter contrato não é problema por si só; ter contrato vinculado é o ponto de auditoria.
+        <b>S/ Contrato</b> = ativo no cadastro sem contrato vigente. O card superior de disponibilidade comercial considera somente <b>terceirizados + locados</b>; frota própria e parceira são analisadas separadamente.
       </p>
       <div class="tw">
         <table>
@@ -2425,21 +2424,40 @@ canvas{{max-height:270px}}
     </div>
   </div>
 
-  <div class="card">
-    <h3>📋 Contratos Rota Ativos — Situação Detalhada</h3>
-    <p class="desc">Os <b>Contratos Rota</b> são os 463 itens ativos. <b>Contrato Mestre</b> é o contrato principal (246 ativos). A situação evidencia veículo inativo, item sem veículo, parada superior a 30 dias ou operação normal.</p>
-    <input class="src" id="s_gc_d" oninput="fil('s_gc_d','t_gc_d')" placeholder="Filtrar por GRE, placa, fornecedor, contrato, situação...">
-    <div class="tw">
-      <table id="t_gc_d">
-        <thead><tr><th>Contrato Mestre</th><th>Contrato Rota</th><th>GRE</th><th>Placa</th><th>Fornecedor</th><th>Tipo Frota</th><th>Modalidade</th><th>Valor</th><th>Turno</th><th>Esc.30d</th><th>Esc.7d</th><th>Situação</th></tr></thead>
-        <tbody>{html_gc_cont_detalhes()}</tbody>
-      </table>
+  <div class="g2">
+    <div class="card">
+      <h3>🏢 Terceirizados — Maior Quantidade de Contratos Rota</h3>
+      <p class="desc">Ranking dos fornecedores terceirizados com maior quantidade de <b>Contratos Rota ativos</b>. Considera somente itens ativos, dentro de contratos mestres ativos, vinculados a veículos classificados como <b>FROTA_TERCEIRIZADA</b>.</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>#</th><th>Fornecedor</th><th style="text-align:center">Contratos Rota</th><th style="text-align:center">Veículos</th></tr></thead>
+          <tbody>{html_gc_rank_terceiros_quantidade()}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>💰 Terceirizados — Maior Compromisso Diário</h3>
+      <p class="desc">Ranking pelo valor contratado em <b>diárias</b>. Mostra onde está concentrado o maior compromisso financeiro diário com os terceirizados.</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>#</th><th>Fornecedor</th><th style="text-align:center">Rotas Diárias</th><th style="text-align:right">Valor Diário</th><th></th></tr></thead>
+          <tbody>{html_gc_rank_terceiros_valor()}</tbody>
+        </table>
+      </div>
     </div>
   </div>
 
   <div class="card">
-    <h3>💸 Itens Ativos sem Tipo de Frota</h3>
-    <p class="desc">Existem <b>{gc_sem_tipo:,}</b> contrato(s) rota ativo(s) sem classificação de frota, dos quais <b>{gc_sem_veiculo:,}</b> estão sem veículo vinculado. Eles ficam fora da previsão de terceiros até serem classificados.</p>
+    <h3>🚨 Contratos Rota Ativos sem Placa Vinculada</h3>
+    <p class="desc" style="border-left-color:#a78bfa">Existem <b>{gc_sem_placa:,}</b> contratos rota ativos sem placa vinculada. Esses itens devem ser regularizados ou justificados antes de serem considerados plenamente aptos para operação.</p>
+    <input class="src" id="s_gc_p" oninput="fil('s_gc_p','t_gc_p')" placeholder="Filtrar contrato, GRE, fornecedor...">
+    <div class="tw">
+      <table id="t_gc_p">
+        <thead><tr><th>Contrato Rota</th><th style="text-align:center">Contrato Mestre</th><th>GRE</th><th>Fornecedor</th><th>Modalidade</th><th style="text-align:right">Valor</th><th>Início</th><th>Fim</th><th>Situação</th></tr></thead>
+        <tbody>{html_gc_sem_placa()}</tbody>
+      </table>
+    </div>
   </div>
 </div>
 
