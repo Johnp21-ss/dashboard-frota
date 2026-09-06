@@ -69,6 +69,7 @@ canvas{max-height:270px}
 .gc-rec b{color:var(--ok)}
 .gc-rec .item{margin-bottom:6px;padding-left:16px;position:relative}
 .gc-rec .item::before{content:'▸';position:absolute;left:0;color:var(--ok)}
+.rank-table td{padding:7px 8px}
 .gc-analysis{border-color:rgba(56,189,248,.35)}
 .gc-analysis .desc{margin-top:8px}
 </style>
@@ -76,7 +77,7 @@ canvas{max-height:270px}
 <body>
 <div class="hdr">
   <h1>🛡️ Torre de Controle — Fiscalização de Rotas Escolares | Piauí</h1>
-  <div class="meta">Atualizado em 06/09/2026 01:55 &nbsp;·&nbsp; Fonte: Banco de dados operacional</div>
+  <div class="meta">Atualizado em 06/09/2026 02:21 &nbsp;·&nbsp; Fonte: Banco de dados operacional</div>
 </div>
 <div class="nav">
   <button class="active" onclick="tab('t1',this)">📊 Painel Executivo</button>
@@ -542,13 +543,13 @@ canvas{max-height:270px}
 
   <div class="kpi-grid">
     <div class="kpi"><label>Contratos Ativos</label><div class="v v-ac">246</div><div class="sub">contratos mestres</div></div>
-    <div class="kpi"><label>Contratos Rota Ativos</label><div class="v v-ac">463</div><div class="sub">itens dos contratos mestres</div></div>
+    <div class="kpi"><label>Contratos Rota Ativos</label><div class="v v-ac">463</div><div class="sub">contratos rota ativos</div></div>
     <div class="kpi"><label>Previsão Terceirizados</label><div class="v v-ac">R$ 3.652.126,62</div><div class="sub">R$ 162.578,07/dia + R$ 75.409,08/mês</div></div>
     <div class="kpi"><label>Frota Total Ativa</label><div class="v v-ok">820</div><div class="sub">status A no cadastro</div></div>
     <div class="kpi"><label>Frota em Operação</label><div class="v v-ok">555</div><div class="sub">últimos 30 dias</div></div>
     <div class="kpi"><label>Frota Ociosa c/ Contrato</label><div class="v v-cr">145</div><div class="sub">ativa + contrato + sem rota</div></div>
     <div class="kpi"><label>Inativos c/ Contrato</label><div class="v v-cr">1</div><div class="sub">inconsistência contratual</div></div>
-    <div class="kpi"><label>Disponível sem Contrato</label><div class="v v-ac">406</div><div class="sub">ativo sem contrato vigente</div></div>
+    <div class="kpi"><label>Frota Comercial Disponível</label><div class="v v-ac">59</div><div class="sub">terceirizados + locados sem contrato</div></div>
   </div>
 
   <div class="g2">
@@ -558,20 +559,20 @@ canvas{max-height:270px}
 
   <div class="g2">
     <div class="kpi"><label>Frota Própria c/ Contrato</label><div class="v v-cr">3</div><div class="sub">vínculo que deve ser auditado</div></div>
-    <div class="kpi"><label>Frota Locada c/ Contrato</label><div class="v v-wn">1</div><div class="sub">mantida separada dos terceiros</div></div>
+    <div class="kpi"><label>Frota Locada c/ Contrato</label><div class="v v-wn">1</div><div class="sub">analisada separadamente</div></div>
   </div>
 
   <div class="card gc-analysis">
     <h3>🧠 ANÁLISE GERENCIAL — LEITURA EXECUTIVA</h3>
     <p class="desc" style="border-left-color:var(--ac)"><b>246 contratos mestres ativos</b> controlam <b>463 contratos rota</b> ativos. A frota ativa é de <b>820</b> veículos, com <b>555</b> em operação nos últimos 30 dias (67.7%).<br>Há <b style='color:#f59e0b'>145 veículos ativos com contrato e sem operação recente</b>; esse é o principal ponto de revisão de utilização e pagamento.<br>Há <b style='color:#ef4444'>1 veículos inativos com contrato ativo</b>; isso é uma inconsistência contratual prioritária.<br>Existem <b style='color:#f59e0b'>3 veículos de frota própria com contrato ativo</b>; esse vínculo deve ser auditado separadamente.<br>A referência mensal dos terceiros é <b>R$ 3.652.126,62</b> (22 dias úteis para diárias + mensalidades). Frota locada permanece fora desse cálculo para análise específica.</p>
-    <p class="desc" style="border-left-color:var(--wn)"><b>Frota ativa:</b> 820 veículos; <b>em operação:</b> 555 (67.7%).<br><b>Ociosa com contrato:</b> 145 (17.7%). É o grupo que merece revisão de alocação e pagamento.<br><b>Disponível sem contrato:</b> 406. Não é sinônimo de ociosidade; representa capacidade ativa sem contrato vigente.<br><b style='color:#ef4444'>Alerta crítico:</b> 1 veículo(s) inativo(s) possuem contrato ativo. Isso deve ser tratado antes de qualquer renovação ou nova contratação.<br><b style='color:#f59e0b'>Frota própria com contrato:</b> 3 veículo(s). Como a frota própria não deveria depender de contrato, esse vínculo precisa ser auditado.<br><b>Frota própria sem contrato:</b> 210; <b>locada ativa:</b> 8. Locada permanece em análise separada dos terceirizados.</p>
+    <p class="desc" style="border-left-color:var(--wn)"><b>Frota ativa:</b> 820 veículos; <b>em operação:</b> 555 (67.7%).<br><b>Ociosa com contrato:</b> 145 (17.7%). É o grupo que merece revisão de alocação e pagamento.<br><b>Frota comercial disponível:</b> 59. Considera somente veículos ativos <b>terceirizados + locados</b> sem contrato vigente; não inclui frota própria ou parceira.<br><b style='color:#ef4444'>Alerta crítico:</b> 1 veículo(s) inativo(s) possuem contrato ativo. Isso deve ser tratado antes de qualquer renovação ou nova contratação.<br><b style='color:#f59e0b'>Frota própria com contrato:</b> 3 veículo(s). Como a frota própria não deveria depender de contrato, esse vínculo precisa ser auditado.<br><b>Frota própria sem contrato:</b> 210; <b>locada ativa:</b> 8. Locada permanece em análise separada dos terceirizados.</p>
     <p class="desc" style="border-left-color:var(--pu)"><b>Terceirizados — diária:</b> 436 contratos rota · <b>R$ 162.578,07/dia</b> · referência de <b>R$ 3.576.717,54/mês</b> em 22 dias úteis.<br><b>Terceirizados — mensal:</b> 16 contratos rota · <b>R$ 75.409,08/mês</b>.<br><b>Previsão mensal combinada de terceiros:</b> <b style='color:#38bdf8'>R$ 3.652.126,62</b>.</p>
     <p class="desc" style="border-left-color:#f97316"><b>Locada:</b> 1 item(ns) ativo(s) · 0 diária(s) em R$ 0,00/dia e 1 mensal(is) em R$ 4.000,00/mês. Mantida separada dos terceirizados para não misturar modelos contratuais.</p>
   </div>
 
   <div class="gc-rec">
     <b>🧠 PRIORIDADES GERENCIAIS:</b><br><br>
-    <b style='color:#ef4444'>1. Corrigir 1 vínculo(s) de veículo inativo com contrato ativo.</b><br><br><b>2. Auditar 145 veículo(s) ocioso(s) com contrato</b> antes de ampliar a frota.<br><br><b>3. Revisar 3 vínculo(s) de frota própria com contrato</b> para eliminar custo contratual indevido.<br><br><b>4. Classificar 7 contrato(s) rota sem tipo de frota</b> antes de fechar a previsão financeira.<br><br><b>5. Manter frota locada separada dos terceirizados</b> e comparar seu custo com a alternativa de frota própria/terceirizada.
+    <b style='color:#ef4444'>1. Corrigir 1 vínculo(s) de veículo inativo com contrato ativo.</b><br><br><b>2. Auditar 145 veículo(s) ocioso(s) com contrato</b> antes de ampliar a frota.<br><br><b>3. Revisar 3 vínculo(s) de frota própria com contrato</b> para eliminar custo contratual indevido.<br><br><b>4. Regularizar 7 contrato(s) rota ativo(s) sem placa</b> antes de considerar o item regularizado para operação.<br><br><b>5. Manter frota locada separada dos terceirizados</b> e comparar seu custo com a alternativa de frota própria/terceirizada.
   </div>
 
   <div class="g2">
@@ -580,7 +581,7 @@ canvas{max-height:270px}
       <p class="desc">
         <b>Em Operação</b> = veículo ativo com rota não anulada nos últimos 30 dias.
         <b>Ocioso c/ Contrato</b> = ativo, contrato vigente e sem rota nos últimos 30 dias.
-        <b>Sem Contrato</b> = ativo no cadastro e sem contrato vigente. Em <b>Frota Própria</b>, não ter contrato não é problema por si só; ter contrato vinculado é o ponto de auditoria.
+        <b>S/ Contrato</b> = ativo no cadastro sem contrato vigente. O card superior de disponibilidade comercial considera somente <b>terceirizados + locados</b>; frota própria e parceira são analisadas separadamente.
       </p>
       <div class="tw">
         <table>
@@ -669,21 +670,40 @@ canvas{max-height:270px}
     </div>
   </div>
 
-  <div class="card">
-    <h3>📋 Contratos Rota Ativos — Situação Detalhada</h3>
-    <p class="desc">Os <b>Contratos Rota</b> são os 463 itens ativos. <b>Contrato Mestre</b> é o contrato principal (246 ativos). A situação evidencia veículo inativo, item sem veículo, parada superior a 30 dias ou operação normal.</p>
-    <input class="src" id="s_gc_d" oninput="fil('s_gc_d','t_gc_d')" placeholder="Filtrar por GRE, placa, fornecedor, contrato, situação...">
-    <div class="tw">
-      <table id="t_gc_d">
-        <thead><tr><th>Contrato Mestre</th><th>Contrato Rota</th><th>GRE</th><th>Placa</th><th>Fornecedor</th><th>Tipo Frota</th><th>Modalidade</th><th>Valor</th><th>Turno</th><th>Esc.30d</th><th>Esc.7d</th><th>Situação</th></tr></thead>
-        <tbody><tr><td colspan='12'>Sem dados</td></tr></tbody>
-      </table>
+  <div class="g2">
+    <div class="card">
+      <h3>🏢 Terceirizados — Maior Quantidade de Contratos Rota</h3>
+      <p class="desc">Ranking dos fornecedores terceirizados com maior quantidade de <b>Contratos Rota ativos</b>. Considera somente itens ativos, dentro de contratos mestres ativos, vinculados a veículos classificados como <b>FROTA_TERCEIRIZADA</b>.</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>#</th><th>Fornecedor</th><th style="text-align:center">Contratos Rota</th><th style="text-align:center">Veículos</th></tr></thead>
+          <tbody><tr><td style='text-align:center;font-weight:700'>🥇</td><td><b>SIGA ALUGUEL DE CARROS E SERVICOS LTDA (STENIO)</b></td><td style='text-align:center'>15</td><td style='text-align:center'>15</td></tr><tr><td style='text-align:center;font-weight:700'>🥈</td><td><b>KLEBERT WEINER RODRIGUES CAMPELO LEITE</b></td><td style='text-align:center'>13</td><td style='text-align:center'>13</td></tr><tr><td style='text-align:center;font-weight:700'>🥉</td><td><b>TEODOZIO SÁLVIO FERREIRA SILVA</b></td><td style='text-align:center'>11</td><td style='text-align:center'>6</td></tr><tr><td style='text-align:center;font-weight:700'>#4</td><td><b>MAICON WILLYAMS DOS S MARQUES LTDA</b></td><td style='text-align:center'>10</td><td style='text-align:center'>10</td></tr><tr><td style='text-align:center;font-weight:700'>#5</td><td><b>SHAMURAY SOARES DE CARVALHO</b></td><td style='text-align:center'>9</td><td style='text-align:center'>8</td></tr><tr><td style='text-align:center;font-weight:700'>#6</td><td><b>M DE S RIBEIRO</b></td><td style='text-align:center'>8</td><td style='text-align:center'>8</td></tr><tr><td style='text-align:center;font-weight:700'>#7</td><td><b>ELIETE DE SOUSA DANTAS</b></td><td style='text-align:center'>8</td><td style='text-align:center'>8</td></tr><tr><td style='text-align:center;font-weight:700'>#8</td><td><b>ERIMAR F. ROCHA</b></td><td style='text-align:center'>7</td><td style='text-align:center'>7</td></tr><tr><td style='text-align:center;font-weight:700'>#9</td><td><b>A. S. MONTE</b></td><td style='text-align:center'>5</td><td style='text-align:center'>4</td></tr><tr><td style='text-align:center;font-weight:700'>#10</td><td><b>C W AUTO SERVICOS LTDA</b></td><td style='text-align:center'>5</td><td style='text-align:center'>5</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>💰 Terceirizados — Maior Compromisso Diário</h3>
+      <p class="desc">Ranking pelo valor contratado em <b>diárias</b>. Mostra onde está concentrado o maior compromisso financeiro diário com os terceirizados.</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>#</th><th>Fornecedor</th><th style="text-align:center">Rotas Diárias</th><th style="text-align:right">Valor Diário</th><th></th></tr></thead>
+          <tbody><tr><td style='text-align:center;font-weight:700'>🥇</td><td><b>SIGA ALUGUEL DE CARROS E SERVICOS LTDA (STENIO)</b></td><td style='text-align:center'>15</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 8.512,36</td><td style='text-align:center'>/ dia</td></tr><tr><td style='text-align:center;font-weight:700'>🥈</td><td><b>MAICON WILLYAMS DOS S MARQUES LTDA</b></td><td style='text-align:center'>10</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 5.929,40</td><td style='text-align:center'>/ dia</td></tr><tr><td style='text-align:center;font-weight:700'>🥉</td><td><b>SHAMURAY SOARES DE CARVALHO</b></td><td style='text-align:center'>9</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 4.881,00</td><td style='text-align:center'>/ dia</td></tr><tr><td style='text-align:center;font-weight:700'>#4</td><td><b>TEODOZIO SÁLVIO FERREIRA SILVA</b></td><td style='text-align:center'>11</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 3.935,00</td><td style='text-align:center'>/ dia</td></tr><tr><td style='text-align:center;font-weight:700'>#5</td><td><b>A. S. MONTE</b></td><td style='text-align:center'>5</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 3.450,00</td><td style='text-align:center'>/ dia</td></tr><tr><td style='text-align:center;font-weight:700'>#6</td><td><b>M DE S RIBEIRO</b></td><td style='text-align:center'>8</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 3.330,00</td><td style='text-align:center'>/ dia</td></tr><tr><td style='text-align:center;font-weight:700'>#7</td><td><b>C W AUTO SERVICOS LTDA</b></td><td style='text-align:center'>5</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 3.240,00</td><td style='text-align:center'>/ dia</td></tr><tr><td style='text-align:center;font-weight:700'>#8</td><td><b>J RIBEIRO SOARES</b></td><td style='text-align:center'>5</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 2.850,00</td><td style='text-align:center'>/ dia</td></tr><tr><td style='text-align:center;font-weight:700'>#9</td><td><b>KLEBERT WEINER RODRIGUES CAMPELO LEITE</b></td><td style='text-align:center'>4</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 2.600,00</td><td style='text-align:center'>/ dia</td></tr><tr><td style='text-align:center;font-weight:700'>#10</td><td><b>ELIETE DE SOUSA DANTAS</b></td><td style='text-align:center'>8</td><td style='text-align:right;color:#ef4444;font-weight:700'>R$ 2.350,00</td><td style='text-align:center'>/ dia</td></tr></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
   <div class="card">
-    <h3>💸 Itens Ativos sem Tipo de Frota</h3>
-    <p class="desc">Existem <b>7</b> contrato(s) rota ativo(s) sem classificação de frota, dos quais <b>7</b> estão sem veículo vinculado. Eles ficam fora da previsão de terceiros até serem classificados.</p>
+    <h3>🚨 Contratos Rota Ativos sem Placa Vinculada</h3>
+    <p class="desc" style="border-left-color:#a78bfa">Existem <b>7</b> contratos rota ativos sem placa vinculada. Esses itens devem ser regularizados ou justificados antes de serem considerados plenamente aptos para operação.</p>
+    <input class="src" id="s_gc_p" oninput="fil('s_gc_p','t_gc_p')" placeholder="Filtrar contrato, GRE, fornecedor...">
+    <div class="tw">
+      <table id="t_gc_p">
+        <thead><tr><th>Contrato Rota</th><th style="text-align:center">Contrato Mestre</th><th>GRE</th><th>Fornecedor</th><th>Modalidade</th><th style="text-align:right">Valor</th><th>Início</th><th>Fim</th><th>Situação</th></tr></thead>
+        <tbody><tr><td><b>#1123</b></td><td style='text-align:center'>#1486</td><td>12ª GRE</td><td>WELITON RODRIGUES ALVES</td><td>DIARIA</td><td style='text-align:right'>R$ 450,00/dia</td><td>2026-06-01</td><td>2026-12-20</td><td style='color:#a78bfa;font-weight:700'>SEM PLACA</td></tr><tr><td><b>#1818</b></td><td style='text-align:center'>#1816</td><td>19ª GRE</td><td>FRANCISCO DAS CHAGAS BARBOSA SOARES (C TURISMO)</td><td>DIARIA</td><td style='text-align:right'>R$ 400,00/dia</td><td>2026-03-02</td><td>2026-12-20</td><td style='color:#a78bfa;font-weight:700'>SEM PLACA</td></tr><tr><td><b>#2377</b></td><td style='text-align:center'>#1915</td><td>7ª GRE</td><td>ELBERT HOLANDA</td><td>DIARIA</td><td style='text-align:right'>R$ 182,00/dia</td><td>2026-08-17</td><td>2026-12-20</td><td style='color:#a78bfa;font-weight:700'>SEM PLACA</td></tr><tr><td><b>#2378</b></td><td style='text-align:center'>#1915</td><td>7ª GRE</td><td>ELBERT HOLANDA</td><td>DIARIA</td><td style='text-align:right'>R$ 200,00/dia</td><td>2026-08-17</td><td>2026-12-20</td><td style='color:#a78bfa;font-weight:700'>SEM PLACA</td></tr><tr><td><b>#2379</b></td><td style='text-align:center'>#1915</td><td>7ª GRE</td><td>ELBERT HOLANDA</td><td>DIARIA</td><td style='text-align:right'>R$ 200,00/dia</td><td>2026-08-17</td><td>2026-12-20</td><td style='color:#a78bfa;font-weight:700'>SEM PLACA</td></tr><tr><td><b>#2380</b></td><td style='text-align:center'>#1915</td><td>7ª GRE</td><td>ELBERT HOLANDA</td><td>DIARIA</td><td style='text-align:right'>R$ 250,00/dia</td><td>2026-08-17</td><td>2026-12-20</td><td style='color:#a78bfa;font-weight:700'>SEM PLACA</td></tr><tr><td><b>#2344</b></td><td style='text-align:center'>#1882</td><td>7ª GRE</td><td>LAERTY PEREIRA DA SILVA</td><td>DIARIA</td><td style='text-align:right'>R$ 100,00/dia</td><td>2026-08-06</td><td>2026-12-20</td><td style='color:#a78bfa;font-weight:700'>SEM PLACA</td></tr></tbody>
+      </table>
+    </div>
   </div>
 </div>
 
