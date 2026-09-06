@@ -1952,18 +1952,36 @@ function fil(sid,tid){{
 
 const C={{
   line:(id,labels,datasets)=>new Chart(document.getElementById(id),{{
-    type:'line',data:{{labels,datasets}},
-    options:{{responsive:true,plugins:{{legend:{{labels:{{color:'#94a3b8',font:{{size:11}}}}}}}},
-      scales:{{x:{{ticks:{{color:'#64748b',font:{{size:10}}}}}},y:{{ticks:{{color:'#64748b',font:{{size:10}}}}}}}}
+    type:'line',
+    data:{{labels,datasets}},
+    options:{{
+      responsive:true,
+      plugins:{{legend:{{labels:{{color:'#94a3b8',font:{{size:11}}}}}}}},
+      scales:{{
+        x:{{ticks:{{color:'#64748b',font:{{size:10}}}}}},
+        y:{{ticks:{{color:'#64748b',font:{{size:10}}}}}}
+      }}
+    }}
   }}),
   bar:(id,labels,datasets)=>new Chart(document.getElementById(id),{{
-    type:'bar',data:{{labels,datasets}},
-    options:{{responsive:true,plugins:{{legend:{{labels:{{color:'#94a3b8',font:{{size:11}}}}}}}},
-      scales:{{x:{{ticks:{{color:'#64748b',font:{{size:10}}}}}},y:{{ticks:{{color:'#64748b',font:{{size:10}}}}}}}}
+    type:'bar',
+    data:{{labels,datasets}},
+    options:{{
+      responsive:true,
+      plugins:{{legend:{{labels:{{color:'#94a3b8',font:{{size:11}}}}}}}},
+      scales:{{
+        x:{{ticks:{{color:'#64748b',font:{{size:10}}}}}},
+        y:{{ticks:{{color:'#64748b',font:{{size:10}}}}}}
+      }}
+    }}
   }}),
   pie:(id,labels,data,colors)=>new Chart(document.getElementById(id),{{
-    type:'doughnut',data:{{labels,datasets:[{{data,backgroundColor:colors,borderWidth:0}}]}},
-    options:{{responsive:true,plugins:{{legend:{{position:'right',labels:{{color:'#94a3b8',font:{{size:11}}}}}}}}}}
+    type:'doughnut',
+    data:{{labels,datasets:[{{data,backgroundColor:colors,borderWidth:0}}]}},
+    options:{{
+      responsive:true,
+      plugins:{{legend:{{position:'right',labels:{{color:'#94a3b8',font:{{size:11}}}}}}}}
+    }}
   }})
 }};
 
