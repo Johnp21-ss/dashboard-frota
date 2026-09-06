@@ -465,211 +465,360 @@ GROUP BY g.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') ORDER BY g.nome, m
 # QUERIES — GERENTE DE CONTRATOS
 # ═════════════════════════════════════════════════════════════════════════════
 
-def discover_column(table_name, candidates):
-    """Retorna o primeiro campo existente entre os candidatos."""
-    candidatos = ",".join(["'" + c.replace("'", "''") + "'" for c in candidates])
-    ord_case = " ".join([f"WHEN '{c}' THEN {i}" for i, c in enumerate(candidates)])
-    q = f"""
-    SELECT column_name
-    FROM information_schema.columns
-    WHERE table_schema = 'airbyte'
-      AND table_name = '{table_name}'
-      AND column_name IN ({candidatos})
-    ORDER BY CASE column_name {ord_case} ELSE 999 END
-    LIMIT 1
-    """
-    df = safe_read(q)
-    return str(df['column_name'].iloc[0]) if not df.empty else None
+# No banco real, os nomes e valores já foram validados:
+# contratos_contrato.status: A=ativo / I=inativo
+# contratos_itemcontrato.status: ATIVO / ENCERRADO / SUSPENSO
+# contratos_itemcontrato.modalidade_pagamento: DIARIA / MENSAL
+# veiculos_veiculo.status: A=ativo / I=inativo / S=outro
+# veiculos_veiculo.tipo_contrato_locacao: FROTA_TERCEIRIZADA / FROTA_PROPRIA / FROTA_PARCEIRO / FROTA_LOCADA
 
-VEIC_SITUACAO_COL = discover_column(
-    'veiculos_veiculo', ['situacao', 'status', 'situacao_veiculo']
-) or 'status'
+VEIC_ATIVO_EXPR = "v.status = 'A'"
 
-PAYMENT_COL_ITEM = discover_column(
-    'contratos_itemcontrato',
-    ['tipo_pagamento', 'tipo_cobranca', 'tipo_faturamento', 'periodicidade', 'periodicidade_pagamento',
-     'periodicidade_cobranca', 'modalidade_cobranca', 'unidade_cobranca', 'unidade_pagamento',
-     'frequencia_cobranca', 'forma_pagamento', 'tipo_valor']
-)
-PAYMENT_COL_CONTRATO = discover_column(
-    'contratos_contrato',
-    ['tipo_pagamento', 'tipo_cobranca', 'tipo_faturamento', 'periodicidade', 'periodicidade_pagamento',
-     'periodicidade_cobranca', 'modalidade_cobranca', 'unidade_cobranca', 'unidade_pagamento',
-     'frequencia_cobranca', 'forma_pagamento', 'tipo_valor']
-)
-
-VALUE_DAILY_ITEM = discover_column(
-    'contratos_itemcontrato', ['valor_diaria', 'valor_diario', 'valor_unitario']
-) or 'valor_unitario'
-VALUE_MONTHLY_ITEM = discover_column(
-    'contratos_itemcontrato', ['valor_mensal', 'valor_mes', 'valor_mensalidade', 'valor_contrato_mensal']
-)
-VALUE_DAILY_CONTRACT = discover_column(
-    'contratos_contrato', ['valor_diaria', 'valor_diario', 'valor_unitario']
-)
-VALUE_MONTHLY_CONTRACT = discover_column(
-    'contratos_contrato', ['valor_mensal', 'valor_mes', 'valor_mensalidade', 'valor_contrato_mensal']
-)
-
-VEIC_ATIVO_EXPR = f"""(
-    UPPER(CAST(v.{VEIC_SITUACAO_COL} AS TEXT)) LIKE '%ATIV%'
-    OR UPPER(CAST(v.{VEIC_SITUACAO_COL} AS TEXT)) IN ('A','ACTIVE','OPERACIONAL','EM OPERAÇÃO','EM OPERACAO')
-)"""
-
-pay_item_expr = f"UPPER(CAST(ci.{PAYMENT_COL_ITEM} AS TEXT))" if PAYMENT_COL_ITEM else "''"
-pay_contract_expr = f"UPPER(CAST(c.{PAYMENT_COL_CONTRATO} AS TEXT))" if PAYMENT_COL_CONTRATO else "''"
-pay_expr = f"COALESCE(NULLIF({pay_item_expr}, ''), NULLIF({pay_contract_expr}, ''), '')"
-
-daily_item_expr = f"COALESCE(ci.{VALUE_DAILY_ITEM}, 0)"
-monthly_item_expr = f"COALESCE(ci.{VALUE_MONTHLY_ITEM}, 0)" if VALUE_MONTHLY_ITEM else "0"
-daily_contract_expr = f"COALESCE(c.{VALUE_DAILY_CONTRACT}, 0)" if VALUE_DAILY_CONTRACT else "0"
-monthly_contract_expr = f"COALESCE(c.{VALUE_MONTHLY_CONTRACT}, 0)" if VALUE_MONTHLY_CONTRACT else "0"
-
-daily_value_expr = f"COALESCE(NULLIF({daily_contract_expr}, 0), {daily_item_expr})" if VALUE_DAILY_CONTRACT else daily_item_expr
-monthly_value_expr = f"COALESCE(NULLIF({monthly_item_expr}, 0), NULLIF({monthly_contract_expr}, 0), {daily_item_expr})"
-
-PAYMENT_DAILY_COND = f"({pay_expr} LIKE '%DIAR%' OR {pay_expr} LIKE '%DIA%' OR {pay_expr} IN ('D','DAY'))"
-PAYMENT_MONTHLY_COND = f"({pay_expr} LIKE '%MENS%' OR {pay_expr} LIKE '%MES%' OR {pay_expr} LIKE '%MONTH%' OR {pay_expr} IN ('M','MONTHLY'))"
-
-print(f"🔎 Campo de situação de veículo usado no painel: {VEIC_SITUACAO_COL}")
-print(f"💰 Campo de periodicidade de pagamento — item: {PAYMENT_COL_ITEM or 'não encontrado'} | contrato: {PAYMENT_COL_CONTRATO or 'não encontrado'}")
-print(f"💰 Campo valor diária — item: {VALUE_DAILY_ITEM} | contrato: {VALUE_DAILY_CONTRACT or 'não encontrado'}")
-print(f"💰 Campo valor mensal — item: {VALUE_MONTHLY_ITEM or 'não encontrado'} | contrato: {VALUE_MONTHLY_CONTRACT or 'não encontrado'}")
-
+# 1) CONTRATOS MESTRES E CONTRATOS ROTA (ITENS)
 df_gc_resumo = safe_read("""
-SELECT COUNT(DISTINCT c.id) as total_ativos,
-    COUNT(DISTINCT ci.id) as itens_ativos,
-    COUNT(DISTINCT ci.id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PROPRIA') as qtd_propria,
-    COUNT(DISTINCT ci.id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_TERCEIRIZADA') as qtd_terceirizada,
-    COUNT(DISTINCT ci.id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PARCEIRO') as qtd_parceiro
-FROM airbyte.contratos_itemcontrato ci
-JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
-LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
-WHERE c.status = 'A' AND ci.status = 'ATIVO'
-""", pd.DataFrame([{'total_ativos':0,'itens_ativos':0,'qtd_propria':0,'qtd_terceirizada':0,'qtd_parceiro':0}]))
-
-df_gc_frota_geral = safe_read(f"""
 SELECT
-    COUNT(DISTINCT v.id) as frota_total,
-    COUNT(DISTINCT v.id) FILTER (WHERE {VEIC_ATIVO_EXPR}) as frota_ativa,
-    COUNT(DISTINCT v.id) FILTER (WHERE {VEIC_ATIVO_EXPR} AND EXISTS (
-        SELECT 1 FROM airbyte.rotas_escalarota e
-        WHERE e.veiculo_execucao_id = v.id AND e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false
-    )) as em_operacao,
-    COUNT(DISTINCT v.id) FILTER (WHERE {VEIC_ATIVO_EXPR} AND EXISTS (
-        SELECT 1 FROM airbyte.contratos_itemcontrato ci2
-        JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
-        WHERE ci2.veiculo_id = v.id AND ci2.status = 'ATIVO' AND c2.status = 'A'
-    ) AND NOT EXISTS (
-        SELECT 1 FROM airbyte.rotas_escalarota e
-        WHERE e.veiculo_execucao_id = v.id AND e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false
-    )) as ociosa_com_contrato,
-    COUNT(DISTINCT v.id) FILTER (WHERE {VEIC_ATIVO_EXPR} AND NOT EXISTS (
-        SELECT 1 FROM airbyte.contratos_itemcontrato ci2
-        JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
-        WHERE ci2.veiculo_id = v.id AND ci2.status = 'ATIVO' AND c2.status = 'A'
-    )) as disponivel_sem_contrato,
-    COUNT(DISTINCT v.id) FILTER (WHERE {VEIC_ATIVO_EXPR} AND v.tipo_contrato_locacao = 'FROTA_TERCEIRIZADA') as ativa_terceirizada,
-    COUNT(DISTINCT v.id) FILTER (WHERE {VEIC_ATIVO_EXPR} AND v.tipo_contrato_locacao = 'FROTA_PROPRIA') as ativa_propria,
-    COUNT(DISTINCT v.id) FILTER (WHERE {VEIC_ATIVO_EXPR} AND v.tipo_contrato_locacao = 'FROTA_PARCEIRO') as ativa_parceiro
-FROM airbyte.veiculos_veiculo v
-""", pd.DataFrame([{'frota_total':0,'frota_ativa':0,'em_operacao':0,'ociosa_com_contrato':0,'disponivel_sem_contrato':0,'ativa_terceirizada':0,'ativa_propria':0,'ativa_parceiro':0}]))
+    (SELECT COUNT(*) FROM airbyte.contratos_contrato WHERE status = 'A') AS contratos_ativos,
+    (SELECT COUNT(*)
+       FROM airbyte.contratos_itemcontrato ci
+       JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+      WHERE ci.status = 'ATIVO' AND c.status = 'A') AS contratos_rota_ativos,
+    (SELECT COUNT(DISTINCT ci.veiculo_id)
+       FROM airbyte.contratos_itemcontrato ci
+       JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+       JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+      WHERE ci.status = 'ATIVO' AND c.status = 'A'
+        AND v.status = 'A' AND v.tipo_contrato_locacao = 'FROTA_TERCEIRIZADA') AS veic_terceirizados_contrato,
+    (SELECT COUNT(DISTINCT ci.veiculo_id)
+       FROM airbyte.contratos_itemcontrato ci
+       JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+       JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+      WHERE ci.status = 'ATIVO' AND c.status = 'A'
+        AND v.status = 'A' AND v.tipo_contrato_locacao = 'FROTA_PROPRIA') AS veic_proprios_com_contrato,
+    (SELECT COUNT(DISTINCT ci.veiculo_id)
+       FROM airbyte.contratos_itemcontrato ci
+       JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+       JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+      WHERE ci.status = 'ATIVO' AND c.status = 'A'
+        AND v.status = 'A' AND v.tipo_contrato_locacao = 'FROTA_LOCADA') AS veic_locados_com_contrato
+""", pd.DataFrame([{
+    'contratos_ativos':0,'contratos_rota_ativos':0,'veic_terceirizados_contrato':0,
+    'veic_proprios_com_contrato':0,'veic_locados_com_contrato':0
+}]))
 
-df_gc_frota_status = safe_read(f"""
-SELECT COALESCE(v.tipo_contrato_locacao,'NAO_INFORMADO') as tipo,
-    COUNT(DISTINCT v.id) as total,
-    COUNT(DISTINCT v.id) FILTER (WHERE {VEIC_ATIVO_EXPR}) as ativos,
-    COUNT(DISTINCT v.id) FILTER (WHERE NOT ({VEIC_ATIVO_EXPR})) as inativos,
-    COUNT(DISTINCT v.id) FILTER (WHERE {VEIC_ATIVO_EXPR} AND EXISTS (
-        SELECT 1 FROM airbyte.rotas_escalarota e
-        WHERE e.veiculo_execucao_id = v.id AND e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false
-    )) as em_operacao,
-    COUNT(DISTINCT v.id) FILTER (WHERE {VEIC_ATIVO_EXPR} AND EXISTS (
-        SELECT 1 FROM airbyte.contratos_itemcontrato ci2
-        JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
-        WHERE ci2.veiculo_id = v.id AND ci2.status = 'ATIVO' AND c2.status = 'A'
-    ) AND NOT EXISTS (
-        SELECT 1 FROM airbyte.rotas_escalarota e
-        WHERE e.veiculo_execucao_id = v.id AND e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false
-    )) as ociosos_com_contrato,
-    COUNT(DISTINCT v.id) FILTER (WHERE {VEIC_ATIVO_EXPR} AND EXISTS (
-        SELECT 1 FROM airbyte.contratos_itemcontrato ci2
-        JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
-        WHERE ci2.veiculo_id = v.id AND ci2.status = 'ATIVO' AND c2.status = 'A'
-    )) as com_contrato,
-    COUNT(DISTINCT v.id) FILTER (WHERE {VEIC_ATIVO_EXPR} AND NOT EXISTS (
-        SELECT 1 FROM airbyte.contratos_itemcontrato ci2
-        JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
-        WHERE ci2.veiculo_id = v.id AND ci2.status = 'ATIVO' AND c2.status = 'A'
-    )) as sem_contrato
+# 2) FROTA GERAL — ATIVA, OPERAÇÃO, OCIOSA COM CONTRATO, DISPONÍVEL E INATIVA COM CONTRATO
+df_gc_frota_geral = safe_read("""
+SELECT
+    COUNT(DISTINCT v.id) AS frota_total,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'A') AS frota_ativa,
+
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status = 'A'
+          AND EXISTS (
+              SELECT 1 FROM airbyte.rotas_escalarota e
+               WHERE e.veiculo_execucao_id = v.id
+                 AND e.data >= CURRENT_DATE - INTERVAL '30 days'
+                 AND e.anulada = false
+          )
+    ) AS em_operacao,
+
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status = 'A'
+          AND EXISTS (
+              SELECT 1
+                FROM airbyte.contratos_itemcontrato ci2
+                JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
+               WHERE ci2.veiculo_id = v.id
+                 AND ci2.status = 'ATIVO'
+                 AND c2.status = 'A'
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM airbyte.rotas_escalarota e
+               WHERE e.veiculo_execucao_id = v.id
+                 AND e.data >= CURRENT_DATE - INTERVAL '30 days'
+                 AND e.anulada = false
+          )
+    ) AS ociosa_com_contrato,
+
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status = 'A'
+          AND NOT EXISTS (
+              SELECT 1
+                FROM airbyte.contratos_itemcontrato ci2
+                JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
+               WHERE ci2.veiculo_id = v.id
+                 AND ci2.status = 'ATIVO'
+                 AND c2.status = 'A'
+          )
+    ) AS disponivel_sem_contrato,
+
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status <> 'A'
+          AND EXISTS (
+              SELECT 1
+                FROM airbyte.contratos_itemcontrato ci2
+                JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
+               WHERE ci2.veiculo_id = v.id
+                 AND ci2.status = 'ATIVO'
+                 AND c2.status = 'A'
+          )
+    ) AS inativos_com_contrato,
+
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status = 'A' AND v.tipo_contrato_locacao = 'FROTA_PROPRIA'
+    ) AS ativa_propria,
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status = 'A' AND v.tipo_contrato_locacao = 'FROTA_TERCEIRIZADA'
+    ) AS ativa_terceirizada,
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status = 'A' AND v.tipo_contrato_locacao = 'FROTA_PARCEIRO'
+    ) AS ativa_parceiro,
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status = 'A' AND v.tipo_contrato_locacao = 'FROTA_LOCADA'
+    ) AS ativa_locada,
+
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status = 'A'
+          AND v.tipo_contrato_locacao = 'FROTA_PROPRIA'
+          AND EXISTS (
+              SELECT 1 FROM airbyte.contratos_itemcontrato ci2
+              JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
+              WHERE ci2.veiculo_id = v.id AND ci2.status = 'ATIVO' AND c2.status = 'A'
+          )
+    ) AS propria_com_contrato,
+
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status = 'A'
+          AND v.tipo_contrato_locacao = 'FROTA_PROPRIA'
+          AND NOT EXISTS (
+              SELECT 1 FROM airbyte.contratos_itemcontrato ci2
+              JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
+              WHERE ci2.veiculo_id = v.id AND ci2.status = 'ATIVO' AND c2.status = 'A'
+          )
+    ) AS propria_sem_contrato
 FROM airbyte.veiculos_veiculo v
-GROUP BY COALESCE(v.tipo_contrato_locacao,'NAO_INFORMADO')
+""", pd.DataFrame([{
+    'frota_total':0,'frota_ativa':0,'em_operacao':0,'ociosa_com_contrato':0,'disponivel_sem_contrato':0,
+    'inativos_com_contrato':0,'ativa_propria':0,'ativa_terceirizada':0,'ativa_parceiro':0,'ativa_locada':0,
+    'propria_com_contrato':0,'propria_sem_contrato':0
+}]))
+
+# 3) FROTA POR TIPO — SEM TRATAR "SEM CONTRATO" COMO OCIOSIDADE
+# Em frota própria, ter ou não contrato é uma análise de consistência, não ausência operacional.
+df_gc_frota_status = safe_read("""
+SELECT
+    COALESCE(v.tipo_contrato_locacao,'SEM TIPO') AS tipo,
+    COUNT(DISTINCT v.id) AS total,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'A') AS ativos,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'I') AS inativos,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'S') AS status_s,
+
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status = 'A' AND EXISTS (
+            SELECT 1 FROM airbyte.rotas_escalarota e
+             WHERE e.veiculo_execucao_id = v.id
+               AND e.data >= CURRENT_DATE - INTERVAL '30 days'
+               AND e.anulada = false
+        )
+    ) AS em_operacao,
+
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status = 'A'
+          AND EXISTS (
+              SELECT 1 FROM airbyte.contratos_itemcontrato ci2
+              JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
+              WHERE ci2.veiculo_id = v.id AND ci2.status = 'ATIVO' AND c2.status = 'A'
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM airbyte.rotas_escalarota e
+              WHERE e.veiculo_execucao_id = v.id
+                AND e.data >= CURRENT_DATE - INTERVAL '30 days'
+                AND e.anulada = false
+          )
+    ) AS ociosos_com_contrato,
+
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status = 'A' AND EXISTS (
+            SELECT 1 FROM airbyte.contratos_itemcontrato ci2
+            JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
+            WHERE ci2.veiculo_id = v.id AND ci2.status = 'ATIVO' AND c2.status = 'A'
+        )
+    ) AS com_contrato,
+
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status = 'A' AND NOT EXISTS (
+            SELECT 1 FROM airbyte.contratos_itemcontrato ci2
+            JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
+            WHERE ci2.veiculo_id = v.id AND ci2.status = 'ATIVO' AND c2.status = 'A'
+        )
+    ) AS sem_contrato,
+
+    COUNT(DISTINCT v.id) FILTER (
+        WHERE v.status <> 'A' AND EXISTS (
+            SELECT 1 FROM airbyte.contratos_itemcontrato ci2
+            JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
+            WHERE ci2.veiculo_id = v.id AND ci2.status = 'ATIVO' AND c2.status = 'A'
+        )
+    ) AS inativos_com_contrato
+FROM airbyte.veiculos_veiculo v
+GROUP BY COALESCE(v.tipo_contrato_locacao,'SEM TIPO')
 ORDER BY ativos DESC, tipo
 """, pd.DataFrame())
 
-df_gc_gap_gre = safe_read(f"""
+# 4) GAP POR GRE — SOMENTE DADOS DE OPERAÇÃO E FROTA ATIVA
+# Para a frota da GRE, consideramos o vínculo do item ativo quando existir; caso contrário, a GRE do veículo.
+df_gc_gap_gre = safe_read("""
 WITH frota_gre AS (
-    SELECT COALESCE(ci.gre_id, v.gre_id) as gre_id,
-        COUNT(DISTINCT v.id) FILTER (WHERE {VEIC_ATIVO_EXPR}) as frota_ativa,
-        COUNT(DISTINCT v.id) FILTER (WHERE {VEIC_ATIVO_EXPR} AND EXISTS (
-            SELECT 1 FROM airbyte.rotas_escalarota e WHERE e.veiculo_execucao_id = v.id AND e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false)) as frota_operando
+    SELECT COALESCE(ci.gre_id, v.gre_id) AS gre_id,
+        COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'A') AS frota_ativa,
+        COUNT(DISTINCT v.id) FILTER (
+            WHERE v.status = 'A' AND EXISTS (
+                SELECT 1 FROM airbyte.rotas_escalarota e
+                WHERE e.veiculo_execucao_id = v.id
+                  AND e.data >= CURRENT_DATE - INTERVAL '30 days'
+                  AND e.anulada = false
+            )
+        ) AS frota_operando
     FROM airbyte.veiculos_veiculo v
-    LEFT JOIN airbyte.contratos_itemcontrato ci ON ci.veiculo_id = v.id
-    LEFT JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id AND c.status = 'A' AND ci.status = 'ATIVO'
+    LEFT JOIN airbyte.contratos_itemcontrato ci
+           ON ci.veiculo_id = v.id AND ci.status = 'ATIVO'
+    LEFT JOIN airbyte.contratos_contrato c
+           ON c.id = ci.contrato_id AND c.status = 'A'
     GROUP BY COALESCE(ci.gre_id, v.gre_id)
 ),
 demanda_gre AS (
-    SELECT m.gre_id, COUNT(DISTINCT e.id) as escalas_30d, COUNT(DISTINCT e.veiculo_execucao_id) as veiculos_usados
-    FROM airbyte.rotas_escalarota e JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id
-    WHERE e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false GROUP BY m.gre_id
+    SELECT m.gre_id,
+           COUNT(DISTINCT e.id) AS escalas_30d,
+           COUNT(DISTINCT e.veiculo_execucao_id) AS veiculos_usados
+    FROM airbyte.rotas_escalarota e
+    JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id
+    WHERE e.data >= CURRENT_DATE - INTERVAL '30 days'
+      AND e.anulada = false
+    GROUP BY m.gre_id
 )
-SELECT g.nome as gre, COALESCE(f.frota_ativa, 0) as frota_ativa, COALESCE(f.frota_operando, 0) as frota_operando,
-    COALESCE(d.escalas_30d, 0) as escalas_30d, COALESCE(d.veiculos_usados, 0) as veiculos_usados,
-    ROUND(COALESCE(f.frota_operando,0)::numeric / NULLIF(f.frota_ativa,0) * 100, 1) as utilizacao_pct,
-    CASE WHEN COALESCE(f.frota_ativa,0) = 0 THEN 'SEM FROTA'
+SELECT g.nome AS gre,
+    COALESCE(f.frota_ativa,0) AS frota_ativa,
+    COALESCE(f.frota_operando,0) AS frota_operando,
+    COALESCE(d.escalas_30d,0) AS escalas_30d,
+    COALESCE(d.veiculos_usados,0) AS veiculos_usados,
+    ROUND(COALESCE(f.frota_operando,0)::numeric / NULLIF(f.frota_ativa,0) * 100,1) AS utilizacao_pct,
+    CASE
+        WHEN COALESCE(f.frota_ativa,0) = 0 THEN 'SEM FROTA'
         WHEN COALESCE(d.veiculos_usados,0) > COALESCE(f.frota_ativa,0) * 1.2 THEN 'SOBRECARGA'
         WHEN COALESCE(f.frota_operando,0) < COALESCE(f.frota_ativa,0) * 0.5 THEN 'FROTA OCIOSA'
         WHEN COALESCE(d.veiculos_usados,0) > COALESCE(f.frota_ativa,0) * 0.9 THEN 'LIMITE'
-        ELSE 'EQUILIBRADO' END as situacao
+        ELSE 'EQUILIBRADO'
+    END AS situacao
 FROM airbyte.escolas_gre g
-LEFT JOIN frota_gre f ON f.gre_id = g.id LEFT JOIN demanda_gre d ON d.gre_id = g.id
+LEFT JOIN frota_gre f ON f.gre_id = g.id
+LEFT JOIN demanda_gre d ON d.gre_id = g.id
 WHERE g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
 ORDER BY escalas_30d DESC
 """, pd.DataFrame())
 
+# 5) CUSTO MÉDIO POR TIPO DE FROTA — SOMENTE ITENS ATIVOS DE CONTRATOS ATIVOS
+# Evita multiplicar o valor contratual por todas as escalas.
 df_gc_custo_tipo = safe_read("""
-WITH custo_mensal AS (
-    SELECT v.tipo_contrato_locacao as tipo, TO_CHAR(e.data,'YYYY-MM') as mes,
-        COUNT(DISTINCT e.id) as escalas, COUNT(DISTINCT v.id) as veiculos, SUM(ci.valor_unitario) as custo_contrato
-    FROM airbyte.rotas_escalarota e JOIN airbyte.veiculos_veiculo v ON v.id = e.veiculo_execucao_id
-    LEFT JOIN airbyte.contratos_itemcontrato ci ON ci.veiculo_id = v.id
-    LEFT JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id AND c.status = 'A' AND ci.status = 'ATIVO'
-    WHERE e.data >= CURRENT_DATE - INTERVAL '90 days' AND e.anulada = false
-      AND v.tipo_contrato_locacao IN ('FROTA_PROPRIA','FROTA_TERCEIRIZADA','FROTA_PARCEIRO')
-    GROUP BY v.tipo_contrato_locacao, TO_CHAR(e.data,'YYYY-MM')
+WITH itens AS (
+    SELECT DISTINCT ON (ci.id)
+        ci.id AS item_id,
+        v.tipo_contrato_locacao AS tipo,
+        ci.valor_unitario,
+        ci.modalidade_pagamento
+    FROM airbyte.contratos_itemcontrato ci
+    JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id AND c.status = 'A'
+    LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+    WHERE ci.status = 'ATIVO'
+),
+meses AS (
+    SELECT generate_series(
+        DATE_TRUNC('month', CURRENT_DATE - INTERVAL '2 months')::date,
+        DATE_TRUNC('month', CURRENT_DATE)::date,
+        INTERVAL '1 month'
+    )::date AS mes
+),
+escalas AS (
+    SELECT TO_CHAR(e.data,'YYYY-MM') AS mes,
+           v.tipo_contrato_locacao AS tipo,
+           COUNT(DISTINCT e.id) AS escalas,
+           COUNT(DISTINCT v.id) AS veiculos
+    FROM airbyte.rotas_escalarota e
+    JOIN airbyte.veiculos_veiculo v ON v.id = e.veiculo_execucao_id
+    WHERE e.data >= CURRENT_DATE - INTERVAL '90 days'
+      AND e.anulada = false
+      AND v.tipo_contrato_locacao IN ('FROTA_PROPRIA','FROTA_TERCEIRIZADA','FROTA_PARCEIRO','FROTA_LOCADA')
+    GROUP BY TO_CHAR(e.data,'YYYY-MM'), v.tipo_contrato_locacao
+),
+custos AS (
+    SELECT tipo,
+           SUM(CASE WHEN modalidade_pagamento = 'MENSAL' THEN valor_unitario ELSE valor_unitario * 22 END) AS custo_mensal_estimado
+    FROM itens
+    WHERE tipo IS NOT NULL
+    GROUP BY tipo
 )
-SELECT tipo, ROUND(AVG(escalas)::numeric,0) as media_escalas, ROUND(AVG(veiculos)::numeric,0) as media_veiculos,
-    ROUND(AVG(custo_contrato)::numeric,2) as media_custo_mensal,
-    ROUND(AVG(custo_contrato)/NULLIF(AVG(escalas),0),2) as custo_por_escala,
-    ROUND(AVG(custo_contrato)/NULLIF(AVG(veiculos),0),2) as custo_por_veiculo
-FROM custo_mensal GROUP BY tipo ORDER BY custo_por_escala
+SELECT e.tipo,
+       ROUND(AVG(e.escalas)::numeric,0) AS media_escalas,
+       ROUND(AVG(e.veiculos)::numeric,0) AS media_veiculos,
+       ROUND(COALESCE(c.custo_mensal_estimado,0)::numeric,2) AS media_custo_mensal,
+       ROUND(COALESCE(c.custo_mensal_estimado,0) / NULLIF(AVG(e.escalas),0),2) AS custo_por_escala,
+       ROUND(COALESCE(c.custo_mensal_estimado,0) / NULLIF(AVG(e.veiculos),0),2) AS custo_por_veiculo
+FROM escalas e
+LEFT JOIN custos c ON c.tipo = e.tipo
+GROUP BY e.tipo, c.custo_mensal_estimado
+ORDER BY custo_por_escala
 """, pd.DataFrame())
 
-df_gc_financeiro = safe_read(f"""
+# 6) FINANCEIRO DE TERCEIRIZADOS — EXATAMENTE MODALIDADE + TIPO DE FROTA
+df_gc_financeiro = safe_read("""
 SELECT
-    COUNT(DISTINCT ci.id) FILTER (WHERE {PAYMENT_DAILY_COND}) as qtd_diaria,
-    COALESCE(SUM(CASE WHEN {PAYMENT_DAILY_COND} THEN {daily_value_expr} ELSE 0 END),0) as valor_diaria_dia,
-    COUNT(DISTINCT ci.id) FILTER (WHERE {PAYMENT_MONTHLY_COND}) as qtd_mensal,
-    COALESCE(SUM(CASE WHEN {PAYMENT_MONTHLY_COND} THEN {monthly_value_expr} ELSE 0 END),0) as valor_mensal,
-    COUNT(DISTINCT ci.id) FILTER (WHERE NOT ({PAYMENT_DAILY_COND}) AND NOT ({PAYMENT_MONTHLY_COND})) as qtd_nao_identificado,
-    COALESCE(SUM(CASE WHEN NOT ({PAYMENT_DAILY_COND}) AND NOT ({PAYMENT_MONTHLY_COND}) THEN ci.valor_unitario ELSE 0 END),0) as valor_nao_identificado
+    COUNT(DISTINCT ci.id) FILTER (WHERE ci.modalidade_pagamento = 'DIARIA') AS qtd_diaria,
+    COALESCE(SUM(ci.valor_unitario) FILTER (WHERE ci.modalidade_pagamento = 'DIARIA'),0) AS valor_diaria_dia,
+    COUNT(DISTINCT ci.id) FILTER (WHERE ci.modalidade_pagamento = 'MENSAL') AS qtd_mensal,
+    COALESCE(SUM(ci.valor_unitario) FILTER (WHERE ci.modalidade_pagamento = 'MENSAL'),0) AS valor_mensal,
+    COUNT(DISTINCT ci.id) FILTER (WHERE ci.modalidade_pagamento NOT IN ('DIARIA','MENSAL') OR ci.modalidade_pagamento IS NULL) AS qtd_nao_identificado,
+    COALESCE(SUM(ci.valor_unitario) FILTER (WHERE ci.modalidade_pagamento NOT IN ('DIARIA','MENSAL') OR ci.modalidade_pagamento IS NULL),0) AS valor_nao_identificado
 FROM airbyte.contratos_itemcontrato ci
-JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
-LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
-WHERE c.status = 'A' AND ci.status = 'ATIVO'
+JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id AND c.status = 'A'
+JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+WHERE ci.status = 'ATIVO'
   AND v.tipo_contrato_locacao = 'FROTA_TERCEIRIZADA'
-""", pd.DataFrame([{'qtd_diaria':0,'valor_diaria_dia':0,'qtd_mensal':0,'valor_mensal':0,'qtd_nao_identificado':0,'valor_nao_identificado':0}]))
+""", pd.DataFrame([{
+    'qtd_diaria':0,'valor_diaria_dia':0,'qtd_mensal':0,'valor_mensal':0,
+    'qtd_nao_identificado':0,'valor_nao_identificado':0
+}]))
 
+# 7) FROTA LOCADA — MANTIDA SEPARADA DOS TERCEIRIZADOS
+df_gc_fin_locada = safe_read("""
+SELECT
+    COUNT(DISTINCT ci.id) FILTER (WHERE ci.modalidade_pagamento = 'DIARIA') AS qtd_diaria,
+    COALESCE(SUM(ci.valor_unitario) FILTER (WHERE ci.modalidade_pagamento = 'DIARIA'),0) AS valor_diaria_dia,
+    COUNT(DISTINCT ci.id) FILTER (WHERE ci.modalidade_pagamento = 'MENSAL') AS qtd_mensal,
+    COALESCE(SUM(ci.valor_unitario) FILTER (WHERE ci.modalidade_pagamento = 'MENSAL'),0) AS valor_mensal,
+    COUNT(DISTINCT ci.id) AS itens_ativos
+FROM airbyte.contratos_itemcontrato ci
+JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id AND c.status = 'A'
+JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+WHERE ci.status = 'ATIVO'
+  AND v.tipo_contrato_locacao = 'FROTA_LOCADA'
+""", pd.DataFrame([{
+    'qtd_diaria':0,'valor_diaria_dia':0,'qtd_mensal':0,'valor_mensal':0,'itens_ativos':0
+}]))
+
+# 8) ITENS ATIVOS SEM TIPO DE FROTA — PARA NÃO SUMIREM DO CONTROLE
+# São contratos rota ativos sem vínculo classificável de frota.
+df_gc_sem_tipo = safe_read("""
+SELECT
+    COUNT(*) AS itens,
+    COUNT(*) FILTER (WHERE ci.veiculo_id IS NULL) AS sem_veiculo,
+    COALESCE(SUM(ci.valor_unitario),0) AS valor_total
+FROM airbyte.contratos_itemcontrato ci
+JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id AND c.status = 'A'
+LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+WHERE ci.status = 'ATIVO'
+  AND (v.id IS NULL OR v.tipo_contrato_locacao IS NULL)
+""", pd.DataFrame([{'itens':0,'sem_veiculo':0,'valor_total':0}]))
+
+# 9) HISTÓRICO REAL DE CONTRATOS MESTRES EM VIGÊNCIA POR MÊS
+# Não restringimos pelo status atual: um contrato encerrado hoje pode ter estado ativo em meses anteriores.
 df_gc_historico = safe_read("""
 WITH meses AS (
     SELECT generate_series(
@@ -677,74 +826,181 @@ WITH meses AS (
         DATE_TRUNC('month', CURRENT_DATE)::date,
         INTERVAL '1 month'
     )::date AS mes
-), ativos AS (
-    SELECT DISTINCT c.id, c.data_inicio, c.data_fim
-    FROM airbyte.contratos_contrato c
-    JOIN airbyte.contratos_itemcontrato ci ON ci.contrato_id = c.id
-    WHERE c.status = 'A' AND ci.status = 'ATIVO'
+), contratos AS (
+    SELECT id, data_inicio, data_fim
+    FROM airbyte.contratos_contrato
+    WHERE data_inicio IS NOT NULL
 )
 SELECT
-    TO_CHAR(m.mes,'YYYY-MM') as mes,
-    COUNT(DISTINCT a.id) FILTER (
-        WHERE a.data_inicio <= (m.mes + INTERVAL '1 month - 1 day')
-          AND (a.data_fim IS NULL OR a.data_fim >= m.mes)
-    ) as contratos_ativos
+    TO_CHAR(m.mes,'YYYY-MM') AS mes,
+    COUNT(DISTINCT c.id) FILTER (
+        WHERE c.data_inicio <= (m.mes + INTERVAL '1 month - 1 day')
+          AND (c.data_fim IS NULL OR c.data_fim >= m.mes)
+    ) AS contratos_ativos
 FROM meses m
-LEFT JOIN ativos a ON TRUE
+LEFT JOIN contratos c ON TRUE
 GROUP BY m.mes
 ORDER BY m.mes
 """, pd.DataFrame())
 
-df_gc_cont_detalhes = safe_read(f"""
-SELECT c.id as contrato_id, c.numero_contrato, c.data_inicio, c.data_fim, g.nome as gre,
-    COALESCE(f.nome,'FROTA PRÓPRIA') as fornecedor, v.placa, v.modelo, v.ano,
-    v.tipo_contrato_locacao as tipo_frota, ci.valor_unitario, STRING_AGG(DISTINCT ct.nome, ', ') as turnos,
-    (SELECT COUNT(*) FROM airbyte.rotas_escalarota e WHERE e.contrato_rota_id = ci.id AND e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false) as escalas_30d,
-    (SELECT COUNT(*) FROM airbyte.rotas_escalarota e WHERE e.contrato_rota_id = ci.id AND e.data >= CURRENT_DATE - INTERVAL '7 days' AND e.anulada = false) as escalas_7d,
-    CASE WHEN NOT ({VEIC_ATIVO_EXPR}) THEN 'VEICULO INATIVO'
-        WHEN NOT EXISTS (SELECT 1 FROM airbyte.rotas_escalarota e WHERE e.contrato_rota_id = ci.id AND e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false) THEN 'PARADO +30D'
-        ELSE 'ATIVO' END as situacao
-FROM airbyte.contratos_itemcontrato ci JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+# 10) DETALHAMENTO DOS CONTRATOS ROTA ATIVOS
+# A tabela não possui numero_contrato; usamos CONTRATO MESTRE (c.id) + CONTRATO ROTA (ci.id).
+df_gc_cont_detalhes = safe_read("""
+SELECT
+    c.id AS contrato_id,
+    ci.id AS contrato_rota_id,
+    c.tipo AS contrato_tipo,
+    c.data_inicio,
+    c.data_fim,
+    g.nome AS gre,
+    COALESCE(f.nome,'FROTA PRÓPRIA') AS fornecedor,
+    v.placa,
+    v.modelo,
+    v.ano,
+    v.status AS veiculo_status,
+    COALESCE(v.tipo_contrato_locacao,'SEM TIPO') AS tipo_frota,
+    ci.modalidade_pagamento,
+    ci.valor_unitario,
+    STRING_AGG(DISTINCT ct.nome, ', ') AS turnos,
+    (SELECT COUNT(*)
+       FROM airbyte.rotas_escalarota e
+      WHERE e.contrato_rota_id = ci.id
+        AND e.data >= CURRENT_DATE - INTERVAL '30 days'
+        AND e.anulada = false) AS escalas_30d,
+    (SELECT COUNT(*)
+       FROM airbyte.rotas_escalarota e
+      WHERE e.contrato_rota_id = ci.id
+        AND e.data >= CURRENT_DATE - INTERVAL '7 days'
+        AND e.anulada = false) AS escalas_7d,
+    CASE
+        WHEN v.id IS NULL THEN 'SEM VEÍCULO'
+        WHEN v.status <> 'A' THEN 'VEÍCULO INATIVO'
+        WHEN NOT EXISTS (
+            SELECT 1 FROM airbyte.rotas_escalarota e
+             WHERE e.contrato_rota_id = ci.id
+               AND e.data >= CURRENT_DATE - INTERVAL '30 days'
+               AND e.anulada = false
+        ) THEN 'PARADO +30D'
+        ELSE 'ATIVO'
+    END AS situacao
+FROM airbyte.contratos_itemcontrato ci
+JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
 LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
 LEFT JOIN airbyte.contratos_itemcontrato_turnos cit ON cit.itemcontrato_id = ci.id
 LEFT JOIN airbyte.contratos_turno ct ON ct.id = cit.turno_id
 WHERE c.status = 'A' AND ci.status = 'ATIVO'
-GROUP BY c.id, c.numero_contrato, c.data_inicio, c.data_fim, g.nome, f.nome, v.placa, v.modelo, v.ano, v.tipo_contrato_locacao, ci.valor_unitario, ci.id, v.{VEIC_SITUACAO_COL}
-ORDER BY g.nome, c.data_fim LIMIT 200
+GROUP BY
+    c.id, ci.id, c.tipo, c.data_inicio, c.data_fim, g.nome, f.nome,
+    v.placa, v.modelo, v.ano, v.status, v.tipo_contrato_locacao,
+    ci.modalidade_pagamento, ci.valor_unitario
+ORDER BY
+    CASE WHEN v.status <> 'A' THEN 0 WHEN v.id IS NULL THEN 1 ELSE 2 END,
+    g.nome, c.id, ci.id
+LIMIT 400
 """, pd.DataFrame())
 
-df_gc_demanda_diaria = safe_read("""
-SELECT g.nome as gre, COUNT(DISTINCT e.data) as dias_com_escala, COUNT(e.id) as total_escalas,
-    ROUND(COUNT(e.id)::numeric / NULLIF(COUNT(DISTINCT e.data),0), 1) as media_escalas_dia,
-    COUNT(DISTINCT e.veiculo_execucao_id) as veiculos_distintos,
-    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PROPRIA') as veic_proprios,
-    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_TERCEIRIZADA') as veic_terceirizados,
-    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PARCEIRO') as veic_parceiros
-FROM airbyte.rotas_escalarota e JOIN airbyte.veiculos_veiculo v ON v.id = e.veiculo_execucao_id
-JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id
-JOIN airbyte.escolas_gre g ON g.id = m.gre_id
-WHERE e.data >= CURRENT_DATE - INTERVAL '30 days' AND e.anulada = false
-  AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
-GROUP BY g.nome ORDER BY total_escalas DESC
-""")
-
-df_gc_ociosa_contrato = safe_read(f"""
-SELECT g.nome as gre, v.placa, v.modelo, v.tipo_contrato_locacao as tipo,
-    COALESCE(f.nome,'PRÓPRIO') as fornecedor, ci.valor_unitario, c.data_fim as contrato_fim,
-    MAX(e.data) as ultima_rota, CURRENT_DATE - MAX(e.data)::date as dias_parado,
-    ci.valor_unitario * (CURRENT_DATE - MAX(e.data)::date) as valor_risco_acumulado
-FROM airbyte.veiculos_veiculo v JOIN airbyte.contratos_itemcontrato ci ON ci.veiculo_id = v.id
-JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
-LEFT JOIN airbyte.rotas_escalarota e ON e.veiculo_execucao_id = v.id
+# 11) VEÍCULOS INATIVOS COM CONTRATOS ATIVOS — ALERTA PRIORITÁRIO
+# Inclui status I e S, pois ambos não são status ativo.
+df_gc_inativos_contrato = safe_read("""
+SELECT
+    v.id AS veiculo_id,
+    v.placa,
+    v.modelo,
+    v.ano,
+    v.status AS veiculo_status,
+    COALESCE(v.tipo_contrato_locacao,'SEM TIPO') AS tipo_frota,
+    COALESCE(f.nome,'SEM FORNECEDOR') AS fornecedor,
+    g.nome AS gre,
+    c.id AS contrato_id,
+    ci.id AS contrato_rota_id,
+    ci.modalidade_pagamento,
+    ci.valor_unitario,
+    c.data_inicio,
+    c.data_fim,
+    CASE WHEN v.status = 'I' THEN 'INATIVO' ELSE 'STATUS S' END AS alerta
+FROM airbyte.veiculos_veiculo v
+JOIN airbyte.contratos_itemcontrato ci ON ci.veiculo_id = v.id AND ci.status = 'ATIVO'
+JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id AND c.status = 'A'
 LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
 LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
-WHERE c.status = 'A' AND ci.status = 'ATIVO' AND {VEIC_ATIVO_EXPR}
-GROUP BY g.nome, v.placa, v.modelo, v.tipo_contrato_locacao, f.nome, ci.valor_unitario, c.data_fim
-HAVING MAX(e.data) IS NULL OR MAX(e.data)::date < CURRENT_DATE - INTERVAL '30 days'
-ORDER BY dias_parado DESC NULLS LAST, valor_unitario DESC LIMIT 40
+WHERE v.status <> 'A'
+ORDER BY CASE WHEN v.status = 'I' THEN 0 ELSE 1 END, ci.valor_unitario DESC, v.placa
+LIMIT 200
 """, pd.DataFrame())
+
+# 12) FROTA OCIOSA COM CONTRATO — UMA LINHA POR VEÍCULO
+# O risco acumulado considera diária ou proporcional mensal.
+df_gc_ociosa_contrato = safe_read("""
+WITH base AS (
+    SELECT DISTINCT ON (v.id)
+        v.id AS veiculo_id,
+        g.nome AS gre,
+        v.placa,
+        v.modelo,
+        v.tipo_contrato_locacao AS tipo,
+        COALESCE(f.nome,'PRÓPRIO') AS fornecedor,
+        ci.id AS contrato_rota_id,
+        ci.valor_unitario,
+        ci.modalidade_pagamento,
+        c.data_fim AS contrato_fim
+    FROM airbyte.veiculos_veiculo v
+    JOIN airbyte.contratos_itemcontrato ci
+      ON ci.veiculo_id = v.id AND ci.status = 'ATIVO'
+    JOIN airbyte.contratos_contrato c
+      ON c.id = ci.contrato_id AND c.status = 'A'
+    LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
+    LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
+    WHERE v.status = 'A'
+    ORDER BY v.id, ci.id DESC
+), ult AS (
+    SELECT v.id AS veiculo_id, MAX(e.data)::date AS ultima_rota
+    FROM airbyte.veiculos_veiculo v
+    LEFT JOIN airbyte.rotas_escalarota e ON e.veiculo_execucao_id = v.id AND e.anulada = false
+    GROUP BY v.id
+)
+SELECT
+    b.gre, b.placa, b.modelo, b.tipo, b.fornecedor,
+    b.contrato_rota_id,
+    b.valor_unitario,
+    b.modalidade_pagamento,
+    b.contrato_fim,
+    u.ultima_rota,
+    (CURRENT_DATE - COALESCE(u.ultima_rota, DATE_TRUNC('day', CURRENT_DATE)::date)) AS dias_parado,
+    CASE
+        WHEN b.modalidade_pagamento = 'MENSAL'
+            THEN ROUND((b.valor_unitario / 30.0) * (CURRENT_DATE - COALESCE(u.ultima_rota, DATE_TRUNC('day', CURRENT_DATE)::date)),2)
+        ELSE b.valor_unitario * (CURRENT_DATE - COALESCE(u.ultima_rota, DATE_TRUNC('day', CURRENT_DATE)::date))
+    END AS valor_risco_acumulado
+FROM base b
+JOIN ult u ON u.veiculo_id = b.veiculo_id
+WHERE u.ultima_rota IS NULL OR u.ultima_rota < CURRENT_DATE - INTERVAL '30 days'
+ORDER BY dias_parado DESC, valor_unitario DESC
+LIMIT 100
+""", pd.DataFrame())
+
+# 13) DEMANDA DIÁRIA POR GRE
+df_gc_demanda_diaria = safe_read("""
+SELECT g.nome AS gre,
+    COUNT(DISTINCT e.data) AS dias_com_escala,
+    COUNT(e.id) AS total_escalas,
+    ROUND(COUNT(e.id)::numeric / NULLIF(COUNT(DISTINCT e.data),0),1) AS media_escalas_dia,
+    COUNT(DISTINCT e.veiculo_execucao_id) AS veiculos_distintos,
+    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PROPRIA') AS veic_proprios,
+    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_TERCEIRIZADA') AS veic_terceirizados,
+    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PARCEIRO') AS veic_parceiros,
+    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_LOCADA') AS veic_locados
+FROM airbyte.rotas_escalarota e
+JOIN airbyte.veiculos_veiculo v ON v.id = e.veiculo_execucao_id
+JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id
+JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+WHERE e.data >= CURRENT_DATE - INTERVAL '30 days'
+  AND e.anulada = false
+  AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
+GROUP BY g.nome
+ORDER BY total_escalas DESC
+""")
 
 conn.close()
 print("✅ Queries concluídas. Processando...")
@@ -1168,28 +1424,33 @@ def html_bonif_cidade():
 
 def html_gc_frota_status():
     if df_gc_frota_status.empty:
-        return "<tr><td colspan='8'>Sem dados</td></tr>"
+        return "<tr><td colspan='9'>Sem dados</td></tr>"
     h = ""
     tipos_nice = {
         'FROTA_PROPRIA':'🚗 Frota Própria',
         'FROTA_TERCEIRIZADA':'🤝 Terceirizada',
         'FROTA_PARCEIRO':'🤝 Parceiro',
-        'NAO_INFORMADO':'❓ Não informado'
+        'FROTA_LOCADA':'🏷️ Locada',
+        'SEM TIPO':'❓ Sem tipo'
     }
     for _, r in df_gc_frota_status.iterrows():
-        tipo = tipos_nice.get(r['tipo'], r['tipo'])
+        tipo = tipos_nice.get(r['tipo'], str(r['tipo']))
         ociosos = int(r.get('ociosos_com_contrato') or 0)
         sem_contrato = int(r.get('sem_contrato') or 0)
+        inativos_contrato = int(r.get('inativos_com_contrato') or 0)
         cor_ociosos = "color:#ef4444;font-weight:700" if ociosos > 10 else "color:#f59e0b"
         cor_sem = "color:#38bdf8;font-weight:700" if sem_contrato > 0 else ""
-        h += f"<tr><td><b>{tipo}</b></td><td style='text-align:center'>{int(r.get('total',0))}</td>"
-        h += f"<td style='text-align:center;color:#22c55e;font-weight:700'>{int(r.get('ativos',0))}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('inativos',0))}</td>"
-        h += f"<td style='text-align:center;color:#38bdf8;font-weight:700'>{int(r.get('em_operacao',0))}</td>"
-        h += f"<td style='text-align:center;{cor_ociosos}'>{ociosos}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('com_contrato',0))}</td>"
-        h += f"<td style='text-align:center;{cor_sem}'>{sem_contrato}</td></tr>"
+        cor_inat = "color:#ef4444;font-weight:700" if inativos_contrato > 0 else "color:#64748b"
+        h += f"<tr><td><b>{tipo}</b></td><td style='text-align:center'>{int(r.get('total',0)):,}</td>"
+        h += f"<td style='text-align:center;color:#22c55e;font-weight:700'>{int(r.get('ativos',0)):,}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('inativos',0)):,}</td>"
+        h += f"<td style='text-align:center;color:#38bdf8;font-weight:700'>{int(r.get('em_operacao',0)):,}</td>"
+        h += f"<td style='text-align:center;{cor_ociosos}'>{ociosos:,}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('com_contrato',0)):,}</td>"
+        h += f"<td style='text-align:center;{cor_sem}'>{sem_contrato:,}</td>"
+        h += f"<td style='text-align:center;{cor_inat}'>{inativos_contrato:,}</td></tr>"
     return h
+
 
 def html_gc_gap_gre():
     if df_gc_gap_gre.empty: return "<tr><td colspan='7'>Sem dados</td></tr>"
@@ -1206,10 +1467,11 @@ def html_gc_gap_gre():
         h += f"<td style='{cor}'>{sit}</td></tr>"
     return h
 
+
 def html_gc_custo_tipo():
     if df_gc_custo_tipo.empty: return "<tr><td colspan='6'>Sem dados</td></tr>"
     h = ""
-    tipos_nice = {'FROTA_PROPRIA':'🚗 Própria','FROTA_TERCEIRIZADA':'🤝 Terceirizada','FROTA_PARCEIRO':'🤝 Parceiro'}
+    tipos_nice = {'FROTA_PROPRIA':'🚗 Própria','FROTA_TERCEIRIZADA':'🤝 Terceirizada','FROTA_PARCEIRO':'🤝 Parceiro','FROTA_LOCADA':'🏷️ Locada'}
     for _, r in df_gc_custo_tipo.iterrows():
         tipo = tipos_nice.get(r['tipo'], r['tipo'])
         custo_esc = float(r.get('custo_por_escala') or 0)
@@ -1221,61 +1483,83 @@ def html_gc_custo_tipo():
         h += f"<td style='text-align:right'>R$ {fmt(r.get('custo_por_veiculo',0))}</td></tr>"
     return h
 
+
 def html_gc_cont_detalhes():
-    if df_gc_cont_detalhes.empty: return "<tr><td colspan='11'>Sem dados</td></tr>"
+    if df_gc_cont_detalhes.empty: return "<tr><td colspan='12'>Sem dados</td></tr>"
     h = ""
     for _, r in df_gc_cont_detalhes.iterrows():
         sit = r.get('situacao','')
-        cores_sit = {'VEICULO INATIVO':'color:#a78bfa;font-weight:700','PARADO +30D':'color:#f59e0b;font-weight:700','ATIVO':'color:#22c55e'}
+        cores_sit = {'VEÍCULO INATIVO':'color:#ef4444;font-weight:700','VEICULO INATIVO':'color:#ef4444;font-weight:700','PARADO +30D':'color:#f59e0b;font-weight:700','SEM VEÍCULO':'color:#a78bfa;font-weight:700','ATIVO':'color:#22c55e'}
         cor = cores_sit.get(sit, '')
         esc30 = int(r.get('escalas_30d',0) or 0)
         esc7 = int(r.get('escalas_7d',0) or 0)
-        h += f"<tr><td><b>#{r.get('contrato_id','—')}</b></td><td>{r.get('numero_contrato','—')}</td>"
+        modalidade = r.get('modalidade_pagamento','—') or '—'
+        tipo = str(r.get('tipo_frota','SEM TIPO') or 'SEM TIPO').replace('FROTA_','')
+        val = float(r.get('valor_unitario') or 0)
+        unidade = '/dia' if modalidade == 'DIARIA' else '/mês' if modalidade == 'MENSAL' else ''
+        h += f"<tr><td><b>#{r.get('contrato_id','—')}</b></td><td><b>#{r.get('contrato_rota_id','—')}</b></td>"
         h += f"<td>{r.get('gre','—')}</td><td><b>{r.get('placa','—')}</b></td><td>{r.get('fornecedor','—')}</td>"
-        h += f"<td>{r.get('tipo_frota','—').replace('FROTA_','')}</td><td>R$ {fmt(r.get('valor_unitario',0))}/dia</td>"
-        h += f"<td>{r.get('turno','—')}</td><td style='text-align:center;color:#38bdf8;font-weight:700'>{esc30}</td>"
-        h += f"<td style='text-align:center'>{esc7}</td><td style='{cor}'>{sit}</td></tr>"
+        h += f"<td>{tipo}</td><td>{modalidade}</td><td>R$ {fmt(val)}{unidade}</td><td>{r.get('turnos','—') or '—'}</td>"
+        h += f"<td style='text-align:center;color:#38bdf8;font-weight:700'>{esc30}</td><td style='text-align:center'>{esc7}</td><td style='{cor}'>{sit}</td></tr>"
     return h
 
+
+def html_gc_inativos_contrato():
+    if df_gc_inativos_contrato.empty: return "<tr><td colspan='11'>Nenhum veículo inativo com contrato ativo.</td></tr>"
+    h = ""
+    for _, r in df_gc_inativos_contrato.iterrows():
+        status = str(r.get('veiculo_status',''))
+        cor = 'color:#ef4444;font-weight:700' if status == 'I' else 'color:#f59e0b;font-weight:700'
+        tipo = str(r.get('tipo_frota','SEM TIPO') or 'SEM TIPO').replace('FROTA_','')
+        modal = r.get('modalidade_pagamento','—') or '—'
+        val = float(r.get('valor_unitario') or 0)
+        unidade = '/dia' if modal == 'DIARIA' else '/mês' if modal == 'MENSAL' else ''
+        h += f"<tr><td style='{cor}'><b>{r.get('placa','—')}</b></td><td>{r.get('modelo','—')}</td><td>{r.get('gre','—')}</td>"
+        h += f"<td>{r.get('fornecedor','—')}</td><td>{tipo}</td><td style='{cor}'>{r.get('alerta','')}</td>"
+        h += f"<td style='text-align:center'>#{r.get('contrato_id','—')}</td><td style='text-align:center'>#{r.get('contrato_rota_id','—')}</td>"
+        h += f"<td>{modal}</td><td style='text-align:right'>R$ {fmt(val)}{unidade}</td><td>{str(r.get('data_fim',''))[:10] if r.get('data_fim') else '—'}</td></tr>"
+    return h
+
+
 def html_gc_ociosa():
-    if df_gc_ociosa_contrato.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
+    if df_gc_ociosa_contrato.empty: return "<tr><td colspan='9'>Nenhuma frota ativa com contrato e sem operação nos últimos 30 dias.</td></tr>"
     h = ""
     for _, r in df_gc_ociosa_contrato.iterrows():
-        dias = int(r.get('dias_parado') or 0) if r.get('dias_parado') else 0
+        dias = int(r.get('dias_parado') or 0)
         risco = float(r.get('valor_risco_acumulado') or 0)
-        cor_dias = "color:#ef4444;font-weight:700" if dias > 90 else ("color:#f97316" if dias > 60 else "color:#f59e0b")
-        h += f"<tr><td>{r.get('gre','—')}</td><td><b>{r.get('placa','—')}</b></td><td>{r.get('modelo','—')}</td>"
-        h += f"<td>{r.get('tipo','—').replace('FROTA_','')}</td><td>{r.get('fornecedor','—')}</td>"
-        h += f"<td style='text-align:right'>R$ {fmt(r.get('valor_unitario',0))}/dia</td>"
-        h += f"<td style='text-align:center;{cor_dias}'>{dias} dias</td>"
+        cor_dias = "color:#ef4444;font-weight:700" if dias > 90 else ("color:#f97316;font-weight:700" if dias > 60 else "color:#f59e0b")
+        tipo = str(r.get('tipo','SEM TIPO') or 'SEM TIPO').replace('FROTA_','')
+        modal = r.get('modalidade_pagamento','—') or '—'
+        val = float(r.get('valor_unitario') or 0)
+        unidade = '/dia' if modal == 'DIARIA' else '/mês' if modal == 'MENSAL' else ''
+        h += f"<tr><td>{r.get('gre','—')}</td><td><b>{r.get('placa','—')}</b></td><td>{r.get('modelo','—')}</td><td>{tipo}</td><td>{r.get('fornecedor','—')}</td>"
+        h += f"<td>{modal}</td><td style='text-align:right'>R$ {fmt(val)}{unidade}</td><td style='text-align:center;{cor_dias}'>{dias:,} dias</td>"
         h += f"<td style='text-align:right;color:#ef4444;font-weight:700'>R$ {fmt(risco)}</td></tr>"
     return h
 
+
 def html_gc_demanda():
-    if df_gc_demanda_diaria.empty: return "<tr><td colspan='8'>Sem dados</td></tr>"
+    if df_gc_demanda_diaria.empty: return "<tr><td colspan='9'>Sem dados</td></tr>"
     h = ""
     for _, r in df_gc_demanda_diaria.iterrows():
         media = float(r.get('media_escalas_dia') or 0)
         cor_media = "color:#ef4444;font-weight:700" if media > 50 else ("color:#f59e0b" if media > 30 else "color:#22c55e")
         h += f"<tr><td><b>{r.get('gre','—')}</b></td><td style='text-align:center'>{int(r.get('dias_com_escala',0))}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('total_escalas',0)):,}</td>"
-        h += f"<td style='text-align:center;{cor_media}'>{media}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('veiculos_distintos',0))}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('veic_proprios',0))}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('veic_terceirizados',0))}</td>"
-        h += f"<td style='text-align:center'>{int(r.get('veic_parceiros',0))}</td></tr>"
+        h += f"<td style='text-align:center'>{int(r.get('total_escalas',0)):,}</td><td style='text-align:center;{cor_media}'>{media}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('veiculos_distintos',0))}</td><td style='text-align:center'>{int(r.get('veic_proprios',0))}</td>"
+        h += f"<td style='text-align:center'>{int(r.get('veic_terceirizados',0))}</td><td style='text-align:center'>{int(r.get('veic_parceiros',0))}</td><td style='text-align:center'>{int(r.get('veic_locados',0))}</td></tr>"
     return h
+
 
 def html_gc_historico():
     if df_gc_historico.empty:
         return "<tr><td colspan='3'>Sem dados</td></tr>"
     h = ""
-    nomes = {'2026-01':'Jan/26','2026-02':'Fev/26','2026-03':'Mar/26','2026-04':'Abr/26',
-             '2026-05':'Mai/26','2026-06':'Jun/26','2026-07':'Jul/26','2026-08':'Ago/26',
-             '2026-09':'Set/26','2026-10':'Out/26','2026-11':'Nov/26','2026-12':'Dez/26'}
+    nomes = {'2026-01':'Jan/26','2026-02':'Fev/26','2026-03':'Mar/26','2026-04':'Abr/26','2026-05':'Mai/26','2026-06':'Jun/26','2026-07':'Jul/26','2026-08':'Ago/26','2026-09':'Set/26','2026-10':'Out/26','2026-11':'Nov/26','2026-12':'Dez/26'}
     anterior = None
     for _, r in df_gc_historico.iterrows():
-        mes = nomes.get(str(r.get('mes','')), str(r.get('mes','—')))
+        mes_raw = str(r.get('mes',''))
+        mes = nomes.get(mes_raw, mes_raw or '—')
         qtd = int(r.get('contratos_ativos',0) or 0)
         variacao = '—' if anterior is None else f"{qtd-anterior:+d}"
         cor = 'color:#22c55e;font-weight:700' if anterior is not None and qtd > anterior else ('color:#ef4444;font-weight:700' if anterior is not None and qtd < anterior else 'color:#94a3b8')
@@ -1287,26 +1571,28 @@ def html_gc_historico():
 
 def comentario_gc_frota_analise():
     if df_gc_frota_geral.empty:
-        return "Não foi possível obter a situação da frota no banco neste momento."
+        return "Não foi possível obter a situação da frota no banco."
     r = df_gc_frota_geral.iloc[0]
     ativa = int(r.get('frota_ativa',0) or 0)
     oper = int(r.get('em_operacao',0) or 0)
     ociosa = int(r.get('ociosa_com_contrato',0) or 0)
     disp = int(r.get('disponivel_sem_contrato',0) or 0)
+    inat = int(r.get('inativos_com_contrato',0) or 0)
+    propria_contrato = int(r.get('propria_com_contrato',0) or 0)
+    propria_sem = int(r.get('propria_sem_contrato',0) or 0)
+    locada = int(r.get('ativa_locada',0) or 0)
     if ativa <= 0:
-        return "<b style='color:#ef4444'>ATENÇÃO:</b> o cadastro retornou zero veículos ativos. Verifique a coluna de situação/status do veículo antes de usar os indicadores para decisão contratual."
+        return "<b style='color:#ef4444'>ATENÇÃO:</b> a consulta retornou zero veículos ativos."
     utiliz = round(oper / ativa * 100, 1)
     p_oci = round(ociosa / ativa * 100, 1)
-    p_disp = round(disp / ativa * 100, 1)
     partes = [f"<b>Frota ativa:</b> {ativa:,} veículos; <b>em operação:</b> {oper:,} ({utiliz}%)."]
-    partes.append(f"<b>Ociosa com contrato:</b> {ociosa:,} ({p_oci}%). São veículos ativos com contrato vigente, mas sem rota não anulada nos últimos 30 dias.")
-    partes.append(f"<b>Disponível sem contrato:</b> {disp:,} ({p_disp}%). Este grupo é capacidade disponível e não deve ser tratado como ociosidade contratada.")
-    if p_oci >= 20:
-        partes.append("<b style='color:#ef4444'>Prioridade alta:</b> revisar utilização, alocação e pagamentos da frota contratada sem operação.")
-    elif p_oci > 0:
-        partes.append("<b style='color:#f59e0b'>Prioridade:</b> validar as justificativas dos veículos contratados sem operação antes de novas contratações ou renovações.")
-    else:
-        partes.append("<b style='color:#22c55e'>Situação positiva:</b> nenhum veículo ativo com contrato e sem operação recente foi identificado.")
+    partes.append(f"<b>Ociosa com contrato:</b> {ociosa:,} ({p_oci}%). É o grupo que merece revisão de alocação e pagamento.")
+    partes.append(f"<b>Disponível sem contrato:</b> {disp:,}. Não é sinônimo de ociosidade; representa capacidade ativa sem contrato vigente.")
+    if inat > 0:
+        partes.append(f"<b style='color:#ef4444'>Alerta crítico:</b> {inat:,} veículo(s) inativo(s) possuem contrato ativo. Isso deve ser tratado antes de qualquer renovação ou nova contratação.")
+    if propria_contrato > 0:
+        partes.append(f"<b style='color:#f59e0b'>Frota própria com contrato:</b> {propria_contrato:,} veículo(s). Como a frota própria não deveria depender de contrato, esse vínculo precisa ser auditado.")
+    partes.append(f"<b>Frota própria sem contrato:</b> {propria_sem:,}; <b>locada ativa:</b> {locada:,}. Locada permanece em análise separada dos terceirizados.")
     return "<br>".join(partes)
 
 
@@ -1322,83 +1608,95 @@ def comentario_gc_financeiro():
     vn = float(r.get('valor_nao_identificado',0) or 0)
     estimado_mes_diarias = vd * 22
     total_mes = estimado_mes_diarias + vm
-    partes = [f"<b>Diárias:</b> {qd:,} itens · <b>R$ {fmt(vd)}/dia</b> · referência de <b>R$ {fmt(estimado_mes_diarias)}/mês</b> considerando 22 dias úteis."]
-    partes.append(f"<b>Mensais:</b> {qm:,} itens · <b>R$ {fmt(vm)}/mês</b>.")
-    partes.append(f"<b>Previsão mensal combinada:</b> <b style='color:#38bdf8'>R$ {fmt(total_mes)}</b>.")
+    partes = [f"<b>Terceirizados — diária:</b> {qd:,} contratos rota · <b>R$ {fmt(vd)}/dia</b> · referência de <b>R$ {fmt(estimado_mes_diarias)}/mês</b> em 22 dias úteis."]
+    partes.append(f"<b>Terceirizados — mensal:</b> {qm:,} contratos rota · <b>R$ {fmt(vm)}/mês</b>.")
+    partes.append(f"<b>Previsão mensal combinada de terceiros:</b> <b style='color:#38bdf8'>R$ {fmt(total_mes)}</b>.")
     if qn > 0:
-        partes.append(f"<b style='color:#f59e0b'>Periodicidade não identificada:</b> {qn:,} itens · valor cadastrado de R$ {fmt(vn)}. Eles ficaram fora do total combinado para evitar classificação incorreta.")
+        partes.append(f"<b style='color:#f59e0b'>Não classificados:</b> {qn:,} itens · R$ {fmt(vn)}. Permanecem fora da previsão até a classificação correta.")
     return "<br>".join(partes)
+
+
+def comentario_gc_locada():
+    if df_gc_fin_locada.empty:
+        return "Nenhum item de frota locada encontrado."
+    r = df_gc_fin_locada.iloc[0]
+    qd = int(r.get('qtd_diaria',0) or 0); vd = float(r.get('valor_diaria_dia',0) or 0)
+    qm = int(r.get('qtd_mensal',0) or 0); vm = float(r.get('valor_mensal',0) or 0)
+    return f"<b>Locada:</b> {int(r.get('itens_ativos',0) or 0)} item(ns) ativo(s) · {qd} diária(s) em R$ {fmt(vd)}/dia e {qm} mensal(is) em R$ {fmt(vm)}/mês. Mantida separada dos terceirizados para não misturar modelos contratuais."
 
 
 def comentario_gc_historico():
     if df_gc_historico.empty:
         return "Sem histórico suficiente para análise."
     vals = [int(v or 0) for v in df_gc_historico['contratos_ativos'].tolist()]
-    atual = vals[-1] if vals else 0
-    inicio = vals[0] if vals else 0
-    delta = atual - inicio
+    if not vals: return "Sem histórico suficiente para análise."
+    atual = vals[-1]; inicio = vals[0]; delta = atual - inicio
     if delta > 0:
-        return f"O estoque de contratos em vigência passou de <b>{inicio:,}</b> para <b>{atual:,}</b> no período, alta líquida de <b>{delta:,}</b> contratos."
+        return f"O estoque de contratos mestres em vigência passou de <b>{inicio:,}</b> para <b>{atual:,}</b> no período, alta líquida de <b>{delta:,}</b> contratos."
     if delta < 0:
-        return f"O estoque de contratos em vigência passou de <b>{inicio:,}</b> para <b>{atual:,}</b>, redução líquida de <b>{abs(delta):,}</b> contratos."
-    return f"O estoque de contratos em vigência permaneceu em <b>{atual:,}</b> entre o primeiro e o último mês disponível."
+        return f"O estoque de contratos mestres em vigência passou de <b>{inicio:,}</b> para <b>{atual:,}</b>, redução líquida de <b>{abs(delta):,}</b> contratos."
+    return f"O estoque de contratos mestres em vigência permaneceu em <b>{atual:,}</b> entre o primeiro e o último mês disponível."
 
 
 def comentario_gc_geral():
     if df_gc_resumo.empty or df_gc_frota_geral.empty:
-        return "Não foi possível consolidar a análise gerencial com os dados retornados."
-    cr = df_gc_resumo.iloc[0]
-    fr = df_gc_frota_geral.iloc[0]
-    contratos = int(cr.get('total_ativos',0) or 0)
+        return "Não foi possível consolidar a análise gerencial."
+    cr = df_gc_resumo.iloc[0]; fr = df_gc_frota_geral.iloc[0]
+    contratos = int(cr.get('contratos_ativos',0) or 0)
+    rotas = int(cr.get('contratos_rota_ativos',0) or 0)
     ativa = int(fr.get('frota_ativa',0) or 0)
     oper = int(fr.get('em_operacao',0) or 0)
     ociosa = int(fr.get('ociosa_com_contrato',0) or 0)
-    disp = int(fr.get('disponivel_sem_contrato',0) or 0)
-    financeira = df_gc_financeiro.iloc[0] if not df_gc_financeiro.empty else {}
-    vd = float(financeira.get('valor_diaria_dia',0) or 0) if hasattr(financeira,'get') else 0
-    vm = float(financeira.get('valor_mensal',0) or 0) if hasattr(financeira,'get') else 0
+    inat = int(fr.get('inativos_com_contrato',0) or 0)
+    propria = int(fr.get('propria_com_contrato',0) or 0)
+    vd = float(df_gc_financeiro.iloc[0].get('valor_diaria_dia',0) or 0) if not df_gc_financeiro.empty else 0
+    vm = float(df_gc_financeiro.iloc[0].get('valor_mensal',0) or 0) if not df_gc_financeiro.empty else 0
     total_ref = vd*22 + vm
     utiliz = round(oper/ativa*100,1) if ativa else 0
-    return (f"<b>Leitura executiva:</b> há <b>{contratos:,} contratos ativos</b>. A frota ativa identificada é de <b>{ativa:,} veículos</b>, com <b>{oper:,}</b> em operação nos últimos 30 dias ({utiliz}%). "
-            f"São <b>{ociosa:,}</b> veículos ativos com contrato e sem operação e <b>{disp:,}</b> veículos ativos sem contrato. "
-            f"Nos terceirizados, a referência de custo mensal é <b>R$ {fmt(total_ref)}</b>, somando diárias projetadas em 22 dias úteis e mensalidades identificadas. "
-            f"A decisão gerencial deve separar capacidade disponível, ociosidade contratada e periodicidade de pagamento antes de novas contratações.")
+    partes = [f"<b>{contratos:,} contratos mestres ativos</b> controlam <b>{rotas:,} contratos rota</b> ativos. A frota ativa é de <b>{ativa:,}</b> veículos, com <b>{oper:,}</b> em operação nos últimos 30 dias ({utiliz}%)."]
+    if ociosa:
+        partes.append(f"Há <b style='color:#f59e0b'>{ociosa:,} veículos ativos com contrato e sem operação recente</b>; esse é o principal ponto de revisão de utilização e pagamento.")
+    if inat:
+        partes.append(f"Há <b style='color:#ef4444'>{inat:,} veículos inativos com contrato ativo</b>; isso é uma inconsistência contratual prioritária.")
+    if propria:
+        partes.append(f"Existem <b style='color:#f59e0b'>{propria:,} veículos de frota própria com contrato ativo</b>; esse vínculo deve ser auditado separadamente.")
+    partes.append(f"A referência mensal dos terceiros é <b>R$ {fmt(total_ref)}</b> (22 dias úteis para diárias + mensalidades). Frota locada permanece fora desse cálculo para análise específica.")
+    return "<br>".join(partes)
 
 
 def comentario_gc_recomendacao():
-    """Gera recomendação automática baseada no gap analysis"""
-    if df_gc_gap_gre.empty: return "Sem dados suficientes para recomendação."
-    sobrecarga = df_gc_gap_gre[df_gc_gap_gre['situacao'] == 'SOBRECARGA']
-    ociosa = df_gc_gap_gre[df_gc_gap_gre['situacao'] == 'FROTA OCIOSA']
-    sem_frota = df_gc_gap_gre[df_gc_gap_gre['situacao'] == 'SEM FROTA']
     partes = []
-    if not sem_frota.empty:
-        gres = ", ".join(sem_frota['gre'].head(3).tolist())
-        partes.append(f"<b style='color:#a78bfa'>URGENTE:</b> {len(sem_frota)} GRE(s) sem frota ativa: {gres}. <b>Prioridade máxima para contratação imediata.</b>")
-    if not sobrecarga.empty:
-        gres = ", ".join(sobrecarga['gre'].head(3).tolist())
-        partes.append(f"<b style='color:#ef4444'>SOBRECARGA:</b> {len(sobrecarga)} GRE(s) com demanda superior à capacidade: {gres}. Recomenda-se <b>locação emergencial</b> ou redistribuição de frota ociosa.")
-    if not ociosa.empty:
-        gres = ", ".join(ociosa['gre'].head(3).tolist())
-        partes.append(f"<b style='color:#f59e0b'>OCIOSIDADE:</b> {len(ociosa)} GRE(s) com frota subutilizada: {gres}. Avaliar <b>redução de contratos</b> ou realocação para áreas em sobrecarga.")
-    if not partes:
-        return "<b style='color:#22c55e'>SITUAÇÃO ESTÁVEL:</b> A maioria das GREs apresenta equilíbrio entre demanda e oferta. Manter monitoramento mensal."
+    if not df_gc_inativos_contrato.empty:
+        partes.append(f"<b style='color:#ef4444'>1. Corrigir {len(df_gc_inativos_contrato)} vínculo(s) de veículo inativo com contrato ativo.</b>")
+    if not df_gc_frota_geral.empty:
+        r = df_gc_frota_geral.iloc[0]
+        ociosa = int(r.get('ociosa_com_contrato',0) or 0)
+        if ociosa:
+            partes.append(f"<b>2. Auditar {ociosa:,} veículo(s) ocioso(s) com contrato</b> antes de ampliar a frota.")
+        propria = int(r.get('propria_com_contrato',0) or 0)
+        if propria:
+            partes.append(f"<b>3. Revisar {propria:,} vínculo(s) de frota própria com contrato</b> para eliminar custo contratual indevido.")
+    if not df_gc_sem_tipo.empty:
+        st = df_gc_sem_tipo.iloc[0]
+        itens = int(st.get('itens',0) or 0)
+        if itens:
+            partes.append(f"<b>4. Classificar {itens:,} contrato(s) rota sem tipo de frota</b> antes de fechar a previsão financeira.")
+    partes.append("<b>5. Manter frota locada separada dos terceirizados</b> e comparar seu custo com a alternativa de frota própria/terceirizada.")
     return "<br><br>".join(partes)
 
+
 def comentario_gc_custo():
-    if df_gc_custo_tipo.empty: return ""
-    melhor = df_gc_custo_tipo.loc[df_gc_custo_tipo['custo_por_escala'].idxmin()] if not df_gc_custo_tipo.empty else None
-    pior = df_gc_custo_tipo.loc[df_gc_custo_tipo['custo_por_escala'].idxmax()] if not df_gc_custo_tipo.empty else None
-    if melhor is None: return ""
-    txt = f"<b>Melhor custo-benefício:</b> {melhor['tipo'].replace('FROTA_','')} — R$ {fmt(melhor['custo_por_escala'])}/escala. "
-    if pior is not None:
-        txt += f"<b>Maior custo:</b> {pior['tipo'].replace('FROTA_','')} — R$ {fmt(pior['custo_por_escala'])}/escala. "
-    txt += "<br><b>Recomendação:</b> Para novas contratações, priorizar o modelo com menor custo por escala, desde que atenda às exigências de rastreamento e manutenção."
+    if df_gc_custo_tipo.empty:
+        return "Sem base suficiente para comparação de custo."
+    melhor = df_gc_custo_tipo.loc[df_gc_custo_tipo['custo_por_escala'].idxmin()]
+    pior = df_gc_custo_tipo.loc[df_gc_custo_tipo['custo_por_escala'].idxmax()]
+    txt = f"<b>Menor custo estimado por escala:</b> {str(melhor['tipo']).replace('FROTA_','')} — R$ {fmt(melhor['custo_por_escala'])}/escala. "
+    txt += f"<b>Maior custo:</b> {str(pior['tipo']).replace('FROTA_','')} — R$ {fmt(pior['custo_por_escala'])}/escala."
     return txt
 
 # ─── KPIs GERENTE DE CONTRATOS ──────────────────────────────────────────────
-gc_total = int(df_gc_resumo['total_ativos'].iloc[0]) if not df_gc_resumo.empty else 0
-gc_itens_ativos = int(df_gc_resumo['itens_ativos'].iloc[0]) if not df_gc_resumo.empty else 0
+gc_total = int(df_gc_resumo['contratos_ativos'].iloc[0]) if not df_gc_resumo.empty else 0
+gc_itens_ativos = int(df_gc_resumo['contratos_rota_ativos'].iloc[0]) if not df_gc_resumo.empty else 0
 
 gc_fin_qd = int(df_gc_financeiro['qtd_diaria'].iloc[0]) if not df_gc_financeiro.empty else 0
 gc_fin_vd = float(df_gc_financeiro['valor_diaria_dia'].iloc[0]) if not df_gc_financeiro.empty else 0
@@ -1409,38 +1707,48 @@ gc_fin_vn = float(df_gc_financeiro['valor_nao_identificado'].iloc[0]) if not df_
 gc_fin_ref_mes = gc_fin_vd * 22
 gc_fin_total_mes = gc_fin_ref_mes + gc_fin_vm
 
+gc_loc_qd = int(df_gc_fin_locada['qtd_diaria'].iloc[0]) if not df_gc_fin_locada.empty else 0
+gc_loc_vd = float(df_gc_fin_locada['valor_diaria_dia'].iloc[0]) if not df_gc_fin_locada.empty else 0
+gc_loc_qm = int(df_gc_fin_locada['qtd_mensal'].iloc[0]) if not df_gc_fin_locada.empty else 0
+gc_loc_vm = float(df_gc_fin_locada['valor_mensal'].iloc[0]) if not df_gc_fin_locada.empty else 0
+
+gc_sem_tipo = int(df_gc_sem_tipo['itens'].iloc[0]) if not df_gc_sem_tipo.empty else 0
+gc_sem_veiculo = int(df_gc_sem_tipo['sem_veiculo'].iloc[0]) if not df_gc_sem_tipo.empty else 0
+
+gc_inat_contrato = len(df_gc_inativos_contrato) if not df_gc_inativos_contrato.empty else 0
+
+gc_propria_com_contrato = int(df_gc_resumo['veic_proprios_com_contrato'].iloc[0]) if not df_gc_resumo.empty else 0
+
+gc_locada_com_contrato = int(df_gc_resumo['veic_locados_com_contrato'].iloc[0]) if not df_gc_resumo.empty else 0
+
 _frota_geral = df_gc_frota_geral.iloc[0] if not df_gc_frota_geral.empty else {}
 gc_frota_total = int(_frota_geral.get('frota_total',0) or 0) if hasattr(_frota_geral,'get') else 0
 gc_frota_ativa = int(_frota_geral.get('frota_ativa',0) or 0) if hasattr(_frota_geral,'get') else 0
 gc_frota_operando = int(_frota_geral.get('em_operacao',0) or 0) if hasattr(_frota_geral,'get') else 0
 gc_frota_ociosa = int(_frota_geral.get('ociosa_com_contrato',0) or 0) if hasattr(_frota_geral,'get') else 0
 gc_frota_sem_contrato = int(_frota_geral.get('disponivel_sem_contrato',0) or 0) if hasattr(_frota_geral,'get') else 0
+gc_frota_inat_contrato = int(_frota_geral.get('inativos_com_contrato',0) or 0) if hasattr(_frota_geral,'get') else 0
+gc_frota_propria = int(_frota_geral.get('ativa_propria',0) or 0) if hasattr(_frota_geral,'get') else 0
+gc_frota_terc = int(_frota_geral.get('ativa_terceirizada',0) or 0) if hasattr(_frota_geral,'get') else 0
+gc_frota_parceiro = int(_frota_geral.get('ativa_parceiro',0) or 0) if hasattr(_frota_geral,'get') else 0
+gc_frota_locada = int(_frota_geral.get('ativa_locada',0) or 0) if hasattr(_frota_geral,'get') else 0
+gc_propria_sem_contrato = int(_frota_geral.get('propria_sem_contrato',0) or 0) if hasattr(_frota_geral,'get') else 0
 
-# Ociosa com contrato
 gc_risco_ocioso = float(df_gc_ociosa_contrato['valor_risco_acumulado'].sum()) if not df_gc_ociosa_contrato.empty else 0
 
-# Custo
 gc_custo_medio = round(df_gc_custo_tipo['custo_por_escala'].mean(),2) if not df_gc_custo_tipo.empty else 0
 
-# Histórico contratação
 gc_hist_meses = df_gc_historico['mes'].tolist() if not df_gc_historico.empty else []
 gc_hist_ativos = [int(v or 0) for v in df_gc_historico['contratos_ativos'].tolist()] if not df_gc_historico.empty else []
 
-# Demanda por tipo (para gráfico de pizza)
-gc_demanda_tipos = {'Própria':0,'Terceirizada':0,'Parceiro':0}
+gc_demanda_tipos = {'Própria':0,'Terceirizada':0,'Parceiro':0,'Locada':0}
 if not df_gc_demanda_diaria.empty:
     gc_demanda_tipos['Própria'] = int(df_gc_demanda_diaria['veic_proprios'].sum())
     gc_demanda_tipos['Terceirizada'] = int(df_gc_demanda_diaria['veic_terceirizados'].sum())
     gc_demanda_tipos['Parceiro'] = int(df_gc_demanda_diaria['veic_parceiros'].sum())
+    gc_demanda_tipos['Locada'] = int(df_gc_demanda_diaria['veic_locados'].sum())
 
-# Frota por tipo para gráfico
-gc_frota_tipos = {'Própria':0,'Terceirizada':0,'Parceiro':0}
-if not df_gc_frota_status.empty:
-    for _, r in df_gc_frota_status.iterrows():
-        t = r['tipo'].replace('FROTA_','')
-        gc_frota_tipos[t] = int(r.get('ativos',0))
-
-# Gap por situacao (para gráfico)
+gc_frota_tipos = {'Própria':gc_frota_propria,'Terceirizada':gc_frota_terc,'Parceiro':gc_frota_parceiro,'Locada':gc_frota_locada}
 gc_gap_counts = df_gc_gap_gre['situacao'].value_counts().to_dict() if not df_gc_gap_gre.empty else {}
 
 # ─── HTML FINAL ─────────────────────────────────────────────────────────────
@@ -1985,19 +2293,28 @@ canvas{{max-height:270px}}
 <!-- ABA 11: GERENTE DE CONTRATOS -->
 <div id="t11" class="tab">
   <div class="info">
-    <b>📌 Painel do Gerente de Contratos:</b> visão consolidada para decisão sobre <b>contratação, locação, frota e pagamentos</b>.
-    A leitura separa <b>frota ativa</b>, <b>em operação</b>, <b>ociosa com contrato</b> e <b>disponível sem contrato</b>, além de estimar o compromisso financeiro dos terceirizados por <b>diária</b> e <b>mensalidade</b> quando a periodicidade estiver cadastrada.
+    <b>📌 Painel do Gerente de Contratos:</b> visão consolidada de <b>contratos mestres</b>, <b>contratos rota</b>, frota, pagamento e inconsistências. <b>Contratos a vencer foram retirados deste painel.</b>
   </div>
 
   <div class="kpi-grid">
-    <div class="kpi"><label>Contratos Ativos</label><div class="v v-ac">{gc_total:,}</div><div class="sub">{gc_itens_ativos:,} itens ativos</div></div>
+    <div class="kpi"><label>Contratos Ativos</label><div class="v v-ac">{gc_total:,}</div><div class="sub">contratos mestres</div></div>
+    <div class="kpi"><label>Contratos Rota Ativos</label><div class="v v-ac">{gc_itens_ativos:,}</div><div class="sub">itens dos contratos mestres</div></div>
     <div class="kpi"><label>Previsão Terceirizados</label><div class="v v-ac">R$ {fmt(gc_fin_total_mes)}</div><div class="sub">R$ {fmt(gc_fin_vd)}/dia + R$ {fmt(gc_fin_vm)}/mês</div></div>
-    <div class="kpi"><label>Frota Total Ativa</label><div class="v v-ok">{gc_frota_ativa:,}</div><div class="sub">situação ativa no cadastro</div></div>
+    <div class="kpi"><label>Frota Total Ativa</label><div class="v v-ok">{gc_frota_ativa:,}</div><div class="sub">status A no cadastro</div></div>
     <div class="kpi"><label>Frota em Operação</label><div class="v v-ok">{gc_frota_operando:,}</div><div class="sub">últimos 30 dias</div></div>
     <div class="kpi"><label>Frota Ociosa c/ Contrato</label><div class="v {'v-cr' if gc_frota_ociosa>20 else 'v-wn'}">{gc_frota_ociosa:,}</div><div class="sub">ativa + contrato + sem rota</div></div>
+    <div class="kpi"><label>Inativos c/ Contrato</label><div class="v v-cr">{gc_frota_inat_contrato:,}</div><div class="sub">inconsistência contratual</div></div>
     <div class="kpi"><label>Disponível sem Contrato</label><div class="v v-ac">{gc_frota_sem_contrato:,}</div><div class="sub">ativo sem contrato vigente</div></div>
-    <div class="kpi"><label>Terceiros — Diária</label><div class="v v-wn">R$ {fmt(gc_fin_vd)}</div><div class="sub">{gc_fin_qd:,} itens · por dia</div></div>
-    <div class="kpi"><label>Terceiros — Mensal</label><div class="v v-wn">R$ {fmt(gc_fin_vm)}</div><div class="sub">{gc_fin_qm:,} itens · por mês</div></div>
+  </div>
+
+  <div class="g2">
+    <div class="kpi"><label>Terceiros — Diária</label><div class="v v-wn">R$ {fmt(gc_fin_vd)}</div><div class="sub">{gc_fin_qd:,} contratos rota · valor/dia</div></div>
+    <div class="kpi"><label>Terceiros — Mensal</label><div class="v v-wn">R$ {fmt(gc_fin_vm)}</div><div class="sub">{gc_fin_qm:,} contratos rota · valor/mês</div></div>
+  </div>
+
+  <div class="g2">
+    <div class="kpi"><label>Frota Própria c/ Contrato</label><div class="v {'v-cr' if gc_propria_com_contrato>0 else 'v-ok'}">{gc_propria_com_contrato:,}</div><div class="sub">vínculo que deve ser auditado</div></div>
+    <div class="kpi"><label>Frota Locada c/ Contrato</label><div class="v v-wn">{gc_locada_com_contrato:,}</div><div class="sub">mantida separada dos terceiros</div></div>
   </div>
 
   <div class="card gc-analysis">
@@ -2005,63 +2322,79 @@ canvas{{max-height:270px}}
     <p class="desc" style="border-left-color:var(--ac)">{comentario_gc_geral()}</p>
     <p class="desc" style="border-left-color:var(--wn)">{comentario_gc_frota_analise()}</p>
     <p class="desc" style="border-left-color:var(--pu)">{comentario_gc_financeiro()}</p>
+    <p class="desc" style="border-left-color:#f97316">{comentario_gc_locada()}</p>
   </div>
 
   <div class="gc-rec">
-    <b>🧠 RECOMENDAÇÃO AUTOMÁTICA DE CONTRATAÇÃO:</b><br><br>
+    <b>🧠 PRIORIDADES GERENCIAIS:</b><br><br>
     {comentario_gc_recomendacao()}
   </div>
 
   <div class="g2">
     <div class="card">
-      <h3>🚌 Frota Disponível vs Ocupada por Tipo</h3>
+      <h3>🚌 Frota Ativa por Tipo — Operação, Contrato e Disponibilidade</h3>
       <p class="desc">
-        <b>Em Operação</b> = ativo com rota não anulada nos últimos 30 dias.
+        <b>Em Operação</b> = veículo ativo com rota não anulada nos últimos 30 dias.
         <b>Ocioso c/ Contrato</b> = ativo, contrato vigente e sem rota nos últimos 30 dias.
-        <b>Sem Contrato</b> = ativo no cadastro e sem contrato vigente. Portanto, <b>sem contrato</b> não é sinônimo de frota ociosa contratada.
+        <b>Sem Contrato</b> = ativo no cadastro e sem contrato vigente. Em <b>Frota Própria</b>, não ter contrato não é problema por si só; ter contrato vinculado é o ponto de auditoria.
       </p>
       <div class="tw">
         <table>
-          <thead><tr><th>Tipo de Frota</th><th style="text-align:center">Total</th><th style="text-align:center">Ativos</th><th style="text-align:center">Inativos</th><th style="text-align:center">Em Operação</th><th style="text-align:center">Ociosos c/ Contrato</th><th style="text-align:center">C/ Contrato</th><th style="text-align:center">S/ Contrato</th></tr></thead>
+          <thead><tr><th>Tipo</th><th>Total</th><th>Ativos</th><th>Inativos</th><th>Operando</th><th>Ociosos c/ Contrato</th><th>C/ Contrato</th><th>S/ Contrato</th><th>Inativos c/ Contrato</th></tr></thead>
           <tbody>{html_gc_frota_status()}</tbody>
         </table>
       </div>
-      <div style="margin-top:12px;height:200px"><canvas id="c_gc_frota"></canvas></div>
-      <p class="desc" style="border-left-color:var(--wn);margin-top:10px"><b>Leitura gerencial:</b> {comentario_gc_frota_analise()}</p>
+      <div style="margin-top:12px;height:220px"><canvas id="c_gc_frota"></canvas></div>
     </div>
 
     <div class="card">
-      <h3>💰 Custo Médio por Tipo de Frota (Últimos 3 Meses)</h3>
-      <p class="desc" style="border-left-color:var(--ac)">{comentario_gc_custo()}</p>
-      <div class="tw">
-        <table>
-          <thead><tr><th>Tipo</th><th style="text-align:center">Escalas Média</th><th style="text-align:center">Veíc. Média</th><th style="text-align:right">Custo Mensal</th><th style="text-align:right">R$/Escala</th><th style="text-align:right">R$/Veículo</th></tr></thead>
-          <tbody>{html_gc_custo_tipo()}</tbody>
-        </table>
-      </div>
-      <div style="margin-top:12px;height:200px"><canvas id="c_gc_custo"></canvas></div>
+      <h3>💰 Compromisso Financeiro dos Terceirizados</h3>
+      <p class="desc">Os valores abaixo consideram somente <b>contratos rota ATIVOS</b>, dentro de <b>contratos mestres ATIVOS</b>, e somente veículos classificados como <b>FROTA_TERCEIRIZADA</b>. Diárias são projetadas em 22 dias úteis; mensalidades permanecem mensais.</p>
+      <table>
+        <thead><tr><th>Modalidade</th><th style="text-align:center">Contratos Rota</th><th style="text-align:right">Valor</th><th>Referência</th></tr></thead>
+        <tbody>
+          <tr><td><b>DIÁRIA</b></td><td style="text-align:center">{gc_fin_qd:,}</td><td style="text-align:right;color:#f59e0b;font-weight:700">R$ {fmt(gc_fin_vd)}</td><td>por dia</td></tr>
+          <tr><td><b>MENSAL</b></td><td style="text-align:center">{gc_fin_qm:,}</td><td style="text-align:right;color:#f59e0b;font-weight:700">R$ {fmt(gc_fin_vm)}</td><td>por mês</td></tr>
+          <tr style="background:#0f172a;border-top:2px solid #334155"><td><b>PREVISÃO MENSAL</b></td><td></td><td style="text-align:right;color:#38bdf8;font-weight:700">R$ {fmt(gc_fin_total_mes)}</td><td>22 dias + mensal</td></tr>
+        </tbody>
+      </table>
+      <p class="desc" style="border-left-color:#f97316;margin-top:12px"><b>Locada separada:</b> {gc_loc_qd} diária(s) = R$ {fmt(gc_loc_vd)}/dia · {gc_loc_qm} mensal(is) = R$ {fmt(gc_loc_vm)}/mês.</p>
     </div>
   </div>
 
   <div class="card">
-    <h3>📈 Evolução da Quantidade de Contratos Ativos — 2026</h3>
+    <h3>📈 Evolução da Quantidade de Contratos Mestres Ativos — 2026</h3>
     <p class="desc" style="border-left-color:var(--ac)">{comentario_gc_historico()}</p>
     <div class="tw">
       <table>
-        <thead><tr><th>Mês</th><th style="text-align:center">Contratos em Vigência</th><th style="text-align:center">Variação vs. mês anterior</th></tr></thead>
+        <thead><tr><th>Mês</th><th style="text-align:center">Contratos Mestres em Vigência</th><th style="text-align:center">Variação</th></tr></thead>
         <tbody>{html_gc_historico()}</tbody>
       </table>
     </div>
     <div style="margin-top:12px;height:220px"><canvas id="c_gc_hist"></canvas></div>
   </div>
 
+  <div class="card">
+    <h3>🚨 Veículos Inativos com Contratos Ativos — Prioridade de Auditoria</h3>
+    <p class="desc" style="border-left-color:var(--cr)">
+      Este é um indicador específico de inconsistência: o veículo está <b>inativo (status I/S)</b>, mas existe <b>contrato mestre ativo + contrato rota ativo</b> vinculado a ele. Esses casos devem ser validados antes de renovação, pagamento ou nova contratação.
+    </p>
+    <input class="src" id="s_gc_i" oninput="fil('s_gc_i','t_gc_i')" placeholder="Filtrar placa, GRE, fornecedor, contrato...">
+    <div class="tw">
+      <table id="t_gc_i">
+        <thead><tr><th>Placa</th><th>Modelo</th><th>GRE</th><th>Fornecedor</th><th>Tipo Frota</th><th>Alerta</th><th>Contrato</th><th>Contrato Rota</th><th>Modalidade</th><th>Valor</th><th>Vencimento</th></tr></thead>
+        <tbody>{html_gc_inativos_contrato()}</tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="g2">
     <div class="card">
       <h3>📊 Demanda vs Oferta por GRE (Últimos 30 Dias)</h3>
-      <p class="desc"><b>Frota Ativa</b> = veículos ativos no cadastro. <b>Frota Operando</b> = ativos com escala nos últimos 30 dias. <b>Veículos Usados</b> = distintos que apareceram nas escalas. <b>Situação</b> orienta redistribuição ou reforço de frota.</p>
+      <p class="desc"><b>Frota Ativa</b> = veículos ativos no cadastro. <b>Frota Operando</b> = ativos com escala nos últimos 30 dias. <b>Veículos Usados</b> = distintos que apareceram nas escalas. A situação orienta redistribuição ou reforço de frota.</p>
       <div class="tw">
         <table>
-          <thead><tr><th>GRE</th><th style="text-align:center">Frota Ativa</th><th style="text-align:center">Operando</th><th style="text-align:center">Escalas 30d</th><th style="text-align:center">Veíc. Usados</th><th style="text-align:center">Utilização</th><th>Situação</th></tr></thead>
+          <thead><tr><th>GRE</th><th>Frota Ativa</th><th>Operando</th><th>Escalas 30d</th><th>Veíc. Usados</th><th>Utilização</th><th>Situação</th></tr></thead>
           <tbody>{html_gc_gap_gre()}</tbody>
         </table>
       </div>
@@ -2070,10 +2403,9 @@ canvas{{max-height:270px}}
 
     <div class="card">
       <h3>📈 Demanda Diária Média por GRE (Últimos 30 Dias)</h3>
-      <p class="desc"><b>Média Escalas/Dia</b> = volume médio diário de serviço. Use em conjunto com a frota ativa da GRE para dimensionar a capacidade necessária.</p>
       <div class="tw">
         <table>
-          <thead><tr><th>GRE</th><th style="text-align:center">Dias c/ Escala</th><th style="text-align:center">Total Escalas</th><th style="text-align:center">Média/Dia</th><th style="text-align:center">Total Veíc.</th><th style="text-align:center">Próprios</th><th style="text-align:center">Terc.</th><th style="text-align:center">Parc.</th></tr></thead>
+          <thead><tr><th>GRE</th><th>Dias</th><th>Total Escalas</th><th>Média/Dia</th><th>Veíc. Total</th><th>Próprios</th><th>Terc.</th><th>Parc.</th><th>Locados</th></tr></thead>
           <tbody>{html_gc_demanda()}</tbody>
         </table>
       </div>
@@ -2083,29 +2415,31 @@ canvas{{max-height:270px}}
 
   <div class="card">
     <h3>🚨 Frota Ociosa com Contrato Ativo (Parada +30 dias)</h3>
-    <p class="desc">
-      Este quadro mostra somente veículos que <b>estão ativos no cadastro + possuem contrato ativo + não registraram rota não anulada nos últimos 30 dias</b>.
-      Não inclui os veículos disponíveis sem contrato. <b>Dias Parado</b> = tempo desde a última rota. <b>Risco Acumulado</b> = valor diário × dias parado, quando o valor contratual é diário.
-    </p>
+    <p class="desc">Somente veículos <b>ativos + contrato ativo + sem rota não anulada nos últimos 30 dias</b>. O quadro não inclui a frota disponível sem contrato. Para contratos mensais, o risco acumulado é rateado proporcionalmente por 30 dias.</p>
     <input class="src" id="s_gc_o" oninput="fil('s_gc_o','t_gc_o')" placeholder="Filtrar por GRE, placa, fornecedor...">
     <div class="tw">
       <table id="t_gc_o">
-        <thead><tr><th>GRE</th><th>Placa</th><th>Modelo</th><th>Tipo</th><th>Fornecedor</th><th>Valor/Dia</th><th style="text-align:center">Dias Parado</th><th style="text-align:right">Risco Acumulado</th></tr></thead>
+        <thead><tr><th>GRE</th><th>Placa</th><th>Modelo</th><th>Tipo</th><th>Fornecedor</th><th>Modalidade</th><th>Valor</th><th>Dias Parado</th><th>Risco Acumulado</th></tr></thead>
         <tbody>{html_gc_ociosa()}</tbody>
       </table>
     </div>
   </div>
 
   <div class="card">
-    <h3>📋 Todos os Contratos Ativos — Situação Detalhada</h3>
-    <p class="desc"><b>ATIVO</b> = veículo em situação ativa no cadastro. <b>PARADO +30D</b> = contrato ativo sem operação recente. <b>VEÍCULO INATIVO</b> = contrato ativo ligado a veículo inativo.</p>
-    <input class="src" id="s_gc_d" oninput="fil('s_gc_d','t_gc_d')" placeholder="Filtrar por GRE, placa, contrato, situação...">
+    <h3>📋 Contratos Rota Ativos — Situação Detalhada</h3>
+    <p class="desc">Os <b>Contratos Rota</b> são os 463 itens ativos. <b>Contrato Mestre</b> é o contrato principal (246 ativos). A situação evidencia veículo inativo, item sem veículo, parada superior a 30 dias ou operação normal.</p>
+    <input class="src" id="s_gc_d" oninput="fil('s_gc_d','t_gc_d')" placeholder="Filtrar por GRE, placa, fornecedor, contrato, situação...">
     <div class="tw">
       <table id="t_gc_d">
-        <thead><tr><th>ID</th><th>Nº Contrato</th><th>GRE</th><th>Placa</th><th>Fornecedor</th><th>Tipo</th><th>Valor/Dia</th><th>Turno</th><th style="text-align:center">Esc. 30d</th><th style="text-align:center">Esc. 7d</th><th>Situação</th></tr></thead>
+        <thead><tr><th>Contrato Mestre</th><th>Contrato Rota</th><th>GRE</th><th>Placa</th><th>Fornecedor</th><th>Tipo Frota</th><th>Modalidade</th><th>Valor</th><th>Turno</th><th>Esc.30d</th><th>Esc.7d</th><th>Situação</th></tr></thead>
         <tbody>{html_gc_cont_detalhes()}</tbody>
       </table>
     </div>
+  </div>
+
+  <div class="card">
+    <h3>💸 Itens Ativos sem Tipo de Frota</h3>
+    <p class="desc">Existem <b>{gc_sem_tipo:,}</b> contrato(s) rota ativo(s) sem classificação de frota, dos quais <b>{gc_sem_veiculo:,}</b> estão sem veículo vinculado. Eles ficam fora da previsão de terceiros até serem classificados.</p>
   </div>
 </div>
 
@@ -2185,7 +2519,7 @@ C.line('c_gre',gmu,gns.map((g,i)=>{{
 // Frota por tipo (doughnut)
 const frotaLabels = {jd(list(gc_frota_tipos.keys()))};
 const frotaData = {jd(list(gc_frota_tipos.values()))};
-C.pie('c_gc_frota', frotaLabels, frotaData, ['#22c55e','#f59e0b','#a78bfa']);
+C.pie('c_gc_frota', frotaLabels, frotaData, ['#22c55e','#f59e0b','#a78bfa','#38bdf8']);
 
 // Custo por tipo (bar)
 const custoLabels = {jd(df_gc_custo_tipo['tipo'].tolist() if not df_gc_custo_tipo.empty else [])};
