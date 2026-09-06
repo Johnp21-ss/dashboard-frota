@@ -1954,12 +1954,12 @@ const C={{
   line:(id,labels,datasets)=>new Chart(document.getElementById(id),{{
     type:'line',data:{{labels,datasets}},
     options:{{responsive:true,plugins:{{legend:{{labels:{{color:'#94a3b8',font:{{size:11}}}}}}}},
-      scales:{{x:{{ticks:{{color:'#64748b',font:{{size:10}}}}}},y:{{ticks:{{color:'#64748b',font:{{size:10}}}}}}}}}
+      scales:{{x:{{ticks:{{color:'#64748b',font:{{size:10}}}}}},y:{{ticks:{{color:'#64748b',font:{{size:10}}}}}}}}
   }}),
   bar:(id,labels,datasets)=>new Chart(document.getElementById(id),{{
     type:'bar',data:{{labels,datasets}},
     options:{{responsive:true,plugins:{{legend:{{labels:{{color:'#94a3b8',font:{{size:11}}}}}}}},
-      scales:{{x:{{ticks:{{color:'#64748b',font:{{size:10}}}}}},y:{{ticks:{{color:'#64748b',font:{{size:10}}}}}}}}}
+      scales:{{x:{{ticks:{{color:'#64748b',font:{{size:10}}}}}},y:{{ticks:{{color:'#64748b',font:{{size:10}}}}}}}}
   }}),
   pie:(id,labels,data,colors)=>new Chart(document.getElementById(id),{{
     type:'doughnut',data:{{labels,datasets:[{{data,backgroundColor:colors,borderWidth:0}}]}},
@@ -2007,7 +2007,7 @@ const gapData = {jd(list(gc_gap_counts.values()))};
 new Chart(document.getElementById('c_gc_gap'), {{
   type:'bar',
   data:{{labels:gapLabels,datasets:[{{label:'GREs',data:gapData,backgroundColor:gapLabels.map(l=>{{const c={{'SOBRECARGA':'#ef4444','FROTA OCIOSA':'#f59e0b','LIMITE':'#f97316','EQUILIBRADO':'#22c55e','SEM FROTA':'#a78bfa'}};return c[l]||'#64748b';}}),borderWidth:0}}]}},
-  options:{{indexAxis:'y',responsive:true,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{color:'#64748b'}}}},y:{{ticks:{{color:'#94a3b8'}}}}}}}
+  options:{{indexAxis:'y',responsive:true,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{color:'#64748b'}}}},y:{{ticks:{{color:'#94a3b8'}}}}}}}}
 }});
 
 // Demanda diária (bar)
