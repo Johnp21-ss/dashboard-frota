@@ -1,9 +1,15 @@
 import psycopg2
 import pandas as pd
 import json
+import warnings
 import calendar
 import html as htmlmod
 from datetime import datetime, date, timedelta
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"pandas only supports SQLAlchemy connectable.*"
+)
 
 HOST = "aws-0-sa-east-1.pooler.supabase.com"
 PORT = 5432
@@ -99,11 +105,34 @@ LEFT JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id
 LEFT JOIN airbyte.motoristas_fornecedor fm ON fm.id = m.fornecedor_id
 LEFT JOIN airbyte.veiculos_veiculo v ON v.id = e.veiculo_execucao_id
 LEFT JOIN airbyte.motoristas_fornecedor fv ON fv.id = v.fornecedor_id
-WHERE e.data >= DATE '2026-01-01'
+WHERE e.data >= CURRENT_DATE - INTERVAL '30 days'
   AND e.data <= CURRENT_DATE
   AND e.anulada = false
   AND e.data IS NOT NULL
 ORDER BY e.data, e.id
+""", pd.DataFrame())
+
+# Histórico mensal do Painel Executivo — agregado no banco para não embutir
+# centenas de milhares de registros no HTML. Mantemos apenas os números
+# necessários para os gráficos históricos.
+df_exec_hist = safe_read("""
+SELECT
+    TO_CHAR(e.data,'YYYY-MM') AS mes,
+    COUNT(*) AS planejadas,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL) AS iniciadas,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) AS concluidas,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NULL) AS nao_executadas,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NULL) AS em_andamento,
+    COUNT(DISTINCT e.rota_id) FILTER (WHERE e.inicio_execucao IS NOT NULL) AS rotas_executadas,
+    COUNT(DISTINCT e.contrato_rota_id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.contrato_rota_id IS NOT NULL) AS contratos_rota_executados,
+    COALESCE(SUM(e.km_executado) FILTER (WHERE e.inicio_execucao IS NOT NULL),0) AS km_executado
+FROM airbyte.rotas_escalarota e
+WHERE e.data >= DATE '2026-01-01'
+  AND e.data <= CURRENT_DATE
+  AND e.anulada = false
+  AND e.data IS NOT NULL
+GROUP BY TO_CHAR(e.data,'YYYY-MM')
+ORDER BY mes
 """, pd.DataFrame())
 
 df_exec_motoristas = safe_read("""
@@ -1453,26 +1482,14 @@ exec_rotas = len({(r['d'],r['m'],r['v']) for r in _exec_cur})
 exec_contratos = len({r['cr'] for r in _exec_cur if r.get('cr')})
 
 # Histórico mensal de operação para os gráficos do Executivo.
-if exec_data:
-    _hdf = pd.DataFrame(exec_data)
-    _hdf['mes'] = _hdf['d'].astype(str).str[:7]
-    _hdf['i'] = _hdf['i'].astype(bool)
-    _hdf['z'] = _hdf['z'].astype(bool)
-    _hdf['k'] = pd.to_numeric(_hdf['k'], errors='coerce').fillna(0.0)
-    hist = _hdf.groupby('mes').agg(
-        planejadas=('mes','size'),
-        concluidas=('z','sum'),
-        iniciadas=('i','sum'),
-        km=('k','sum')
-    ).reset_index()
-    hist['nao_executadas'] = hist['planejadas'] - hist['iniciadas']
-    hist['assiduidade'] = (hist['concluidas']/hist['planejadas'].replace(0,1)*100).round(1)
-    meses_ev = hist['mes'].tolist()
-    ev_tot = hist['planejadas'].astype(int).tolist()
-    ev_conc = hist['concluidas'].astype(int).tolist()
-    ev_nao = hist['nao_executadas'].astype(int).tolist()
-    ev_km = hist['km'].round(1).tolist()
-    ev_assid = hist['assiduidade'].tolist()
+# Esses dados vêm agregados do banco; não dependem do detalhe embutido no HTML.
+if not df_exec_hist.empty:
+    meses_ev = df_exec_hist['mes'].astype(str).tolist()
+    ev_tot = [int(v or 0) for v in df_exec_hist['planejadas'].tolist()]
+    ev_conc = [int(v or 0) for v in df_exec_hist['concluidas'].tolist()]
+    ev_nao = [int(v or 0) for v in df_exec_hist['nao_executadas'].tolist()]
+    ev_km = [float(v or 0) for v in df_exec_hist['km_executado'].tolist()]
+    ev_assid = [round((c/max(t,1))*100,1) for c,t in zip(ev_conc,ev_tot)]
 else:
     meses_ev=[]; ev_tot=[]; ev_conc=[]; ev_nao=[]; ev_km=[]; ev_assid=[]
 
@@ -2556,7 +2573,6 @@ canvas{{max-height:270px}}
     <div class="filter-grid">
       <div class="filter-item"><label>PERÍODO</label><select id="fx_periodo">
         <option value="current" selected>MÊS ATUAL</option>
-        <option value="year">ANO 2026</option>
         <option value="last30">ÚLTIMOS 30 DIAS</option>
       </select></div>
       <div class="filter-item"><label>TIPO</label><select id="fx_tipo">
@@ -2578,7 +2594,7 @@ canvas{{max-height:270px}}
   </div>
 
   <div class="kpi-grid">
-    <div class="kpi"><label>Total Analisado</label><div class="v v-ac" id="x_total">{exec_total:,}</div><div class="sub">rotas não anuladas</div></div>
+    <div class="kpi"><label>Total Analisado</label><div class="v v-ac" id="x_total">{exec_total:,}</div><div class="sub">registros de escala não anulados</div></div>
     <div class="kpi"><label>Concluído</label><div class="v v-ok" id="x_conc">{exec_conc:,}</div><div class="sub">início + fim</div></div>
     <div class="kpi"><label>Não Executado</label><div class="v v-cr" id="x_nao">{exec_nao:,}</div><div class="sub">sem início</div></div>
     <div class="kpi"><label>Assiduidade</label><div class="v v-ok" id="x_assid">{exec_pct_assid}%</div><div class="sub">concluído / analisado</div></div>
@@ -2594,7 +2610,7 @@ canvas{{max-height:270px}}
   </div>
 
   <div class="g2">
-    <div class="card"><h3>📈 Histórico de Rotas — Planejadas x Concluídas x Não Executadas</h3><p class="desc">Histórico mensal de 2026. A análise não usa a tabela de contratos.</p><canvas id="c_exec_hist"></canvas></div>
+    <div class="card"><h3>📈 Histórico de Rotas — Planejadas x Concluídas x Não Executadas</h3><p class="desc">Histórico mensal de 2026, agregado diretamente de <b>rotas_escalarota</b>. Não usa contratos para definir as rotas planejadas/concluídas.</p><canvas id="c_exec_hist"></canvas></div>
     <div class="card"><h3>📊 Assiduidade Mensal</h3><p class="desc">Concluídas ÷ total analisado.</p><canvas id="c_exec_assid"></canvas></div>
   </div>
 
@@ -3306,7 +3322,6 @@ function exKm(v){{ return Number(v||0).toLocaleString('pt-BR',{{minimumFractionD
 
 function exDate(s){{ return new Date(s+'T00:00:00'); }}
 function exPeriodMatch(r,p){{
-  if(p==='year') return true;
   if(p==='current') return r.d.slice(0,7)===execCurrentYM;
   if(p==='last30'){{
     const d=exDate(r.d); const t=exDate(execToday); const ini=new Date(t); ini.setDate(ini.getDate()-30);
@@ -3486,23 +3501,22 @@ function exRenderVinculo(rows){{
 }}
 function exRenderCharts(rows){{
   exDestroy();
-  const byM=new Map();
-  rows.forEach(r=>{{
-    const m=r.d.slice(0,7);if(!byM.has(m))byM.set(m,{{total:0,conc:0,nao:0,km:0}});
-    const o=byM.get(m);o.total++;if(r.i&&r.z)o.conc++;if(!r.i)o.nao++;if(r.i)o.km+=Number(r.k||0);
-  }});
-  let ms=[...byM.keys()].sort();
-  if(document.getElementById('fx_periodo').value==='current' && !ms.length)ms=[execCurrentYM];
+  const ms={jd(meses_ev)};
+  const histTotal={jd(ev_tot)};
+  const histConc={jd(ev_conc)};
+  const histNao={jd(ev_nao)};
+  const histKm={jd(ev_km)};
+  const histAssid={jd(ev_assid)};
   const monthNames=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-  const labels=ms.map(m=>{{const [y,mo]=m.split('-');return monthNames[Number(mo)-1]+'/'+y.slice(2)}});
+  const labels=ms.map(m=>{{const [y,mo]=String(m).split('-');return monthNames[Number(mo)-1]+'/'+y.slice(2)}});
 
   exCharts.push(new Chart(document.getElementById('c_exec_hist'),{{type:'line',data:{{labels,datasets:[
-    {{label:'Planejadas / Analisadas',data:ms.map(m=>byM.get(m)?.total||0),tension:.25}},
-    {{label:'Concluídas',data:ms.map(m=>byM.get(m)?.conc||0),tension:.25}},
-    {{label:'Não Executadas',data:ms.map(m=>byM.get(m)?.nao||0),tension:.25}}
+    {{label:'Planejadas / Analisadas',data:histTotal,tension:.25}},
+    {{label:'Concluídas',data:histConc,tension:.25}},
+    {{label:'Não Executadas',data:histNao,tension:.25}}
   ]}},options:{{responsive:true}}}}));
-  exCharts.push(new Chart(document.getElementById('c_exec_assid'),{{type:'line',data:{{labels,datasets:[{{label:'Assiduidade %',data:ms.map(m=>{{const o=byM.get(m);return o&&o.total?Number((o.conc/o.total*100).toFixed(1)):0}}),tension:.25}}]}},options:{{responsive:true,scales:{{y:{{beginAtZero:true,max:100}}}}}}}}));
-  exCharts.push(new Chart(document.getElementById('c_exec_km'),{{type:'bar',data:{{labels,datasets:[{{label:'KM Executado',data:ms.map(m=>Number((byM.get(m)?.km||0).toFixed(1)))}}]}},options:{{responsive:true}}}}));
+  exCharts.push(new Chart(document.getElementById('c_exec_assid'),{{type:'line',data:{{labels,datasets:[{{label:'Assiduidade %',data:histAssid,tension:.25}}]}},options:{{responsive:true,scales:{{y:{{beginAtZero:true,max:100}}}}}}}}));
+  exCharts.push(new Chart(document.getElementById('c_exec_km'),{{type:'bar',data:{{labels,datasets:[{{label:'KM Executado',data:histKm}}]}},options:{{responsive:true}}}}));
 }}
 
 ['fx_periodo','fx_tipo','fx_turno','fx_direcao','fx_gre','fx_cidade','fx_fiscal','fx_regiao','fx_fornecedor'].forEach(id=>document.getElementById(id).addEventListener('change',exRender));
