@@ -58,14 +58,40 @@ def score_gargalo(vals, suspeitas_total, total_escalas):
 
 # ─── QUERIES ──────────────────────────────────────────────────────────────────
 
-# KPIs executivos
+# KPIs EXECUTIVOS — OPERAÇÃO REAL
+# Só considera execução efetivamente iniciada e não anulada.
 df_kpi = safe_read("""
-SELECT COUNT(*) as total_escalas, COUNT(*) FILTER (WHERE via_app = true) as rastreado,
-    COUNT(*) FILTER (WHERE via_app = false AND confirmado_manualmente = true) as sem_rastreamento,
-    COUNT(*) FILTER (WHERE inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10) as suspeitas
-FROM airbyte.rotas_escalarota WHERE data >= DATE_TRUNC('month', CURRENT_DATE)
-""", pd.DataFrame([{'total_escalas':0,'rastreado':0,'sem_rastreamento':0,'suspeitas':0}]))
+SELECT
+    COUNT(*) FILTER (
+        WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL
+    ) AS total_execucoes,
+    COUNT(*) FILTER (
+        WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.via_app = true
+    ) AS rastreado,
+    COUNT(*) FILTER (
+        WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND COALESCE(e.via_app,false) = false
+    ) AS sem_rastreamento,
+    COUNT(*) FILTER (
+        WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL
+          AND e.fim_execucao IS NOT NULL
+          AND EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
+    ) AS suspeitas,
+    COUNT(*) FILTER (
+        WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL
+    ) AS concluidas,
+    COUNT(*) FILTER (
+        WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NULL
+    ) AS em_andamento,
+    COUNT(DISTINCT e.rota_id) FILTER (
+        WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.rota_id IS NOT NULL
+    ) AS rotas_distintas,
+    COUNT(DISTINCT e.contrato_rota_id) FILTER (
+        WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.contrato_rota_id IS NOT NULL
+    ) AS contratos_rota_distintos
+FROM airbyte.rotas_escalarota e
+WHERE e.data >= DATE_TRUNC('month', CURRENT_DATE)
+  AND e.data <= CURRENT_DATE
+""", pd.DataFrame([{'total_execucoes':0,'rastreado':0,'sem_rastreamento':0,'suspeitas':0,'concluidas':0,'em_andamento':0,'rotas_distintas':0,'contratos_rota_distintos':0}]))
 
 df_kpi_extra = safe_read("""
 SELECT
@@ -79,14 +105,25 @@ SELECT
 """, pd.DataFrame([{'contratos_risco':0,'chamados_abertos':0,'em_oficina':0}]))
 
 df_evolucao = safe_read("""
-SELECT TO_CHAR(data,'YYYY-MM') as mes, COUNT(*) as total,
-    COUNT(*) FILTER (WHERE via_app = true) as rastreado,
-    COUNT(*) FILTER (WHERE via_app = false AND confirmado_manualmente = true) as sem_rast,
-    COUNT(*) FILTER (WHERE anulada = true) as anuladas,
-    COUNT(*) FILTER (WHERE inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
-        EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10) as suspeitas
-FROM airbyte.rotas_escalarota WHERE data >= '2026-01-01' AND data IS NOT NULL
-GROUP BY TO_CHAR(data,'YYYY-MM') ORDER BY mes
+SELECT
+    TO_CHAR(e.data,'YYYY-MM') AS mes,
+    COUNT(*) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL) AS total,
+    COUNT(*) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.via_app = true) AS rastreado,
+    COUNT(*) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND COALESCE(e.via_app,false) = false) AS sem_rast,
+    COUNT(*) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) AS concluidas,
+    COUNT(*) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NULL) AS em_andamento,
+    COUNT(DISTINCT e.rota_id) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.rota_id IS NOT NULL) AS rotas_distintas,
+    COUNT(DISTINCT e.contrato_rota_id) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.contrato_rota_id IS NOT NULL) AS contratos_rota,
+    COUNT(*) FILTER (
+        WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL
+          AND EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10
+    ) AS suspeitas
+FROM airbyte.rotas_escalarota e
+WHERE e.data >= DATE '2026-01-01'
+  AND e.data <= CURRENT_DATE
+  AND e.data IS NOT NULL
+GROUP BY TO_CHAR(e.data,'YYYY-MM')
+ORDER BY mes
 """)
 
 df_cidade_hist = safe_read("""
@@ -813,6 +850,20 @@ WHERE ci.status = 'ATIVO'
     'qtd_diaria':0,'valor_diaria_dia':0,'qtd_mensal':0,'valor_mensal':0,'itens_ativos':0
 }]))
 
+# 8) BASE MENSAL ATIVA GERAL — PARA ESTIMATIVA DE FECHAMENTO
+# Não é o valor já computado. É o potencial mensal dos contratos rota ativos com modalidade MENSAL.
+df_gc_mensal_ativo_geral = safe_read("""
+SELECT
+    COUNT(DISTINCT ci.id) AS qtd_mensal_ativo,
+    COALESCE(SUM(ci.valor_unitario),0) AS valor_mensal_ativo
+FROM airbyte.contratos_itemcontrato ci
+JOIN airbyte.contratos_contrato c
+  ON c.id = ci.contrato_id
+ AND c.status = 'A'
+WHERE ci.status = 'ATIVO'
+  AND ci.modalidade_pagamento = 'MENSAL'
+""", pd.DataFrame([{'qtd_mensal_ativo':0,'valor_mensal_ativo':0}]))
+
 # 8) RANKING DOS TERCEIRIZADOS — QUANTIDADE DE CONTRATOS ROTA E VALOR DIÁRIO
 # O fornecedor vem preferencialmente do contrato mestre. Só entram contratos rota ativos
 # de veículos classificados como FROTA_TERCEIRIZADA.
@@ -1362,22 +1413,29 @@ def html_insights():
         h += f"<td><span class='tag {cls_tag}'>{r['icon']} {r['status']}</span></td><td style='font-size:11px;color:#94a3b8'>{acao}</td></tr>"
     return h
 
-# ─── KPIs ───────────────────────────────────────────────────────────────────
-kpi_total = int(df_kpi['total_escalas'].iloc[0]) if not df_kpi.empty else 0
-kpi_rast = int(df_kpi['rastreado'].iloc[0]) if not df_kpi.empty else 0
-kpi_sem = int(df_kpi['sem_rastreamento'].iloc[0]) if not df_kpi.empty else 0
-kpi_susp = int(df_kpi['suspeitas'].iloc[0]) if not df_kpi.empty else 0
-kpi_pct = round(kpi_rast/max(kpi_total,1)*100,1)
-kpi_pct_susp = round(kpi_susp/max(kpi_total,1)*100,2)
-kpi_cont = int(df_kpi_extra['contratos_risco'].iloc[0]) if not df_kpi_extra.empty else 0
-kpi_ch = int(df_kpi_extra['chamados_abertos'].iloc[0]) if not df_kpi_extra.empty else 0
-kpi_of = int(df_kpi_extra['em_oficina'].iloc[0]) if not df_kpi_extra.empty else 0
+# ─── KPIs EXECUTIVOS ────────────────────────────────────────────────────────
+_exec = df_kpi.iloc[0] if not df_kpi.empty else {}
+exec_total = int(_exec.get('total_execucoes',0) or 0) if hasattr(_exec,'get') else 0
+exec_rast = int(_exec.get('rastreado',0) or 0) if hasattr(_exec,'get') else 0
+exec_sem = int(_exec.get('sem_rastreamento',0) or 0) if hasattr(_exec,'get') else 0
+exec_susp = int(_exec.get('suspeitas',0) or 0) if hasattr(_exec,'get') else 0
+exec_conc = int(_exec.get('concluidas',0) or 0) if hasattr(_exec,'get') else 0
+exec_and = int(_exec.get('em_andamento',0) or 0) if hasattr(_exec,'get') else 0
+exec_rotas = int(_exec.get('rotas_distintas',0) or 0) if hasattr(_exec,'get') else 0
+exec_contratos = int(_exec.get('contratos_rota_distintos',0) or 0) if hasattr(_exec,'get') else 0
+exec_pct_rast = round(exec_rast/max(exec_total,1)*100,1)
+exec_pct_susp = round(exec_susp/max(exec_total,1)*100,2)
 
+# Dados históricos da mesma régua operacional usada no Gerente de Contratos.
 meses_ev = df_evolucao['mes'].tolist() if not df_evolucao.empty else []
 ev_tot = df_evolucao['total'].tolist() if not df_evolucao.empty else []
 ev_rast = df_evolucao['rastreado'].tolist() if not df_evolucao.empty else []
 ev_susp = df_evolucao['suspeitas'].tolist() if not df_evolucao.empty else []
 ev_sem = df_evolucao['sem_rast'].tolist() if not df_evolucao.empty else []
+ev_conc = df_evolucao['concluidas'].tolist() if not df_evolucao.empty else []
+ev_and = df_evolucao['em_andamento'].tolist() if not df_evolucao.empty else []
+ev_rotas = df_evolucao['rotas_distintas'].tolist() if not df_evolucao.empty else []
+ev_contratos = df_evolucao['contratos_rota'].tolist() if not df_evolucao.empty else []
 ev_pct_rast = [round(n(r)/max(n(t),1)*100,1) for r,t in zip(ev_rast,ev_tot)]
 ev_pct_susp = [round(n(s)/max(n(t),1)*100,2) for s,t in zip(ev_susp,ev_tot)]
 
@@ -1592,6 +1650,30 @@ def html_bonif_cidade():
         h += f"<td style='text-align:center'>{int(r.get('total_escalas',0)):,}</td><td style='text-align:center;{cor_pct(pct_r)}'>{pct_r}%</td>"
         h += f"<td style='text-align:center;{'color:#ef4444' if float(r.get('pct_suspeitas',0))>5 else ''}'>{r.get('pct_suspeitas',0)}%</td><td style='text-align:center;{cor_score}'>{score}</td></tr>"
     return h
+
+def html_exec_dias_recentes():
+    if not exec_dias_recentes:
+        return "<tr><td colspan='7'>Sem dados de execução recente.</td></tr>"
+    h = ""
+    for r in reversed(exec_dias_recentes):
+        h += f"<tr><td><b>{r['data']}</b></td><td style='text-align:center'>{r['execucoes']:,}</td><td style='text-align:center'>{r['rotas']:,}</td><td style='text-align:center'>{r['contratos']:,}</td><td style='text-align:center'>{r['concluidas']:,}</td><td style='text-align:center'>{r['andamento']:,}</td><td style='text-align:right;color:#38bdf8;font-weight:700'>R$ {fmt(r['valor'])}</td></tr>"
+    return h
+
+
+def comentario_executivo():
+    partes = []
+    if exec_total:
+        partes.append(f"<b>{exec_total:,} execuções válidas</b> registradas no mês, sendo <b>{exec_conc:,} concluídas</b> e <b>{exec_and:,} em andamento</b>.")
+        partes.append(f"Foram identificados <b>{exec_contratos:,} Contratos Rota distintos</b> e <b>{exec_rotas:,} rotas/viagens distintas</b> no período.")
+        partes.append(f"A taxa de rastreamento sobre as execuções reais está em <b>{exec_pct_rast}%</b>; a taxa de rotas suspeitas é <b>{exec_pct_susp}%</b>.")
+        if gc_pag_atual_total > 0:
+            partes.append(f"O valor <b>já computado a pagar</b> no mês é <b>R$ {fmt(gc_pag_atual_total)}</b>, calculado somente a partir das execuções efetivamente registradas.")
+    else:
+        partes.append("Não há execução real registrada no mês corrente até a data da atualização.")
+    if gc_itens_ativos > exec_contratos:
+        partes.append(f"Há <b>{gc_itens_ativos-exec_contratos:,} Contratos Rota ativos</b> sem execução real registrada no mês corrente.")
+    return " ".join(partes)
+
 
 # ─── FUNÇÕES HTML — GERENTE DE CONTRATOS ────────────────────────────────────
 
@@ -2019,6 +2101,69 @@ gc_pag_atual_execucoes = int(gc_pag_atual.get('execucoes', 0) or 0)
 gc_pag_atual_concluidas = int(gc_pag_atual.get('concluidas', 0) or 0)
 gc_pag_atual_andamento = int(gc_pag_atual.get('em_andamento', 0) or 0)
 
+# ─── APOIO DO PAINEL EXECUTIVO ───────────────────────────────────────────────
+# Histórico mensal do valor já computado: diárias deduplicadas por DATA + CONTRATO ROTA
+# mais mensalidades deduplicadas por MÊS + CONTRATO ROTA.
+exec_pag_hist = {}
+if not df_gc_pagamento_diario.empty:
+    for _, r in df_gc_pagamento_diario.iterrows():
+        ym = _gc_date_str(r.get('data'))[:7]
+        exec_pag_hist[ym] = exec_pag_hist.get(ym, 0.0) + _gc_num(r.get('valor_diarias'))
+if not df_gc_pagamento_mensal.empty:
+    for _, r in df_gc_pagamento_mensal.iterrows():
+        ym = _gc_date_str(r.get('mes'))[:7]
+        exec_pag_hist[ym] = exec_pag_hist.get(ym, 0.0) + _gc_num(r.get('valor_mensal'))
+
+exec_pago_meses = [exec_pag_hist.get(m,0.0) for m in meses_ev]
+
+# Resumo diário atual: últimos 10 dias com registro até hoje.
+exec_dias_recentes = []
+if gc_oper_dia:
+    ultimas = sorted(gc_oper_dia.keys())[-10:]
+    for data_iso in ultimas:
+        op = gc_oper_dia[data_iso]
+        pg = gc_pag_dia.get(data_iso, {'valor':0.0,'contratos':0})
+        exec_dias_recentes.append({
+            'data': _gc_fmt_data(data_iso),
+            'execucoes': op.get('execucoes',0),
+            'rotas': op.get('rotas',0),
+            'contratos': op.get('contratos',0),
+            'concluidas': op.get('concluidas',0),
+            'andamento': op.get('em_andamento',0),
+            'valor': pg.get('valor',0.0),
+        })
+
+# Previsão de fechamento: estimativa, não compromisso contratual.
+# Usa a média dos dias úteis com valor real já computado no mês atual e projeta
+# apenas os dias úteis restantes. A mensalidade potencial vem dos contratos mensais ativos.
+_hoje_exec = datetime.now().date()
+_atual_ym = _hoje_exec.strftime('%Y-%m')
+_valores_uteis = []
+if _atual_ym in exec_pag_hist or gc_pag_dia:
+    for d in range(1, _hoje_exec.day + 1):
+        dd = date(_hoje_exec.year, _hoje_exec.month, d)
+        if dd.weekday() < 5:
+            info = gc_pag_dia.get(dd.isoformat())
+            if info and float(info.get('valor',0) or 0) > 0:
+                _valores_uteis.append(float(info.get('valor',0) or 0))
+_media_dia_exec = sum(_valores_uteis)/len(_valores_uteis) if _valores_uteis else 0.0
+_dias_uteis_restantes = 0
+for d in range(_hoje_exec.day + 1, calendar.monthrange(_hoje_exec.year, _hoje_exec.month)[1] + 1):
+    if date(_hoje_exec.year, _hoje_exec.month, d).weekday() < 5:
+        _dias_uteis_restantes += 1
+_mensal_ativo_geral = float(df_gc_mensal_ativo_geral.iloc[0].get('valor_mensal_ativo',0) or 0) if not df_gc_mensal_ativo_geral.empty else 0.0
+# A previsão final é: diárias já computadas + média real dos dias úteis restantes
+# + a base mensal potencial ativa (sem somar duas vezes o que já foi computado).
+_g_previsao_final = (
+    float(gc_pag_atual_diarias)
+    + (_media_dia_exec * _dias_uteis_restantes)
+    + max(float(gc_pag_atual_mensal), _mensal_ativo_geral)
+)
+exec_previsao_final = max(_g_previsao_final, float(gc_pag_atual_total))
+gc_previsao_fechamento = exec_previsao_final
+gc_exec_contratos_mes = exec_contratos
+gc_exec_validas_mes = exec_total
+
 def comentario_gc_pagamento_calendario():
     if not gc_cal_meses:
         return "Sem dados de pagamento por execução."
@@ -2353,27 +2498,52 @@ canvas{{max-height:270px}}
 <!-- ABA 1: PAINEL EXECUTIVO -->
 <div id="t1" class="tab active">
   <div class="info">
-    <b>📌 Como ler este painel:</b>
-    <b>Com Rastreamento</b> = rota registrada via app ou link (GPS ativo).
-    <b>Sem Rastreamento</b> = confirmada manualmente, sem GPS.
-    <b>Rota Suspeita</b> = duração menor que 10 minutos (impossível para uma rota real).
+    <b>📌 Leitura executiva:</b> este painel usa a mesma régua operacional do Gerente de Contratos.
+    <b>Execução válida</b> = registro não anulado com <b>início de execução</b>.
+    <b>Concluída</b> = início + fim registrados. <b>Em andamento</b> = início registrado e fim ainda vazio.
+    O financeiro considera o <b>Contrato Rota</b> como unidade de cobrança, e não a quantidade de viagens/escalas.
   </div>
+
   <div class="kpi-grid">
-    <div class="kpi"><label>Escalas no Mês Atual</label><div class="v">{kpi_total:,}</div></div>
-    <div class="kpi"><label>Com Rastreamento</label><div class="v {'v-ok' if kpi_pct>=50 else 'v-wn' if kpi_pct>=30 else 'v-cr'}">{kpi_pct}%</div><div class="sub">{kpi_rast:,} escalas</div></div>
-    <div class="kpi"><label>Sem Rastreamento</label><div class="v v-wn">{kpi_sem:,}</div><div class="sub">confirmadas manualmente</div></div>
-    <div class="kpi"><label>Rotas Suspeitas (&lt;10min)</label><div class="v v-cr">{kpi_susp:,}</div><div class="sub">{kpi_pct_susp}% do total</div></div>
-    <div class="kpi"><label>Contratos sem Operação</label><div class="v v-cr">{kpi_cont}</div><div class="sub">veículos sem motorista</div></div>
-    <div class="kpi"><label>Chamados em Aberto</label><div class="v v-wn">{kpi_ch:,}</div></div>
-    <div class="kpi"><label>Veículos em Oficina</label><div class="v v-wn">{kpi_of}</div></div>
+    <div class="kpi"><label>Execuções Válidas no Mês</label><div class="v v-ac">{exec_total:,}</div><div class="sub">início registrado · não anuladas</div></div>
+    <div class="kpi"><label>Contratos Rota Executados</label><div class="v v-ac">{exec_contratos:,}</div><div class="sub">distintos no mês</div></div>
+    <div class="kpi"><label>Concluídas</label><div class="v v-ok">{exec_conc:,}</div><div class="sub">com início + fim</div></div>
+    <div class="kpi"><label>Em Andamento</label><div class="v v-wn">{exec_and:,}</div><div class="sub">início sem fim</div></div>
+    <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac">R$ {fmt(gc_pag_atual_total)}</div><div class="sub">diárias + mensalidades</div></div>
+    <div class="kpi"><label>Rastreamento Real</label><div class="v {'v-ok' if exec_pct_rast>=50 else 'v-wn' if exec_pct_rast>=30 else 'v-cr'}">{exec_pct_rast}%</div><div class="sub">sobre execuções válidas</div></div>
+    <div class="kpi"><label>Rotas Suspeitas</label><div class="v v-cr">{exec_susp:,}</div><div class="sub">{exec_pct_susp}% das execuções</div></div>
+    <div class="kpi"><label>Contratos Rota sem Execução</label><div class="v {'v-cr' if gc_itens_ativos-exec_contratos>0 else 'v-ok'}">{max(gc_itens_ativos-exec_contratos,0):,}</div><div class="sub">ativos sem execução no mês</div></div>
   </div>
-  <div class="g2">
-    <div class="card"><h3>📈 Total de Escalas vs Rastreadas por Mês (2026)</h3><canvas id="c_esc"></canvas></div>
-    <div class="card"><h3>📱 % Com Rastreamento vs % Rotas Suspeitas</h3><canvas id="c_pct"></canvas></div>
+
+  <div class="card gc-analysis">
+    <h3>🧠 ANÁLISE OPERACIONAL E FINANCEIRA</h3>
+    <p class="desc" style="border-left-color:var(--ac)">{comentario_executivo()}</p>
   </div>
+
   <div class="g2">
-    <div class="card"><h3>🚫 Sem Rastreamento por Mês</h3><canvas id="c_sem"></canvas></div>
-    <div class="card"><h3>📋 Escalas com Contrato por Mês</h3><canvas id="c_cont"></canvas></div>
+    <div class="card"><h3>📈 Histórico de Execuções Reais — 2026</h3><p class="desc">Somente registros com início de execução e não anulados. O histórico não inclui planejamento.</p><canvas id="c_exec_hist"></canvas></div>
+    <div class="card"><h3>💰 Histórico do Valor Já Computado a Pagar — 2026</h3><p class="desc">Diárias deduplicadas por <b>DATA + Contrato Rota</b> e mensalidades por <b>MÊS + Contrato Rota</b>.</p><canvas id="c_pago_hist"></canvas></div>
+  </div>
+
+  <div class="g2">
+    <div class="card"><h3>📱 Rastreamento Real por Mês</h3><p class="desc">Percentual de execuções válidas registradas via app.</p><canvas id="c_rast_hist"></canvas></div>
+    <div class="card"><h3>⚠️ Rotas Suspeitas por Mês</h3><p class="desc">Percentual de execuções concluídas com duração inferior a 10 minutos.</p><canvas id="c_susp_hist"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h3>📅 Execução e Pagamento — Últimos Dias Registrados</h3>
+    <p class="desc">Consolidado da operação real. <b>Contratos Rota</b> representam a unidade contratual; o valor é calculado somente para a modalidade DIÁRIA e uma única vez por contrato no dia.</p>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Data</th><th style="text-align:center">Execuções</th><th style="text-align:center">Rotas/Viagens</th><th style="text-align:center">Contratos Rota</th><th style="text-align:center">Concluídas</th><th style="text-align:center">Andamento</th><th style="text-align:right">Já Computado</th></tr></thead>
+        <tbody>{html_exec_dias_recentes()}</tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="g2">
+    <div class="kpi"><label>Previsão de Fechamento do Mês</label><div class="v v-ac">R$ {fmt(exec_previsao_final)}</div><div class="sub">estimativa com base no ritmo real observado</div></div>
+    <div class="kpi"><label>Execuções no Mês x Contratos Rota</label><div class="v">{exec_total:,} / {exec_contratos:,}</div><div class="sub">operação real / contratos distintos</div></div>
   </div>
 </div>
 
@@ -2799,14 +2969,16 @@ canvas{{max-height:270px}}
   </div>
 
   <div class="kpi-grid">
-    <div class="kpi"><label>Contratos Ativos</label><div class="v v-ac">{gc_total:,}</div><div class="sub">contratos mestres</div></div>
-    <div class="kpi"><label>Contratos Rota Ativos</label><div class="v v-ac">{gc_itens_ativos:,}</div><div class="sub">contratos rota ativos</div></div>
-    <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac">R$ {fmt(gc_pag_atual_total)}</div><div class="sub">{gc_pag_atual['nome']} · {gc_pag_atual_execucoes:,} execuções válidas</div></div>
+    <div class="kpi"><label>Contratos Mestres Ativos</label><div class="v v-ac">{gc_total:,}</div><div class="sub">carteira ativa</div></div>
+    <div class="kpi"><label>Contratos Rota Ativos</label><div class="v v-ac">{gc_itens_ativos:,}</div><div class="sub">unidades contratuais</div></div>
+    <div class="kpi"><label>Contratos Rota c/ Execução</label><div class="v v-ok">{gc_exec_contratos_mes:,}</div><div class="sub">no mês atual</div></div>
+    <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac">R$ {fmt(gc_pag_atual_total)}</div><div class="sub">execução real até hoje</div></div>
+    <div class="kpi"><label>Previsão de Fechamento</label><div class="v v-ac">R$ {fmt(gc_previsao_fechamento)}</div><div class="sub">estimativa do mês</div></div>
     <div class="kpi"><label>Frota Total Ativa</label><div class="v v-ok">{gc_frota_ativa:,}</div><div class="sub">status A no cadastro</div></div>
     <div class="kpi"><label>Frota em Operação</label><div class="v v-ok">{gc_frota_operando:,}</div><div class="sub">execução real nos últimos 30 dias</div></div>
-    <div class="kpi"><label>Frota Ociosa c/ Contrato</label><div class="v {'v-cr' if gc_frota_ociosa>20 else 'v-wn'}">{gc_frota_ociosa:,}</div><div class="sub">ativa + contrato + sem execução real</div></div>
+    <div class="kpi"><label>Frota Ociosa c/ Contrato</label><div class="v {'v-cr' if gc_frota_ociosa>20 else 'v-wn'}">{gc_frota_ociosa:,}</div><div class="sub">ativa + contrato + sem execução</div></div>
     <div class="kpi"><label>Inativos c/ Contrato</label><div class="v v-cr">{gc_frota_inat_contrato:,}</div><div class="sub">inconsistência contratual</div></div>
-    <div class="kpi"><label>Frota Comercial Disponível</label><div class="v v-ac">{gc_frota_sem_contrato:,}</div><div class="sub">terceirizados + locados sem contrato</div></div>
+    <div class="kpi"><label>Frota Comercial Disponível</label><div class="v v-ac">{gc_frota_sem_contrato:,}</div><div class="sub">terceirizados + locados</div></div>
   </div>
 
   <div class="g2">
@@ -2851,7 +3023,7 @@ canvas{{max-height:270px}}
 
     <div class="card">
       <h3>💰 Compromisso Financeiro dos Terceirizados</h3>
-      <p class="desc">Os valores abaixo consideram somente <b>contratos rota ATIVOS</b>, dentro de <b>contratos mestres ATIVOS</b>, e somente veículos classificados como <b>FROTA_TERCEIRIZADA</b>. Diárias são projetadas em 22 dias úteis; mensalidades permanecem mensais.</p>
+      <p class="desc">Os valores abaixo consideram somente <b>contratos rota ATIVOS</b>, dentro de <b>contratos mestres ATIVOS</b>, e somente veículos classificados como <b>FROTA_TERCEIRIZADA</b>. O valor de diária é uma referência contratual; o <b>Já Computado a Pagar</b> usa exclusivamente execução real.</p>
       <table>
         <thead><tr><th>Modalidade</th><th style="text-align:center">Contratos Rota</th><th style="text-align:right">Valor</th><th>Referência</th></tr></thead>
         <tbody>
@@ -3022,15 +3194,26 @@ const C={{
   }})
 }};
 
-// Gráficos originais
-const m={jd(meses_ev)},tot={jd(ev_tot)},rast={jd(ev_rast)},pct_r={jd(ev_pct_rast)},pct_s={jd(ev_pct_susp)},sem_r={jd(ev_sem)};
-C.bar('c_esc',m,[{{label:'Total',data:tot,backgroundColor:'rgba(56,189,248,.25)',borderColor:'#38bdf8',borderWidth:1}},{{label:'Com Rastreamento',data:rast,backgroundColor:'rgba(34,197,94,.3)',borderColor:'#22c55e',borderWidth:1}}]);
-C.line('c_pct',m,[{{label:'% Com Rastreamento',data:pct_r,borderColor:'#22c55e',backgroundColor:'rgba(34,197,94,.08)',fill:true,tension:.3}},{{label:'% Rotas Suspeitas',data:pct_s,borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.08)',fill:true,tension:.3}}]);
-C.bar('c_sem',m,[{{label:'Sem Rastreamento',data:sem_r,backgroundColor:'rgba(245,158,11,.35)',borderColor:'#f59e0b',borderWidth:1}}]);
-
-const cm={jd(cont_m)},ct={jd(cont_t)},ca={jd(cont_a)},cs={jd(cont_s)};
-C.line('c_ct2',cm,[{{label:'Escalas c/ Contrato',data:ct,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.08)',fill:true,tension:.3}}]);
-C.bar('c_ct3',cm,[{{label:'Total',data:ct,backgroundColor:'rgba(56,189,248,.25)',borderColor:'#38bdf8',borderWidth:1}},{{label:'Sem Rastreamento',data:cs,backgroundColor:'rgba(245,158,11,.35)',borderColor:'#f59e0b',borderWidth:1}},{{label:'Anuladas',data:ca,backgroundColor:'rgba(239,68,68,.25)',borderColor:'#ef4444',borderWidth:1}}]);
+// ─── GRÁFICOS DO PAINEL EXECUTIVO — RÉGUA DE EXECUÇÃO REAL ───────────────
+const m={jd(meses_ev)};
+const exec={jd(ev_tot)};
+const conc={jd(ev_conc)};
+const pctR={jd(ev_pct_rast)};
+const pctS={jd(ev_pct_susp)};
+const pago={jd(exec_pago_meses)};
+C.line('c_exec_hist',m,[
+  {{label:'Execuções válidas',data:exec,borderColor:'#38bdf8',backgroundColor:'rgba(56,189,248,.08)',fill:true,tension:.3}},
+  {{label:'Concluídas',data:conc,borderColor:'#22c55e',backgroundColor:'rgba(34,197,94,.05)',fill:true,tension:.3}}
+]);
+C.line('c_pago_hist',m,[
+  {{label:'Já Computado a Pagar (R$)',data:pago,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.08)',fill:true,tension:.3}}
+]);
+C.line('c_rast_hist',m,[
+  {{label:'% Rastreamento Real',data:pctR,borderColor:'#22c55e',backgroundColor:'rgba(34,197,94,.08)',fill:true,tension:.3}}
+]);
+C.line('c_susp_hist',m,[
+  {{label:'% Rotas Suspeitas',data:pctS,borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.08)',fill:true,tension:.3}}
+]);
 C.line('c_fr',{jd(fr_m)},[{{label:'Rotas Suspeitas (<10min)',data:{jd(fr_s)},borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.08)',fill:true,tension:.3}},{{label:'Sem Rastreamento',data:{jd(fr_sr)},borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.08)',fill:true,tension:.3}}]);
 
 // Gráfico GRE

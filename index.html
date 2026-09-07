@@ -110,7 +110,7 @@ canvas{max-height:270px}
 <body>
 <div class="hdr">
   <h1>🛡️ Torre de Controle — Fiscalização de Rotas Escolares | Piauí</h1>
-  <div class="meta">Atualizado em 07/09/2026 01:13 &nbsp;·&nbsp; Fonte: Banco de dados operacional</div>
+  <div class="meta">Atualizado em 07/09/2026 01:35 &nbsp;·&nbsp; Fonte: Banco de dados operacional</div>
 </div>
 <div class="nav">
   <button class="active" onclick="tab('t1',this)">📊 Painel Executivo</button>
@@ -129,27 +129,52 @@ canvas{max-height:270px}
 <!-- ABA 1: PAINEL EXECUTIVO -->
 <div id="t1" class="tab active">
   <div class="info">
-    <b>📌 Como ler este painel:</b>
-    <b>Com Rastreamento</b> = rota registrada via app ou link (GPS ativo).
-    <b>Sem Rastreamento</b> = confirmada manualmente, sem GPS.
-    <b>Rota Suspeita</b> = duração menor que 10 minutos (impossível para uma rota real).
+    <b>📌 Leitura executiva:</b> este painel usa a mesma régua operacional do Gerente de Contratos.
+    <b>Execução válida</b> = registro não anulado com <b>início de execução</b>.
+    <b>Concluída</b> = início + fim registrados. <b>Em andamento</b> = início registrado e fim ainda vazio.
+    O financeiro considera o <b>Contrato Rota</b> como unidade de cobrança, e não a quantidade de viagens/escalas.
   </div>
+
   <div class="kpi-grid">
-    <div class="kpi"><label>Escalas no Mês Atual</label><div class="v">10,475</div></div>
-    <div class="kpi"><label>Com Rastreamento</label><div class="v v-wn">46.0%</div><div class="sub">4,814 escalas</div></div>
-    <div class="kpi"><label>Sem Rastreamento</label><div class="v v-wn">4</div><div class="sub">confirmadas manualmente</div></div>
-    <div class="kpi"><label>Rotas Suspeitas (&lt;10min)</label><div class="v v-cr">457</div><div class="sub">4.36% do total</div></div>
-    <div class="kpi"><label>Contratos sem Operação</label><div class="v v-cr">33</div><div class="sub">veículos sem motorista</div></div>
-    <div class="kpi"><label>Chamados em Aberto</label><div class="v v-wn">333</div></div>
-    <div class="kpi"><label>Veículos em Oficina</label><div class="v v-wn">97</div></div>
+    <div class="kpi"><label>Execuções Válidas no Mês</label><div class="v v-ac">5,058</div><div class="sub">início registrado · não anuladas</div></div>
+    <div class="kpi"><label>Contratos Rota Executados</label><div class="v v-ac">263</div><div class="sub">distintos no mês</div></div>
+    <div class="kpi"><label>Concluídas</label><div class="v v-ok">5,008</div><div class="sub">com início + fim</div></div>
+    <div class="kpi"><label>Em Andamento</label><div class="v v-wn">50</div><div class="sub">início sem fim</div></div>
+    <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac">R$ 432.841,67</div><div class="sub">diárias + mensalidades</div></div>
+    <div class="kpi"><label>Rastreamento Real</label><div class="v v-ok">95.2%</div><div class="sub">sobre execuções válidas</div></div>
+    <div class="kpi"><label>Rotas Suspeitas</label><div class="v v-cr">457</div><div class="sub">9.04% das execuções</div></div>
+    <div class="kpi"><label>Contratos Rota sem Execução</label><div class="v v-cr">200</div><div class="sub">ativos sem execução no mês</div></div>
   </div>
-  <div class="g2">
-    <div class="card"><h3>📈 Total de Escalas vs Rastreadas por Mês (2026)</h3><canvas id="c_esc"></canvas></div>
-    <div class="card"><h3>📱 % Com Rastreamento vs % Rotas Suspeitas</h3><canvas id="c_pct"></canvas></div>
+
+  <div class="card gc-analysis">
+    <h3>🧠 ANÁLISE OPERACIONAL E FINANCEIRA</h3>
+    <p class="desc" style="border-left-color:var(--ac)"><b>5,058 execuções válidas</b> registradas no mês, sendo <b>5,008 concluídas</b> e <b>50 em andamento</b>. Foram identificados <b>263 Contratos Rota distintos</b> e <b>1,359 rotas/viagens distintas</b> no período. A taxa de rastreamento sobre as execuções reais está em <b>95.2%</b>; a taxa de rotas suspeitas é <b>9.04%</b>. O valor <b>já computado a pagar</b> no mês é <b>R$ 432.841,67</b>, calculado somente a partir das execuções efetivamente registradas. Há <b>200 Contratos Rota ativos</b> sem execução real registrada no mês corrente.</p>
   </div>
+
   <div class="g2">
-    <div class="card"><h3>🚫 Sem Rastreamento por Mês</h3><canvas id="c_sem"></canvas></div>
-    <div class="card"><h3>📋 Escalas com Contrato por Mês</h3><canvas id="c_cont"></canvas></div>
+    <div class="card"><h3>📈 Histórico de Execuções Reais — 2026</h3><p class="desc">Somente registros com início de execução e não anulados. O histórico não inclui planejamento.</p><canvas id="c_exec_hist"></canvas></div>
+    <div class="card"><h3>💰 Histórico do Valor Já Computado a Pagar — 2026</h3><p class="desc">Diárias deduplicadas por <b>DATA + Contrato Rota</b> e mensalidades por <b>MÊS + Contrato Rota</b>.</p><canvas id="c_pago_hist"></canvas></div>
+  </div>
+
+  <div class="g2">
+    <div class="card"><h3>📱 Rastreamento Real por Mês</h3><p class="desc">Percentual de execuções válidas registradas via app.</p><canvas id="c_rast_hist"></canvas></div>
+    <div class="card"><h3>⚠️ Rotas Suspeitas por Mês</h3><p class="desc">Percentual de execuções concluídas com duração inferior a 10 minutos.</p><canvas id="c_susp_hist"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h3>📅 Execução e Pagamento — Últimos Dias Registrados</h3>
+    <p class="desc">Consolidado da operação real. <b>Contratos Rota</b> representam a unidade contratual; o valor é calculado somente para a modalidade DIÁRIA e uma única vez por contrato no dia.</p>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Data</th><th style="text-align:center">Execuções</th><th style="text-align:center">Rotas/Viagens</th><th style="text-align:center">Contratos Rota</th><th style="text-align:center">Concluídas</th><th style="text-align:center">Andamento</th><th style="text-align:right">Já Computado</th></tr></thead>
+        <tbody><tr><td><b>06/09/2026</b></td><td style='text-align:center'>21</td><td style='text-align:center'>4</td><td style='text-align:center'>2</td><td style='text-align:center'>5</td><td style='text-align:center'>16</td><td style='text-align:right;color:#38bdf8;font-weight:700'>R$ 637,27</td></tr><tr><td><b>05/09/2026</b></td><td style='text-align:center'>94</td><td style='text-align:center'>88</td><td style='text-align:center'>28</td><td style='text-align:center'>91</td><td style='text-align:center'>3</td><td style='text-align:right;color:#38bdf8;font-weight:700'>R$ 14.593,41</td></tr><tr><td><b>04/09/2026</b></td><td style='text-align:center'>1,129</td><td style='text-align:center'>1,033</td><td style='text-align:center'>229</td><td style='text-align:center'>1,102</td><td style='text-align:center'>27</td><td style='text-align:right;color:#38bdf8;font-weight:700'>R$ 87.707,05</td></tr><tr><td><b>03/09/2026</b></td><td style='text-align:center'>1,285</td><td style='text-align:center'>1,200</td><td style='text-align:center'>245</td><td style='text-align:center'>1,282</td><td style='text-align:center'>3</td><td style='text-align:right;color:#38bdf8;font-weight:700'>R$ 90.349,74</td></tr><tr><td><b>02/09/2026</b></td><td style='text-align:center'>1,257</td><td style='text-align:center'>1,194</td><td style='text-align:center'>245</td><td style='text-align:center'>1,256</td><td style='text-align:center'>1</td><td style='text-align:right;color:#38bdf8;font-weight:700'>R$ 89.666,58</td></tr><tr><td><b>01/09/2026</b></td><td style='text-align:center'>1,272</td><td style='text-align:center'>1,188</td><td style='text-align:center'>240</td><td style='text-align:center'>1,272</td><td style='text-align:center'>0</td><td style='text-align:right;color:#38bdf8;font-weight:700'>R$ 87.478,54</td></tr><tr><td><b>31/08/2026</b></td><td style='text-align:center'>1,225</td><td style='text-align:center'>1,141</td><td style='text-align:center'>220</td><td style='text-align:center'>1,225</td><td style='text-align:center'>0</td><td style='text-align:right;color:#38bdf8;font-weight:700'>R$ 81.461,81</td></tr><tr><td><b>30/08/2026</b></td><td style='text-align:center'>5</td><td style='text-align:center'>3</td><td style='text-align:center'>1</td><td style='text-align:center'>5</td><td style='text-align:center'>0</td><td style='text-align:right;color:#38bdf8;font-weight:700'>R$ 400,00</td></tr><tr><td><b>29/08/2026</b></td><td style='text-align:center'>602</td><td style='text-align:center'>561</td><td style='text-align:center'>156</td><td style='text-align:center'>602</td><td style='text-align:center'>0</td><td style='text-align:right;color:#38bdf8;font-weight:700'>R$ 62.693,61</td></tr><tr><td><b>28/08/2026</b></td><td style='text-align:center'>1,172</td><td style='text-align:center'>1,109</td><td style='text-align:center'>237</td><td style='text-align:center'>1,172</td><td style='text-align:center'>0</td><td style='text-align:right;color:#38bdf8;font-weight:700'>R$ 87.094,56</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="g2">
+    <div class="kpi"><label>Previsão de Fechamento do Mês</label><div class="v v-ac">R$ 1.959.449,79</div><div class="sub">estimativa com base no ritmo real observado</div></div>
+    <div class="kpi"><label>Execuções no Mês x Contratos Rota</label><div class="v">5,058 / 263</div><div class="sub">operação real / contratos distintos</div></div>
   </div>
 </div>
 
@@ -575,14 +600,16 @@ canvas{max-height:270px}
   </div>
 
   <div class="kpi-grid">
-    <div class="kpi"><label>Contratos Ativos</label><div class="v v-ac">246</div><div class="sub">contratos mestres</div></div>
-    <div class="kpi"><label>Contratos Rota Ativos</label><div class="v v-ac">463</div><div class="sub">contratos rota ativos</div></div>
-    <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac">R$ 432.841,67</div><div class="sub">Set/26 · 5,058 execuções válidas</div></div>
+    <div class="kpi"><label>Contratos Mestres Ativos</label><div class="v v-ac">246</div><div class="sub">carteira ativa</div></div>
+    <div class="kpi"><label>Contratos Rota Ativos</label><div class="v v-ac">463</div><div class="sub">unidades contratuais</div></div>
+    <div class="kpi"><label>Contratos Rota c/ Execução</label><div class="v v-ok">263</div><div class="sub">no mês atual</div></div>
+    <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac">R$ 432.841,67</div><div class="sub">execução real até hoje</div></div>
+    <div class="kpi"><label>Previsão de Fechamento</label><div class="v v-ac">R$ 1.959.449,79</div><div class="sub">estimativa do mês</div></div>
     <div class="kpi"><label>Frota Total Ativa</label><div class="v v-ok">820</div><div class="sub">status A no cadastro</div></div>
     <div class="kpi"><label>Frota em Operação</label><div class="v v-ok">551</div><div class="sub">execução real nos últimos 30 dias</div></div>
-    <div class="kpi"><label>Frota Ociosa c/ Contrato</label><div class="v v-cr">146</div><div class="sub">ativa + contrato + sem execução real</div></div>
+    <div class="kpi"><label>Frota Ociosa c/ Contrato</label><div class="v v-cr">146</div><div class="sub">ativa + contrato + sem execução</div></div>
     <div class="kpi"><label>Inativos c/ Contrato</label><div class="v v-cr">1</div><div class="sub">inconsistência contratual</div></div>
-    <div class="kpi"><label>Frota Comercial Disponível</label><div class="v v-ac">59</div><div class="sub">terceirizados + locados sem contrato</div></div>
+    <div class="kpi"><label>Frota Comercial Disponível</label><div class="v v-ac">59</div><div class="sub">terceirizados + locados</div></div>
   </div>
 
   <div class="g2">
@@ -627,7 +654,7 @@ canvas{max-height:270px}
 
     <div class="card">
       <h3>💰 Compromisso Financeiro dos Terceirizados</h3>
-      <p class="desc">Os valores abaixo consideram somente <b>contratos rota ATIVOS</b>, dentro de <b>contratos mestres ATIVOS</b>, e somente veículos classificados como <b>FROTA_TERCEIRIZADA</b>. Diárias são projetadas em 22 dias úteis; mensalidades permanecem mensais.</p>
+      <p class="desc">Os valores abaixo consideram somente <b>contratos rota ATIVOS</b>, dentro de <b>contratos mestres ATIVOS</b>, e somente veículos classificados como <b>FROTA_TERCEIRIZADA</b>. O valor de diária é uma referência contratual; o <b>Já Computado a Pagar</b> usa exclusivamente execução real.</p>
       <table>
         <thead><tr><th>Modalidade</th><th style="text-align:center">Contratos Rota</th><th style="text-align:right">Valor</th><th>Referência</th></tr></thead>
         <tbody>
@@ -9295,15 +9322,26 @@ const C={
   })
 };
 
-// Gráficos originais
-const m=["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"],tot=[2440, 27568, 51541, 44798, 50787, 52809, 52670, 53808, 10475],rast=[0, 0, 869, 4357, 17499, 26647, 11753, 26240, 4814],pct_r=[0.0, 0.0, 1.7, 9.7, 34.5, 50.5, 22.3, 48.8, 46.0],pct_s=[1.72, 0.95, 1.59, 2.73, 3.92, 3.68, 1.94, 4.28, 4.36],sem_r=[0, 0, 0, 0, 4205, 962, 67, 113, 4];
-C.bar('c_esc',m,[{label:'Total',data:tot,backgroundColor:'rgba(56,189,248,.25)',borderColor:'#38bdf8',borderWidth:1},{label:'Com Rastreamento',data:rast,backgroundColor:'rgba(34,197,94,.3)',borderColor:'#22c55e',borderWidth:1}]);
-C.line('c_pct',m,[{label:'% Com Rastreamento',data:pct_r,borderColor:'#22c55e',backgroundColor:'rgba(34,197,94,.08)',fill:true,tension:.3},{label:'% Rotas Suspeitas',data:pct_s,borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.08)',fill:true,tension:.3}]);
-C.bar('c_sem',m,[{label:'Sem Rastreamento',data:sem_r,backgroundColor:'rgba(245,158,11,.35)',borderColor:'#f59e0b',borderWidth:1}]);
-
-const cm=["2026-05", "2026-06", "2026-07", "2026-08", "2026-09"],ct=[1392, 20948, 23718, 24073, 5031],ca=[20, 32, 0, 0, 0],cs=[963, 515, 0, 3, 4];
-C.line('c_ct2',cm,[{label:'Escalas c/ Contrato',data:ct,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.08)',fill:true,tension:.3}]);
-C.bar('c_ct3',cm,[{label:'Total',data:ct,backgroundColor:'rgba(56,189,248,.25)',borderColor:'#38bdf8',borderWidth:1},{label:'Sem Rastreamento',data:cs,backgroundColor:'rgba(245,158,11,.35)',borderColor:'#f59e0b',borderWidth:1},{label:'Anuladas',data:ca,backgroundColor:'rgba(239,68,68,.25)',borderColor:'#ef4444',borderWidth:1}]);
+// ─── GRÁFICOS DO PAINEL EXECUTIVO — RÉGUA DE EXECUÇÃO REAL ───────────────
+const m=["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"];
+const exec=[320, 4204, 14534, 16032, 29407, 28754, 12383, 27620, 5058];
+const conc=[320, 4204, 14534, 16032, 29406, 28749, 12383, 27615, 5008];
+const pctR=[0.0, 0.0, 6.0, 27.2, 59.3, 92.6, 94.9, 95.0, 95.2];
+const pctS=[13.12, 6.23, 5.63, 7.63, 6.71, 6.74, 8.25, 8.34, 9.04];
+const pago=[0.0, 0.0, 0.0, 0.0, 259694.52999999994, 1658246.71, 884415.25, 1842656.34, 432841.67];
+C.line('c_exec_hist',m,[
+  {label:'Execuções válidas',data:exec,borderColor:'#38bdf8',backgroundColor:'rgba(56,189,248,.08)',fill:true,tension:.3},
+  {label:'Concluídas',data:conc,borderColor:'#22c55e',backgroundColor:'rgba(34,197,94,.05)',fill:true,tension:.3}
+]);
+C.line('c_pago_hist',m,[
+  {label:'Já Computado a Pagar (R$)',data:pago,borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.08)',fill:true,tension:.3}
+]);
+C.line('c_rast_hist',m,[
+  {label:'% Rastreamento Real',data:pctR,borderColor:'#22c55e',backgroundColor:'rgba(34,197,94,.08)',fill:true,tension:.3}
+]);
+C.line('c_susp_hist',m,[
+  {label:'% Rotas Suspeitas',data:pctS,borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.08)',fill:true,tension:.3}
+]);
 C.line('c_fr',["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"],[{label:'Rotas Suspeitas (<10min)',data:[42, 262, 818, 1223, 1993, 1942, 1021, 2303, 457],borderColor:'#ef4444',backgroundColor:'rgba(239,68,68,.08)',fill:true,tension:.3},{label:'Sem Rastreamento',data:[0, 0, 0, 0, 4205, 962, 67, 113, 4],borderColor:'#f59e0b',backgroundColor:'rgba(245,158,11,.08)',fill:true,tension:.3}]);
 
 // Gráfico GRE
