@@ -17,6 +17,18 @@ DATABASE = "postgres"
 USER = "analista_bi.cuofycgznnbtpotybpuu"
 PASSWORD = "marvao#37m"
 
+# GREs administrativos/apoio — excluídas das análises operacionais estratégicas.
+# Mantemos o conjunto global porque ele também é usado nas consultas agregadas
+# de combustível e em outras seções renderizadas depois.
+ADMIN_GRES = {
+    'ADMINISTRATIVO',
+    'LOGISTICA CAPITAL',
+    'LOGISTICA INTERIOR',
+    'SEMEC - SUDESTE',
+    'SEMEC -  SUDESTE',
+    'TESTE',
+}
+
 try:
     conn = psycopg2.connect(host=HOST, port=PORT, database=DATABASE, user=USER, password=PASSWORD)
     print("✅ Conectado.")
