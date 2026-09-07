@@ -110,6 +110,7 @@ WHERE e.data >= CURRENT_DATE - INTERVAL '30 days'
   AND e.data <= CURRENT_DATE
   AND e.anulada = false
   AND e.data IS NOT NULL
+  AND e.tipo_rota IN ('RR','EX','AB','AP','SA')
 ORDER BY e.data, e.id
 """, pd.DataFrame())
 
@@ -119,22 +120,118 @@ ORDER BY e.data, e.id
 df_exec_hist = safe_read("""
 SELECT
     TO_CHAR(e.data,'YYYY-MM') AS mes,
-    COUNT(*) AS planejadas,
-    COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL) AS iniciadas,
-    COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) AS concluidas,
-    COUNT(*) FILTER (WHERE e.inicio_execucao IS NULL) AS nao_executadas,
-    COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NULL) AS em_andamento,
-    COUNT(DISTINCT e.rota_id) FILTER (WHERE e.inicio_execucao IS NOT NULL) AS rotas_executadas,
-    COUNT(DISTINCT e.contrato_rota_id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.contrato_rota_id IS NOT NULL) AS contratos_rota_executados,
-    COALESCE(SUM(e.km_executado) FILTER (WHERE e.inicio_execucao IS NOT NULL),0) AS km_executado
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'RR') AS planejadas_rr,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'RR' AND e.inicio_execucao IS NOT NULL) AS iniciadas_rr,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'RR' AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) AS concluidas_rr,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'RR' AND e.inicio_execucao IS NULL) AS nao_executadas_rr,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'RR' AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NULL) AS em_andamento_rr,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'EX' AND e.inicio_execucao IS NOT NULL) AS extras_ex,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'AB' AND e.inicio_execucao IS NOT NULL) AS extras_ab,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'AP' AND e.inicio_execucao IS NOT NULL) AS extras_ap,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'SA' AND e.inicio_execucao IS NOT NULL) AS extras_sa,
+    COUNT(*) FILTER (WHERE e.tipo_rota IN ('RR','EX','AB','AP','SA') AND e.inicio_execucao IS NOT NULL) AS execucoes_reais,
+    COUNT(*) FILTER (WHERE e.tipo_rota IN ('RR','EX','AB','AP','SA') AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) AS concluidas,
+    COALESCE(SUM(e.km_executado) FILTER (WHERE e.tipo_rota IN ('RR','EX','AB','AP','SA') AND e.inicio_execucao IS NOT NULL),0) AS km_executado,
+    COALESCE(SUM(e.km_planejado) FILTER (WHERE e.tipo_rota = 'RR'),0) AS km_planejado_rr,
+    COUNT(*) FILTER (WHERE e.tipo_rota IN ('RR','EX','AB','AP','SA') AND e.inicio_execucao IS NOT NULL AND e.km_executado > 0) AS execucoes_com_km
 FROM airbyte.rotas_escalarota e
 WHERE e.data >= DATE '2026-01-01'
   AND e.data <= CURRENT_DATE
   AND e.anulada = false
   AND e.data IS NOT NULL
+  AND e.tipo_rota IN ('RR','EX','AB','AP','SA')
 GROUP BY TO_CHAR(e.data,'YYYY-MM')
 ORDER BY mes
 """, pd.DataFrame())
+
+
+# Histórico diário da operação — últimos 90 dias, agregado no banco. RR = base planejada; extras separados.
+df_exec_hist_dia = safe_read("""
+SELECT
+    e.data::date AS data,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'RR') AS planejadas_rr,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'RR' AND e.inicio_execucao IS NOT NULL) AS iniciadas_rr,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'RR' AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) AS concluidas_rr,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'RR' AND e.inicio_execucao IS NULL) AS nao_executadas_rr,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'EX' AND e.inicio_execucao IS NOT NULL) AS ex,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'AB' AND e.inicio_execucao IS NOT NULL) AS ab,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'AP' AND e.inicio_execucao IS NOT NULL) AS ap,
+    COUNT(*) FILTER (WHERE e.tipo_rota = 'SA' AND e.inicio_execucao IS NOT NULL) AS sa,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL) AS execucoes_reais,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) AS concluidas,
+    COALESCE(SUM(e.km_executado) FILTER (WHERE e.inicio_execucao IS NOT NULL),0) AS km_executado
+FROM airbyte.rotas_escalarota e
+WHERE e.data >= CURRENT_DATE - INTERVAL '90 days'
+  AND e.data <= CURRENT_DATE
+  AND e.anulada = false
+  AND e.tipo_rota IN ('RR','EX','AB','AP','SA')
+GROUP BY e.data::date
+ORDER BY e.data::date
+""", pd.DataFrame())
+
+# Performance de fiscais: RR é a base planejada; a conclusão é início + fim.
+df_exec_perf_fiscal = safe_read("""
+SELECT
+    COALESCE(func.nome,'SEM FISCAL') AS fiscal,
+    COALESCE(g.nome,'SEM GRE') AS gre,
+    COUNT(*) AS planejadas,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL) AS iniciadas,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) AS concluidas,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NULL) AS nao_executadas,
+    ROUND(COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL) * 100.0 / NULLIF(COUNT(*),0),1) AS pct_execucao,
+    ROUND(COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) * 100.0 / NULLIF(COUNT(*),0),1) AS pct_conclusao
+FROM airbyte.rotas_escalarota e
+LEFT JOIN airbyte.rotas_rota r ON r.id = e.rota_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = r.gre_id
+LEFT JOIN airbyte.motoristas_funcionario func ON func.id = g.fiscal_responsavel_id
+WHERE e.data >= DATE_TRUNC('month', CURRENT_DATE)
+  AND e.data <= CURRENT_DATE
+  AND e.anulada = false
+  AND e.tipo_rota='RR'
+  AND UPPER(COALESCE(g.nome,'')) NOT IN ('LOGISTICA CAPITAL','LOGISTICA INTERIOR','ADMINISTRATIVO','TESTE','SEMEC - SUDESTE')
+GROUP BY func.nome, g.nome
+HAVING COUNT(*) >= 20
+ORDER BY pct_conclusao DESC, planejadas DESC
+LIMIT 50
+""", pd.DataFrame(columns=['fiscal','gre','planejadas','iniciadas','concluidas','nao_executadas','pct_execucao','pct_conclusao']))
+
+# Performance por GRE — RR é a base planejada.
+df_exec_perf_gre = safe_read("""
+SELECT
+    COALESCE(g.nome,'SEM GRE') AS gre,
+    COUNT(*) AS planejadas,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL) AS iniciadas,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) AS concluidas,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NULL) AS nao_executadas,
+    ROUND(COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL) * 100.0 / NULLIF(COUNT(*),0),1) AS pct_execucao,
+    ROUND(COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) * 100.0 / NULLIF(COUNT(*),0),1) AS pct_conclusao
+FROM airbyte.rotas_escalarota e
+LEFT JOIN airbyte.rotas_rota r ON r.id = e.rota_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = r.gre_id
+WHERE e.data >= DATE_TRUNC('month', CURRENT_DATE)
+  AND e.data <= CURRENT_DATE
+  AND e.anulada = false
+  AND e.tipo_rota='RR'
+  AND UPPER(COALESCE(g.nome,'')) NOT IN ('LOGISTICA CAPITAL','LOGISTICA INTERIOR','ADMINISTRATIVO','TESTE','SEMEC - SUDESTE')
+GROUP BY g.nome
+HAVING COUNT(*) >= 20
+ORDER BY pct_conclusao DESC, planejadas DESC
+""", pd.DataFrame(columns=['gre','planejadas','iniciadas','concluidas','nao_executadas','pct_execucao','pct_conclusao']))
+
+# Composição dos tipos extras no mês atual.
+df_exec_extras_tipo = safe_read("""
+SELECT
+    e.tipo_rota,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL) AS executadas,
+    COUNT(*) AS registros
+FROM airbyte.rotas_escalarota e
+WHERE e.data >= DATE_TRUNC('month', CURRENT_DATE)
+  AND e.data <= CURRENT_DATE
+  AND e.anulada = false
+  AND e.tipo_rota IN ('EX','AB','AP','SA')
+GROUP BY e.tipo_rota
+ORDER BY executadas DESC
+""", pd.DataFrame(columns=['tipo_rota','executadas','registros']))
 
 df_exec_tec_hist = safe_read("""
 SELECT
@@ -202,6 +299,7 @@ LEFT JOIN airbyte.rotas_rota r ON r.id = e.rota_id
 WHERE e.data >= DATE_TRUNC('month', CURRENT_DATE)
   AND e.data <= CURRENT_DATE
   AND e.anulada = false
+  AND e.tipo_rota = 'RR'
 GROUP BY COALESCE(r.cidade,'SEM CIDADE')
 HAVING COUNT(*) >= 5
 ORDER BY nao_executadas DESC, total DESC
@@ -231,6 +329,97 @@ WHERE m.status = 'A'
 ORDER BY g.nome, m.nome
 """, pd.DataFrame(columns=['id','motorista','gre','tem_veiculo','placa']))
 
+
+
+# ─── RASTREAMENTO — COBERTURA DA FROTA ATIVA ─────────────────────────────────
+df_tracker_resumo = safe_read("""
+WITH ultimo AS (
+    SELECT DISTINCT ON (r.veiculo_id)
+        r.veiculo_id, r.online, r.status, r.ultima_atualizacao, r.id
+    FROM airbyte.veiculos_rastreador r
+    WHERE r.veiculo_id IS NOT NULL
+    ORDER BY r.veiculo_id, r.ultima_atualizacao DESC NULLS LAST, r.id DESC
+), base AS (
+    SELECT v.id, u.veiculo_id AS rastreador_veiculo_id, u.online, u.ultima_atualizacao
+    FROM airbyte.veiculos_veiculo v
+    LEFT JOIN ultimo u ON u.veiculo_id = v.id
+    WHERE v.status='A'
+)
+SELECT
+    COUNT(*) AS frota_ativa,
+    COUNT(*) FILTER (WHERE rastreador_veiculo_id IS NOT NULL) AS com_rastreador,
+    COUNT(*) FILTER (WHERE rastreador_veiculo_id IS NULL) AS sem_rastreador,
+    COUNT(*) FILTER (WHERE rastreador_veiculo_id IS NOT NULL AND online=true) AS online,
+    COUNT(*) FILTER (WHERE rastreador_veiculo_id IS NOT NULL AND ultima_atualizacao IS NOT NULL AND ultima_atualizacao >= CURRENT_TIMESTAMP - INTERVAL '24 hours') AS comunicou_24h,
+    COUNT(*) FILTER (WHERE rastreador_veiculo_id IS NOT NULL AND ultima_atualizacao IS NOT NULL AND ultima_atualizacao < CURRENT_TIMESTAMP - INTERVAL '24 hours') AS falha_comunicacao,
+    COUNT(*) FILTER (WHERE rastreador_veiculo_id IS NOT NULL AND ultima_atualizacao IS NULL) AS sem_historico_sinal
+FROM base
+""", pd.DataFrame([{'frota_ativa':0,'com_rastreador':0,'sem_rastreador':0,'online':0,'comunicou_24h':0,'falha_comunicacao':0,'sem_historico_sinal':0}]))
+
+df_tracker_detalhe = safe_read("""
+WITH ultimo AS (
+    SELECT DISTINCT ON (r.veiculo_id)
+        r.veiculo_id, r.online, r.status AS status_rastreador, r.ultima_atualizacao,
+        r.imei, r.modelo AS modelo_rastreador, r.numero_chip, r.id
+    FROM airbyte.veiculos_rastreador r
+    WHERE r.veiculo_id IS NOT NULL
+    ORDER BY r.veiculo_id, r.ultima_atualizacao DESC NULLS LAST, r.id DESC
+)
+SELECT
+    v.placa,
+    COALESCE(v.tipo_contrato_locacao,'SEM TIPO') AS tipo_frota,
+    COALESCE(g.nome,'SEM GRE') AS gre,
+    COALESCE(f.nome,'PRÓPRIO') AS fornecedor,
+    CASE
+      WHEN u.veiculo_id IS NULL THEN 'SEM RASTREADOR'
+      WHEN u.ultima_atualizacao IS NULL THEN 'SEM SINAL HISTÓRICO'
+      WHEN u.online=true THEN 'ONLINE'
+      WHEN u.ultima_atualizacao < CURRENT_TIMESTAMP - INTERVAL '24 hours' THEN 'FALHA COMUNICAÇÃO +24H'
+      ELSE 'COMUNICOU <24H'
+    END AS situacao_rastreamento,
+    u.online,
+    u.status_rastreador,
+    u.ultima_atualizacao,
+    u.imei,
+    u.modelo_rastreador,
+    u.numero_chip,
+    EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - u.ultima_atualizacao))/3600.0 AS horas_sem_atualizacao
+FROM airbyte.veiculos_veiculo v
+LEFT JOIN ultimo u ON u.veiculo_id = v.id
+LEFT JOIN airbyte.escolas_gre g ON g.id = v.gre_id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
+WHERE v.status='A'
+ORDER BY CASE
+  WHEN u.veiculo_id IS NULL THEN 1
+  WHEN u.ultima_atualizacao IS NULL THEN 2
+  WHEN u.ultima_atualizacao < CURRENT_TIMESTAMP - INTERVAL '24 hours' THEN 3
+  WHEN u.online=true THEN 4
+  ELSE 5 END,
+  v.placa
+""", pd.DataFrame(columns=['placa','tipo_frota','gre','fornecedor','situacao_rastreamento','online','status_rastreador','ultima_atualizacao','imei','modelo_rastreador','numero_chip','horas_sem_atualizacao']))
+
+df_tracker_tipo = safe_read("""
+WITH ultimo AS (
+    SELECT DISTINCT ON (r.veiculo_id)
+        r.veiculo_id, r.online, r.ultima_atualizacao, r.id
+    FROM airbyte.veiculos_rastreador r
+    WHERE r.veiculo_id IS NOT NULL
+    ORDER BY r.veiculo_id, r.ultima_atualizacao DESC NULLS LAST, r.id DESC
+)
+SELECT
+    COALESCE(v.tipo_contrato_locacao,'SEM TIPO') AS tipo_frota,
+    COUNT(*) AS frota_ativa,
+    COUNT(*) FILTER (WHERE u.veiculo_id IS NOT NULL) AS com_rastreador,
+    COUNT(*) FILTER (WHERE u.veiculo_id IS NULL) AS sem_rastreador,
+    COUNT(*) FILTER (WHERE u.veiculo_id IS NOT NULL AND u.online=true) AS online,
+    COUNT(*) FILTER (WHERE u.veiculo_id IS NOT NULL AND u.ultima_atualizacao IS NULL) AS sem_historico,
+    COUNT(*) FILTER (WHERE u.veiculo_id IS NOT NULL AND u.ultima_atualizacao IS NOT NULL AND u.ultima_atualizacao < CURRENT_TIMESTAMP - INTERVAL '24 hours') AS falha_comunicacao
+FROM airbyte.veiculos_veiculo v
+LEFT JOIN ultimo u ON u.veiculo_id = v.id
+WHERE v.status='A'
+GROUP BY COALESCE(v.tipo_contrato_locacao,'SEM TIPO')
+ORDER BY frota_ativa DESC
+""", pd.DataFrame(columns=['tipo_frota','frota_ativa','com_rastreador','sem_rastreador','online','sem_historico','falha_comunicacao']))
 
 # ─── QUERIES RESTAURADAS PARA COMPATIBILIDADE DAS ABAS ─────────────────────────
 
@@ -756,6 +945,7 @@ op AS (
     WHERE e.data >= DATE_TRUNC('month', CURRENT_DATE)
       AND e.data <= CURRENT_DATE
       AND e.anulada = false
+      AND e.tipo_rota = 'RR'
       AND r.gre_id IS NOT NULL
     GROUP BY r.gre_id
 )
@@ -1657,13 +1847,56 @@ exec_vinculo_sem = exec_vinculo_mot - exec_vinculo_vei
 # Esses dados vêm agregados do banco; não dependem do detalhe embutido no HTML.
 if not df_exec_hist.empty:
     meses_ev = df_exec_hist['mes'].astype(str).tolist()
-    ev_tot = [int(v or 0) for v in df_exec_hist['planejadas'].tolist()]
-    ev_conc = [int(v or 0) for v in df_exec_hist['concluidas'].tolist()]
-    ev_nao = [int(v or 0) for v in df_exec_hist['nao_executadas'].tolist()]
+    ev_tot = [int(v or 0) for v in df_exec_hist['planejadas_rr'].tolist()]
+    ev_ini = [int(v or 0) for v in df_exec_hist['iniciadas_rr'].tolist()]
+    ev_conc = [int(v or 0) for v in df_exec_hist['concluidas_rr'].tolist()]
+    ev_nao = [int(v or 0) for v in df_exec_hist['nao_executadas_rr'].tolist()]
+    ev_and = [int(v or 0) for v in df_exec_hist['em_andamento_rr'].tolist()]
+    ev_ex = [int(v or 0) for v in df_exec_hist['extras_ex'].tolist()]
+    ev_ab = [int(v or 0) for v in df_exec_hist['extras_ab'].tolist()]
+    ev_ap = [int(v or 0) for v in df_exec_hist['extras_ap'].tolist()]
+    ev_sa = [int(v or 0) for v in df_exec_hist['extras_sa'].tolist()]
     ev_km = [float(v or 0) for v in df_exec_hist['km_executado'].tolist()]
-    ev_assid = [round((c/max(t,1))*100,1) for c,t in zip(ev_conc,ev_tot)]
+    ev_km_plan_rr = [float(v or 0) for v in df_exec_hist['km_planejado_rr'].tolist()]
+    ev_km_cov = [round(int(k or 0)*100/max(int(i or 0),1),1) for k,i in zip(df_exec_hist['execucoes_com_km'], df_exec_hist['execucoes_reais'])]
+    ev_exec_pct = [round(i*100/max(t,1),1) for i,t in zip(ev_ini,ev_tot)]
+    ev_assid = [round(c*100/max(t,1),1) for c,t in zip(ev_conc,ev_tot)]
 else:
-    meses_ev=[]; ev_tot=[]; ev_conc=[]; ev_nao=[]; ev_km=[]; ev_assid=[]
+    meses_ev=[]; ev_tot=[]; ev_ini=[]; ev_conc=[]; ev_nao=[]; ev_and=[]; ev_ex=[]; ev_ab=[]; ev_ap=[]; ev_sa=[]; ev_km=[]; ev_km_plan_rr=[]; ev_km_cov=[]; ev_exec_pct=[]; ev_assid=[]
+
+if not df_exec_hist_dia.empty:
+    _dftd=df_exec_hist_dia.copy(); _dftd['data']=_dftd['data'].astype(str).str[:10]
+    strat_day_labels=_dftd['data'].tolist()
+    strat_day_plan=[int(v or 0) for v in _dftd['planejadas_rr'].tolist()]
+    strat_day_ini=[int(v or 0) for v in _dftd['iniciadas_rr'].tolist()]
+    strat_day_conc=[int(v or 0) for v in _dftd['concluidas_rr'].tolist()]
+    strat_day_extras=[int(a or 0)+int(b or 0)+int(c or 0)+int(d or 0) for a,b,c,d in zip(_dftd['ex'],_dftd['ab'],_dftd['ap'],_dftd['sa'])]
+    strat_day_km=[float(v or 0) for v in _dftd['km_executado'].tolist()]
+else:
+    strat_day_labels=[]; strat_day_plan=[]; strat_day_ini=[]; strat_day_conc=[]; strat_day_extras=[]; strat_day_km=[]
+
+strat_fiscal_top=[]; strat_fiscal_bottom=[]
+if not df_exec_perf_fiscal.empty:
+    for _, rr in df_exec_perf_fiscal.iterrows():
+        strat_fiscal_top.append({'fiscal':str(rr.get('fiscal') or 'SEM FISCAL'),'gre':str(rr.get('gre') or 'SEM GRE'),'planejadas':int(rr.get('planejadas') or 0),'iniciadas':int(rr.get('iniciadas') or 0),'concluidas':int(rr.get('concluidas') or 0),'pct_exec':float(rr.get('pct_execucao') or 0),'pct_conc':float(rr.get('pct_conclusao') or 0)})
+    strat_fiscal_top.sort(key=lambda x:(x['pct_conc'],x['planejadas']),reverse=True)
+    strat_fiscal_bottom=sorted(strat_fiscal_top,key=lambda x:(x['pct_conc'], -x['planejadas']))[:5]
+    strat_fiscal_top=strat_fiscal_top[:5]
+strat_gre_top=[]
+if not df_exec_perf_gre.empty:
+    for _, rr in df_exec_perf_gre.iterrows():
+        strat_gre_top.append({'gre':str(rr.get('gre') or 'SEM GRE'),'planejadas':int(rr.get('planejadas') or 0),'iniciadas':int(rr.get('iniciadas') or 0),'concluidas':int(rr.get('concluidas') or 0),'nao':int(rr.get('nao_executadas') or 0),'pct_exec':float(rr.get('pct_execucao') or 0),'pct_conc':float(rr.get('pct_conclusao') or 0)})
+    strat_gre_top.sort(key=lambda x:(x['pct_conc'],x['planejadas']),reverse=True)
+
+_tracker=df_tracker_resumo.iloc[0] if not df_tracker_resumo.empty else {}
+tracker_frota_ativa=int(_tracker.get('frota_ativa',0) or 0) if hasattr(_tracker,'get') else 0
+tracker_com=int(_tracker.get('com_rastreador',0) or 0) if hasattr(_tracker,'get') else 0
+tracker_sem=int(_tracker.get('sem_rastreador',0) or 0) if hasattr(_tracker,'get') else 0
+tracker_online=int(_tracker.get('online',0) or 0) if hasattr(_tracker,'get') else 0
+tracker_24h=int(_tracker.get('comunicou_24h',0) or 0) if hasattr(_tracker,'get') else 0
+tracker_falha=int(_tracker.get('falha_comunicacao',0) or 0) if hasattr(_tracker,'get') else 0
+tracker_sem_sinal=int(_tracker.get('sem_historico_sinal',0) or 0) if hasattr(_tracker,'get') else 0
+tracker_pct=round(tracker_com*100/max(tracker_frota_ativa,1),1)
 
 if not df_exec_tec_hist.empty:
     tec_meses = df_exec_tec_hist['mes'].astype(str).tolist()
@@ -2725,6 +2958,20 @@ for _d in sorted(gc_pag_dia.keys()):
     if _d[:7] == _atual_ym:
         strat_daily_labels.append(_gc_fmt_data(_d))
         strat_daily_vals.append(float(gc_pag_dia.get(_d,{}).get('valor',0.0) or 0.0))
+
+_currow = df_exec_hist[df_exec_hist['mes'].astype(str)==_atual_ym] if not df_exec_hist.empty else pd.DataFrame()
+_strat_cur_plan = int(_currow['planejadas_rr'].iloc[0]) if not _currow.empty else 0
+_strat_cur_ini = int(_currow['iniciadas_rr'].iloc[0]) if not _currow.empty else 0
+_strat_cur_conc = int(_currow['concluidas_rr'].iloc[0]) if not _currow.empty else 0
+_strat_cur_extra = int(_currow[['extras_ex','extras_ab','extras_ap','extras_sa']].sum(axis=1).iloc[0]) if not _currow.empty else 0
+_strat_cur_km = float(_currow['km_executado'].iloc[0]) if not _currow.empty else 0.0
+_strat_cur_km_plan = float(_currow['km_planejado_rr'].iloc[0]) if not _currow.empty else 0.0
+_strat_km_cover = round(_strat_cur_km*100/max(_strat_cur_km_plan,1),1) if _strat_cur_km_plan else 0.0
+extra_type_map={'EX':'Extracurricular','AB':'Abastecimento','AP':'Apoio','SA':'Saída antecipada'}
+strat_extra_labels=[]; strat_extra_vals=[]
+for _, rr in df_exec_extras_tipo.iterrows() if not df_exec_extras_tipo.empty else []:
+    strat_extra_labels.append(extra_type_map.get(str(rr.get('tipo_rota')),'Outro'))
+    strat_extra_vals.append(int(rr.get('executadas') or 0))
 strat_supplier = []
 if not df_gc_rank_terceiros.empty:
     _sr = df_gc_rank_terceiros.sort_values(['valor_diaria_dia','contratos_rota'], ascending=[False,False]).head(10)
@@ -2738,7 +2985,7 @@ if not df_gc_rank_terceiros.empty:
 def comentario_estrategico():
     partes = []
     if exec_total:
-        partes.append(f"No mês atual, <b>{exec_conc:,}</b> registros foram concluídos de <b>{exec_total:,}</b> analisados ({exec_pct_assid}%).")
+        partes.append(f"No mês atual, a base regular é de <b>{_strat_cur_plan:,} RR planejadas</b>; <b>{_strat_cur_ini:,}</b> tiveram início ({round(_strat_cur_ini*100/max(_strat_cur_plan,1),1)}%) e <b>{_strat_cur_conc:,}</b> foram concluídas ({round(_strat_cur_conc*100/max(_strat_cur_plan,1),1)}%).")
     if gc_frota_ativa:
         partes.append(f"A frota ativa é de <b>{gc_frota_ativa:,}</b> veículos; <b>{gc_frota_terc:,}</b> são terceirizados ({_strat_pct_terc}%).")
     if gc_pag_atual_total:
@@ -2750,6 +2997,19 @@ def comentario_estrategico():
         topf = strat_supplier[0]
         partes.append(f"Maior exposição diária entre terceirizados: <b>{htmlmod.escape(topf['fornecedor'])}</b>, com R$ {fmt(topf['valor'])}/dia em {topf['contratos']:,} contratos rota.")
     return "<br>".join(partes) if partes else "Sem dados suficientes para a visão estratégica."
+
+def html_tracker_rows():
+    if df_tracker_detalhe.empty:
+        return '<tr><td colspan="8">Sem dados de rastreamento.</td></tr>'
+    h=[]
+    for _, r in df_tracker_detalhe.iterrows():
+        situ=str(r.get('situacao_rastreamento') or 'SEM RASTREADOR')
+        cor='color:#ef4444;font-weight:700' if situ in ('SEM RASTREADOR','FALHA COMUNICAÇÃO +24H') else ('color:#f59e0b;font-weight:700' if situ=='SEM SINAL HISTÓRICO' else 'color:#22c55e')
+        upd=r.get('ultima_atualizacao'); upd_s='—' if upd is None or str(upd)=='NaT' else str(upd).replace('T',' ')[:19]
+        horas=r.get('horas_sem_atualizacao'); horas_s='—' if pd.isna(horas) else fmt(float(horas))+' h'
+        h.append(f"<tr><td><b>{htmlmod.escape(str(r.get('placa') or 'SEM PLACA'))}</b></td><td>{htmlmod.escape(str(r.get('tipo_frota') or ''))}</td><td>{htmlmod.escape(str(r.get('gre') or ''))}</td><td>{htmlmod.escape(str(r.get('fornecedor') or ''))}</td><td style='{cor}'>{htmlmod.escape(situ)}</td><td style='text-align:center'>{'SIM' if bool(r.get('online')) else 'NÃO'}</td><td>{htmlmod.escape(upd_s)}</td><td style='text-align:right'>{horas_s}</td></tr>")
+    return ''.join(h)
+tracker_rows_html=html_tracker_rows()
 
 # ─── HTML FINAL ─────────────────────────────────────────────────────────────
 gerado = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -2921,6 +3181,7 @@ canvas{{max-height:270px}}
   <button onclick="tab('t9',this)">🏆 Bonificação</button>
   <button onclick="tab('t10',this)">⛽ Combustível</button>
   <button onclick="tab('t11',this)">📑 Gerente Contratos</button>
+  <button onclick="tab('t12',this)">📡 Rastreamento</button>
 </div>
 
 <!-- ABA 1: PAINEL EXECUTIVO -->
@@ -2938,42 +3199,58 @@ canvas{{max-height:270px}}
   <div class="strategy-hero">
     <div>
       <span class="strategy-kicker">🎯 VISÃO ESTRATÉGICA</span>
-      <h2>Operação, exposição financeira e composição da frota</h2>
+      <h2>Planejamento, execução, custo, frota e prioridades</h2>
       <p>{comentario_estrategico()}</p>
     </div>
-    <div class="strategy-badge"><span>SAÚDE OPERACIONAL</span><b id="strat_health">{exec_pct_assid}%</b><small>conclusão no mês atual</small></div>
+    <div class="strategy-badge"><span>CONCLUSÃO RR</span><b>{round(_strat_cur_conc*100/max(_strat_cur_plan,1),1)}%</b><small>conclusão sobre o planejado</small></div>
   </div>
 
   <div class="kpi-grid strategy-kpis">
-    <div class="kpi"><label>Execução do Mês</label><div class="v v-ok" id="st_exec_pct">{exec_pct_assid}%</div><div class="sub">concluídas / analisadas</div></div>
-    <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac">R$ {fmt(gc_pag_atual_total)}</div><div class="sub">execução real registrada</div></div>
+    <div class="kpi"><label>RR Planejadas</label><div class="v v-ac">{_strat_cur_plan:,}</div><div class="sub">base regular do mês</div></div>
+    <div class="kpi"><label>RR Executadas</label><div class="v v-ok">{_strat_cur_ini:,}</div><div class="sub">{round(_strat_cur_ini*100/max(_strat_cur_plan,1),1)}% do planejado</div></div>
+    <div class="kpi"><label>RR Concluídas</label><div class="v v-ok">{_strat_cur_conc:,}</div><div class="sub">{round(_strat_cur_conc*100/max(_strat_cur_plan,1),1)}% do planejado</div></div>
+    <div class="kpi"><label>Extras</label><div class="v v-wn">{_strat_cur_extra:,}</div><div class="sub">EX · AB · AP · SA</div></div>
+    <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac">R$ {fmt(gc_pag_atual_total)}</div><div class="sub">execução real</div></div>
     <div class="kpi"><label>Previsão de Fechamento</label><div class="v v-ac">R$ {fmt(gc_previsao_fechamento)}</div><div class="sub">estimativa do mês</div></div>
     <div class="kpi"><label>Frota Ativa</label><div class="v v-ok">{gc_frota_ativa:,}</div><div class="sub">status A</div></div>
     <div class="kpi"><label>Terceirizados</label><div class="v v-wn">{gc_frota_terc:,}</div><div class="sub">{_strat_pct_terc}% da frota ativa</div></div>
-    <div class="kpi"><label>Próprios</label><div class="v">{gc_frota_propria:,}</div><div class="sub">{_strat_pct_propria}% da frota ativa</div></div>
-    <div class="kpi"><label>Locados</label><div class="v">{gc_frota_locada:,}</div><div class="sub">{_strat_pct_locada}% da frota ativa</div></div>
-    <div class="kpi"><label>Inativos c/ Contrato</label><div class="v v-cr">{gc_inat_contrato:,}</div><div class="sub">prioridade contratual</div></div>
+    <div class="kpi"><label>Inativos c/ Contrato</label><div class="v v-cr">{gc_inat_contrato:,}</div><div class="sub">risco contratual</div></div>
   </div>
 
   <div class="strategy-grid strategy-grid-main">
-    <div class="card strategy-open"><h3>📈 Evolução da Operação — Analisadas x Concluídas x Não Executadas</h3><canvas id="c_strat_oper"></canvas></div>
+    <div class="card strategy-open"><h3>📈 Evolução Mensal — RR Planejadas × Executadas × Concluídas</h3><p class="desc">RR é a base planejada. Execução = início registrado; conclusão = início + fim.</p><canvas id="c_strat_oper"></canvas></div>
+    <div class="card strategy-open"><h3>📅 Evolução Diária — RR Executadas × Concluídas</h3><p class="desc">Últimos 90 dias. Extras ficam separados da base regular.</p><canvas id="c_strat_daily_exec"></canvas></div>
+  </div>
+
+  <div class="strategy-grid">
+    <div class="card strategy-open"><h3>🏆 Performance por Fiscal — Top 5</h3><p class="desc">Taxa de conclusão das RR, com mínimo de 20 RR no mês.</p><div class="strategy-chart-tall"><canvas id="c_strat_fiscal"></canvas></div></div>
+    <div class="card strategy-open"><h3>🏆 Performance por GRE — Top 5</h3><p class="desc">Conclusão das RR planejadas por regional.</p><div class="strategy-chart-tall"><canvas id="c_strat_gre_perf"></canvas></div></div>
+  </div>
+
+  <div class="strategy-grid">
+    <div class="card strategy-open"><h3>📊 Composição da Operação</h3><p class="desc">RR é a base regular; extras são analisados separadamente por tipo.</p><div class="strategy-chart-tall"><canvas id="c_strat_mix"></canvas></div></div>
+    <div class="card strategy-open"><h3>🚌 Composição da Frota Ativa</h3><p class="desc">Base: somente veículos com <b>status = A</b>.</p><div class="strategy-chart-tall"><canvas id="c_strat_frota"></canvas></div></div>
+  </div>
+
+  <div class="strategy-grid">
+    <div class="card strategy-open"><h3>📏 Qualidade do KM</h3><div class="g3" style="margin-top:10px"><div class="kpi"><label>KM Executado</label><div class="v v-ac">{fmt(_strat_cur_km)}</div></div><div class="kpi"><label>KM Planejado RR</label><div class="v">{fmt(_strat_cur_km_plan)}</div></div><div class="kpi"><label>Aderência</label><div class="v {'v-ok' if 90<=_strat_km_cover<=110 else 'v-wn' if 75<=_strat_km_cover<=125 else 'v-cr'}">{fmt(_strat_km_cover)}%</div></div></div><div class="info" style="margin-top:10px">A aderência só é interpretada quando existem KM executado e planejado. A cobertura do KM permanece separada da operação.</div></div>
+    <div class="card strategy-open"><h3>📡 Saúde do Rastreamento</h3><div class="g2" style="margin-top:10px"><div class="kpi"><label>Frota Ativa</label><div class="v">{tracker_frota_ativa:,}</div></div><div class="kpi"><label>Com Rastreador</label><div class="v v-ok">{tracker_com:,}</div><div class="sub">{tracker_pct}%</div></div><div class="kpi"><label>Online</label><div class="v v-ac">{tracker_online:,}</div></div><div class="kpi"><label>Falha +24h</label><div class="v v-cr">{tracker_falha:,}</div></div></div></div>
+  </div>
+
+  <div class="strategy-grid">
     <div class="card strategy-open"><h3>💰 Já Computado a Pagar — Evolução Mensal</h3><canvas id="c_strat_pay"></canvas></div>
+    <div class="card strategy-open"><h3>🎯 Dependência de Terceiros por GRE</h3><p class="desc">Percentual de terceirização sobre a frota ativa de cada GRE.</p><div class="strategy-chart-tall"><canvas id="c_strat_dep"></canvas></div></div>
   </div>
 
   <div class="strategy-grid">
-    <div class="card strategy-open"><h3>🚌 Composição da Frota Ativa por Vínculo</h3><p class="desc">Base: somente veículos com <b>status = A</b>. O percentual mostra a composição da frota atualmente ativa.</p><div class="strategy-chart-tall"><canvas id="c_strat_frota"></canvas></div></div>
-    <div class="card strategy-open"><h3>🎯 Dependência de Terceiros por GRE</h3><p class="desc">Percentual de terceirização sobre a frota ativa de cada GRE. Referência para priorização de fiscalização.</p><div class="strategy-chart-tall"><canvas id="c_strat_dep"></canvas></div></div>
-  </div>
-
-  <div class="strategy-grid">
-    <div class="card strategy-open"><h3>📅 Pagamento Computado por Dia — Mês Atual</h3><p class="desc">Valor já computado por execução real, deduplicado por <b>Contrato Rota + dia</b>. Ajuda a visualizar os dias de maior e menor desembolso.</p><div class="strategy-chart-tall"><canvas id="c_strat_daily"></canvas></div></div>
-    <div class="card strategy-open"><h3>🏢 Concentração dos Terceirizados por R$/Dia</h3><p class="desc">Top 10 fornecedores terceirizados pelo valor diário agregado dos Contratos Rota ativos. Indica concentração da exposição financeira.</p><div class="strategy-chart-tall"><canvas id="c_strat_supplier"></canvas></div></div>
+    <div class="card strategy-open"><h3>🏢 Concentração dos Terceirizados por R$/Dia</h3><p class="desc">Top 10 fornecedores pelo compromisso diário agregado.</p><div class="strategy-chart-tall"><canvas id="c_strat_supplier"></canvas></div></div>
+    <div class="card strategy-open"><h3>📅 Pagamento Computado por Dia — Mês Atual</h3><p class="desc">Uma diária por Contrato Rota + dia.</p><div class="strategy-chart-tall"><canvas id="c_strat_daily"></canvas></div></div>
   </div>
 
   <div class="card strategy-open strategy-actions">
-    <h3>🚨 Prioridades Estratégicas de Fiscalização</h3>
-    <p class="desc">Índice referencial: maior dependência de terceiros + menor assiduidade. Serve para orientar onde aprofundar a análise, não substitui apuração.</p>
-    <div class="tw"><table><thead><tr><th>Prioridade</th><th>GRE</th><th>Frota Ativa</th><th>% Terceiros</th><th>Assiduidade</th><th>Score</th><th>Ação Sugerida</th></tr></thead><tbody id="t_strat_actions"><tr><td colspan="7">Carregando...</td></tr></tbody></table></div>
+    <h3>🚨 Prioridades Estratégicas</h3>
+    <p class="desc">Cruzamento de dependência de terceiros e desempenho das RR para orientar a fiscalização.</p>
+    <div class="tw"><table><thead><tr><th>Prioridade</th><th>GRE</th><th>Frota Ativa</th><th>% Terceiros</th><th>Conclusão RR</th><th>Score</th><th>Ação Sugerida</th></tr></thead><tbody id="t_strat_actions"><tr><td colspan="7">Carregando...</td></tr></tbody></table></div>
   </div>
 
   <details class="strategy-detail" open>
@@ -3676,6 +3953,32 @@ canvas{{max-height:270px}}
   </div>
 </div>
 
+
+<!-- ABA 12: RASTREAMENTO -->
+<div id="t12" class="tab">
+  <div class="info"><b>📡 Central de Rastreamento:</b> visão estratégica da cobertura atual da frota. Não substitui monitoramento em tempo real.</div>
+  <div class="kpi-grid">
+    <div class="kpi"><label>Frota Ativa</label><div class="v v-ac">{tracker_frota_ativa:,}</div><div class="sub">status A</div></div>
+    <div class="kpi"><label>Com Rastreador</label><div class="v v-ok">{tracker_com:,}</div><div class="sub">{tracker_pct}% da frota</div></div>
+    <div class="kpi"><label>Sem Rastreador</label><div class="v v-cr">{tracker_sem:,}</div><div class="sub">cobertura pendente</div></div>
+    <div class="kpi"><label>Online</label><div class="v v-ac">{tracker_online:,}</div><div class="sub">estado atual</div></div>
+    <div class="kpi"><label>Comunicou &lt;24h</label><div class="v v-ok">{tracker_24h:,}</div><div class="sub">atualização recente</div></div>
+    <div class="kpi"><label>Falha +24h</label><div class="v v-cr">{tracker_falha:,}</div><div class="sub">já comunicou, mas parou</div></div>
+    <div class="kpi"><label>Sem Sinal Histórico</label><div class="v v-wn">{tracker_sem_sinal:,}</div><div class="sub">sem atualização registrada</div></div>
+  </div>
+  <div class="g2">
+    <div class="card strategy-open"><h3>📊 Saúde da Cobertura</h3><canvas id="c_tracker_health"></canvas></div>
+    <div class="card strategy-open"><h3>🚌 Rastreamento por Tipo de Frota</h3><canvas id="c_tracker_tipo"></canvas></div>
+  </div>
+  <div class="card">
+    <h3>🚨 Veículos Ativos — Situação de Rastreamento</h3>
+    <p class="desc"><b>Sem rastreador</b> é ausência de dispositivo vinculado. <b>Falha +24h</b> indica dispositivo vinculado que tem histórico de atualização, mas está sem comunicação há mais de 24h.</p>
+    <input class="src" id="s_tracker" oninput="fil('s_tracker','t_tracker')" placeholder="Filtrar placa, GRE, fornecedor, situação...">
+    <div class="tw"><table id="t_tracker"><thead><tr><th>Placa</th><th>Tipo Frota</th><th>GRE</th><th>Fornecedor</th><th>Situação</th><th>Online</th><th>Última Atualização</th><th>Horas s/ Atualização</th></tr></thead><tbody>{tracker_rows_html}</tbody></table></div>
+  </div>
+  <div class="info"><b>Nota:</b> esta aba trabalha com o estado atual do rastreador. Histórico minuto a minuto exigirá uma tabela histórica de telemetria/posições.</div>
+</div>
+
 <script>
 function tab(id,btn){{
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
@@ -4036,9 +4339,10 @@ function exRenderCharts(rows){{
 // ─── GRÁFICOS DA VISÃO ESTRATÉGICA ─────────────────────────────────────────
 const stratMonths = {jd(meses_ev)};
 const stratLabels = stratMonths.map(m=>{{const a=String(m).split('-'); const names=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; return names[Number(a[1])-1]+'/'+a[0].slice(2)}});
-const stratOpTotal = {jd(ev_tot)};
-const stratOpConc = {jd(ev_conc)};
-const stratOpNao = {jd(ev_nao)};
+const stratRRPlan = {jd(ev_tot)};
+const stratRRExec = {jd(ev_ini)};
+const stratRRConc = {jd(ev_conc)};
+const stratRRNao = {jd(ev_nao)};
 const stratPay = {jd(strat_pag_vals)};
 const stratFleetLabels = ['Terceirizada','Própria','Locada','Parceira'];
 const stratFleetData = [{_strat_frota['terceirizada']},{_strat_frota['propria']},{_strat_frota['locada']},{_strat_frota['parceiro']}];
@@ -4046,28 +4350,46 @@ const stratGre = {jd(_strat_gre_top_dep)};
 const stratDepLabels = stratGre.map(x=>x.gre);
 const stratDepData = stratGre.map(x=>x.pct_terc);
 const stratActions = {jd(_strat_gre_actions)};
-const stratDailyLabels = {jd(strat_daily_labels)};
-const stratDailyVals = {jd(strat_daily_vals)};
+const stratDailyLabelsPay = {jd(strat_daily_labels)};
+const stratDailyValsPay = {jd(strat_daily_vals)};
 const stratSupplier = {jd(strat_supplier)};
+const stratDayLabels = {jd(strat_day_labels)};
+const stratDayPlan = {jd(strat_day_plan)};
+const stratDayExec = {jd(strat_day_ini)};
+const stratDayConc = {jd(strat_day_conc)};
+const stratDayExtras = {jd(strat_day_extras)};
+const stratFiscal = {jd(strat_fiscal_top)};
+const stratGrePerf = {jd(strat_gre_top[:5])};
+const stratExtraLabels = {jd(strat_extra_labels)};
+const stratExtraVals = {jd(strat_extra_vals)};
 
 if(document.getElementById('c_strat_oper')) C.line('c_strat_oper',stratLabels,[
-  {{label:'Analisadas',data:stratOpTotal,tension:.25}},
-  {{label:'Concluídas',data:stratOpConc,tension:.25}},
-  {{label:'Não Executadas',data:stratOpNao,tension:.25}}
+  {{label:'RR Planejadas',data:stratRRPlan,tension:.25}},
+  {{label:'RR Executadas',data:stratRRExec,tension:.25}},
+  {{label:'RR Concluídas',data:stratRRConc,tension:.25}},
+  {{label:'RR Não Executadas',data:stratRRNao,tension:.25}}
 ]);
-if(document.getElementById('c_strat_pay')) C.bar('c_strat_pay',stratLabels,[
-  {{label:'Já computado a pagar (R$)',data:stratPay,backgroundColor:'rgba(56,189,248,.25)',borderColor:'#38bdf8',borderWidth:1}}
+if(document.getElementById('c_strat_daily_exec')) C.line('c_strat_daily_exec',stratDayLabels,[
+  {{label:'RR Planejadas',data:stratDayPlan,tension:.18}},
+  {{label:'RR Executadas',data:stratDayExec,tension:.18}},
+  {{label:'RR Concluídas',data:stratDayConc,tension:.18}},
+  {{label:'Extras',data:stratDayExtras,tension:.18}}
 ]);
+if(document.getElementById('c_strat_fiscal') && stratFiscal.length) C.bar('c_strat_fiscal',stratFiscal.map(x=>String(x.fiscal).slice(0,24)),[{{label:'Conclusão RR %',data:stratFiscal.map(x=>x.pct_conc)}}]);
+if(document.getElementById('c_strat_gre_perf') && stratGrePerf.length) C.bar('c_strat_gre_perf',stratGrePerf.map(x=>x.gre),[{{label:'Conclusão RR %',data:stratGrePerf.map(x=>x.pct_conc)}}]);
+if(document.getElementById('c_strat_mix')) C.pie('c_strat_mix',stratExtraLabels.concat(['RR']),stratExtraVals.concat([stratRRExec[stratRRExec.length-1]||0]),['#f97316','#f59e0b','#a78bfa','#38bdf8','#22c55e']);
+if(document.getElementById('c_strat_pay')) C.bar('c_strat_pay',stratLabels,[{{label:'Já computado a pagar (R$)',data:stratPay}}]);
 if(document.getElementById('c_strat_frota')) C.pie('c_strat_frota',stratFleetLabels,stratFleetData,['#f59e0b','#22c55e','#38bdf8','#a78bfa']);
-if(document.getElementById('c_strat_dep')) C.bar('c_strat_dep',stratDepLabels,[
-  {{label:'% Terceirizada da frota ativa',data:stratDepData,backgroundColor:'rgba(245,158,11,.35)',borderColor:'#f59e0b',borderWidth:1}}
-]);
-if(document.getElementById('c_strat_daily')) C.line('c_strat_daily',stratDailyLabels,[
-  {{label:'Valor computado por dia (R$)',data:stratDailyVals,tension:.25}}
-]);
-if(document.getElementById('c_strat_supplier')) C.bar('c_strat_supplier',stratSupplier.map(x=>x.fornecedor),[
-  {{label:'R$/dia',data:stratSupplier.map(x=>x.valor),backgroundColor:'rgba(56,189,248,.35)',borderColor:'#38bdf8',borderWidth:1}}
-]);
+if(document.getElementById('c_strat_dep')) C.bar('c_strat_dep',stratDepLabels,[{{label:'% Terceirizada da frota ativa',data:stratDepData}}]);
+if(document.getElementById('c_strat_daily')) C.line('c_strat_daily',stratDailyLabelsPay,[{{label:'Valor computado por dia (R$)',data:stratDailyValsPay,tension:.25}}]);
+if(document.getElementById('c_strat_supplier')) C.bar('c_strat_supplier',stratSupplier.map(x=>x.fornecedor),[{{label:'R$/dia',data:stratSupplier.map(x=>x.valor)}}]);
+
+// ─── RASTREAMENTO ────────────────────────────────────────────────────────────
+const trackerHealthLabels=['Com rastreador','Sem rastreador','Online','Falha +24h','Sem sinal histórico'];
+const trackerHealthData=[{tracker_com},{tracker_sem},{tracker_online},{tracker_falha},{tracker_sem_sinal}];
+if(document.getElementById('c_tracker_health')) C.bar('c_tracker_health',trackerHealthLabels,[{{label:'Veículos',data:trackerHealthData}}]);
+const trackerTipoRows={jd(df_tracker_tipo.to_dict('records') if not df_tracker_tipo.empty else [])};
+if(document.getElementById('c_tracker_tipo') && trackerTipoRows.length) C.bar('c_tracker_tipo',trackerTipoRows.map(x=>String(x.tipo_frota).replace('FROTA_','')),[{{label:'Com rastreador',data:trackerTipoRows.map(x=>Number(x.com_rastreador||0))}},{{label:'Sem rastreador',data:trackerTipoRows.map(x=>Number(x.sem_rastreador||0))}}]);
 
 function renderStrategicActions(){{
   const el=document.getElementById('t_strat_actions');
