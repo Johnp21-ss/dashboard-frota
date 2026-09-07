@@ -119,6 +119,397 @@ LEFT JOIN airbyte.veiculos_veiculo v ON v.id = m.veiculo_id
 WHERE m.status = 'A'
 """, pd.DataFrame(columns=['gre','id','motorista','tem_veiculo','placa']))
 
+
+# ─── QUERIES RESTAURADAS PARA COMPATIBILIDADE DAS ABAS ─────────────────────────
+
+df_abast = safe_read("""
+SELECT m.nome, COALESCE(f.nome,'PRÓPRIO') as empresa, m.cidade, g.nome as gre,
+    COUNT(DISTINCT a.id) as abast, COALESCE(SUM(a.litros),0) as litros,
+    COALESCE(SUM(a.valor_total),0) as gasto, COUNT(DISTINCT e.id) as escalas,
+    CASE WHEN COUNT(DISTINCT e.id) > 0 THEN ROUND(COALESCE(SUM(a.valor_total),0)/COUNT(DISTINCT e.id),2) ELSE 0 END as rs_escala
+FROM airbyte.motoristas_motorista m
+LEFT JOIN airbyte.abastecimentos_abastecimento a ON a.motorista_id = m.id AND a.datetime_abastecimento >= '2026-01-01' AND a.litros <= 1000
+LEFT JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id AND e.data >= '2026-01-01' AND e.anulada = false
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+WHERE m.status='A' GROUP BY m.nome, f.nome, m.cidade, g.nome
+HAVING COALESCE(SUM(a.litros),0) BETWEEN 1 AND 50000 ORDER BY gasto DESC LIMIT 20
+""")
+
+df_bonificacao_cidade = safe_read("""
+SELECT m.cidade, COUNT(DISTINCT m.id) as motoristas, COUNT(e.id) as total_escalas,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct_rastreado,
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas,
+    ROUND(COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0),1) as pct_suspeitas,
+    ROUND((COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0))
+        - (COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0))*2,1) as score
+FROM airbyte.motoristas_motorista m JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+WHERE m.status = 'A' AND m.cidade IS NOT NULL AND e.data >= '2026-04-01'
+GROUP BY m.cidade HAVING COUNT(e.id) >= 100 ORDER BY score DESC LIMIT 30
+""")
+
+df_bonificacao_gre = safe_read("""
+SELECT g.nome as gre, func.nome as fiscal, COUNT(DISTINCT m.id) as motoristas, COUNT(e.id) as total_escalas,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct_rastreado,
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas,
+    ROUND(COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0),1) as pct_suspeitas,
+    ROUND((COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0))
+        - (COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0))*2,1) as score
+FROM airbyte.motoristas_motorista m JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+LEFT JOIN airbyte.motoristas_funcionario func ON func.id = g.fiscal_responsavel_id
+WHERE m.status = 'A' AND e.data >= '2026-04-01'
+  AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
+GROUP BY g.nome, func.nome ORDER BY score DESC
+""")
+
+df_bonificacao_mot = safe_read("""
+SELECT m.nome as motorista, COALESCE(f.nome,'PRÓPRIO') as empresa, m.cidade, g.nome as gre,
+    COUNT(e.id) as total_escalas, COUNT(e.id) FILTER (WHERE e.via_app = true) as rastreadas,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct_rastreado,
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas,
+    ROUND(COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0),1) as pct_suspeitas,
+    ROUND((COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0))
+        - (COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0))*2,1) as score
+FROM airbyte.motoristas_motorista m JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+WHERE m.status = 'A' AND e.data >= '2026-04-01' GROUP BY m.nome, f.nome, m.cidade, g.nome
+HAVING COUNT(e.id) >= 30 ORDER BY score DESC LIMIT 30
+""")
+
+df_cidade_hist = safe_read("""
+SELECT m.cidade, TO_CHAR(e.data,'YYYY-MM') as mes, COUNT(e.id) as total,
+    COUNT(e.id) FILTER (WHERE e.via_app = true) as rastreado,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct,
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas,
+    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as sem_rast
+FROM airbyte.motoristas_motorista m JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+WHERE m.status = 'A' AND m.cidade IS NOT NULL AND e.data >= '2026-04-01'
+GROUP BY m.cidade, TO_CHAR(e.data,'YYYY-MM') HAVING COUNT(e.id) >= 30 ORDER BY m.cidade, mes
+""")
+
+df_combust_empresa = safe_read("""
+WITH abast AS (
+    SELECT COALESCE(f.nome, 'PRÓPRIO') as empresa, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
+        COUNT(DISTINCT m.id) as motoristas, ROUND(SUM(COALESCE(a.litros,0))::numeric, 0) as total_litros,
+        ROUND(SUM(COALESCE(a.valor_total,0))::numeric, 2) as total_gasto
+    FROM airbyte.abastecimentos_abastecimento a JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
+    LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+    WHERE a.datetime_abastecimento >= '2026-01-01' AND (a.litros IS NULL OR a.litros <= 500) AND (a.valor_total IS NULL OR a.valor_total >= 0)
+    GROUP BY f.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+),
+esc AS (
+    SELECT COALESCE(f.nome, 'PRÓPRIO') as empresa, TO_CHAR(e.data, 'YYYY-MM') as mes, COUNT(e.id) as escalas_mes
+    FROM airbyte.rotas_escalarota e JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id AND m.status = 'A'
+    LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+    WHERE e.data >= '2026-01-01' AND e.anulada = false GROUP BY f.nome, TO_CHAR(e.data, 'YYYY-MM')
+)
+SELECT a.empresa, a.mes, a.motoristas, a.total_litros, a.total_gasto, COALESCE(esc.escalas_mes, 0) as escalas_mes,
+    ROUND(a.total_gasto / NULLIF(esc.escalas_mes, 0), 2) as rs_por_escala
+FROM abast a LEFT JOIN esc ON esc.empresa = a.empresa AND esc.mes = a.mes ORDER BY a.empresa, a.mes
+""")
+
+df_combust_gre = safe_read("""
+WITH abast AS (
+    SELECT COALESCE(a.gre_id, m.gre_id) as gre_id, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
+        COUNT(DISTINCT m.id) as motoristas, COUNT(DISTINCT a.id) as abastecimentos,
+        ROUND(SUM(COALESCE(a.litros,0))::numeric, 0) as total_litros,
+        ROUND(SUM(COALESCE(a.valor_total,0))::numeric, 2) as total_gasto,
+        COUNT(DISTINCT a.id) FILTER (WHERE a.id_profrotas IS NOT NULL) as convenio_profrotas
+    FROM airbyte.abastecimentos_abastecimento a JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
+    WHERE a.datetime_abastecimento >= '2026-01-01' AND (a.litros IS NULL OR a.litros <= 500) AND (a.valor_total IS NULL OR a.valor_total >= 0)
+    GROUP BY COALESCE(a.gre_id, m.gre_id), TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+),
+esc AS (
+    SELECT m.gre_id, TO_CHAR(e.data, 'YYYY-MM') as mes, COUNT(e.id) as escalas_mes
+    FROM airbyte.rotas_escalarota e JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id AND m.status = 'A'
+    WHERE e.data >= '2026-01-01' AND e.anulada = false GROUP BY m.gre_id, TO_CHAR(e.data, 'YYYY-MM')
+)
+SELECT g.nome as gre, func.nome as fiscal, a.mes, a.motoristas, a.abastecimentos, a.total_litros, a.total_gasto, a.convenio_profrotas,
+    COALESCE(esc.escalas_mes, 0) as escalas_mes, ROUND(a.total_gasto / NULLIF(esc.escalas_mes, 0), 2) as rs_por_escala
+FROM abast a JOIN airbyte.escolas_gre g ON g.id = a.gre_id
+LEFT JOIN airbyte.motoristas_funcionario func ON func.id = g.fiscal_responsavel_id
+LEFT JOIN esc ON esc.gre_id = a.gre_id AND esc.mes = a.mes ORDER BY g.nome, a.mes
+""")
+
+df_combust_mot = safe_read("""
+WITH top_ids AS (
+    SELECT m.id FROM airbyte.abastecimentos_abastecimento a JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
+    WHERE a.datetime_abastecimento >= '2026-01-01' AND (a.litros IS NULL OR a.litros <= 500) AND (a.valor_total IS NULL OR a.valor_total >= 0)
+    GROUP BY m.id ORDER BY SUM(a.valor_total) DESC LIMIT 40
+),
+abast AS (
+    SELECT m.id as mot_id, m.nome as motorista, COALESCE(f.nome,'PRÓPRIO') as empresa, m.cidade, g.nome as gre,
+        TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes,
+        ROUND(SUM(a.litros)::numeric, 1) as litros, ROUND(SUM(a.valor_total)::numeric, 2) as gasto
+    FROM airbyte.abastecimentos_abastecimento a JOIN airbyte.motoristas_motorista m ON m.id = a.motorista_id
+    JOIN top_ids t ON t.id = m.id LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+    LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+    WHERE a.datetime_abastecimento >= '2026-01-01' AND (a.litros IS NULL OR a.litros <= 500) AND (a.valor_total IS NULL OR a.valor_total >= 0)
+    GROUP BY m.id, m.nome, f.nome, m.cidade, g.nome, TO_CHAR(a.datetime_abastecimento, 'YYYY-MM')
+),
+esc AS (
+    SELECT e.motorista_id as mot_id, TO_CHAR(e.data, 'YYYY-MM') as mes, COUNT(*) as escalas_mes
+    FROM airbyte.rotas_escalarota e JOIN top_ids t ON t.id = e.motorista_id
+    WHERE e.data >= '2026-01-01' AND e.anulada = false GROUP BY e.motorista_id, TO_CHAR(e.data, 'YYYY-MM')
+)
+SELECT a.motorista, a.empresa, a.cidade, a.gre, a.mes, a.litros, a.gasto,
+    COALESCE(esc.escalas_mes, 0) as escalas_mes, ROUND(a.gasto / NULLIF(esc.escalas_mes, 0), 2) as rs_por_escala
+FROM abast a LEFT JOIN esc ON esc.mot_id = a.mot_id AND esc.mes = a.mes ORDER BY a.motorista, a.mes
+""")
+
+df_combust_total = safe_read("""
+SELECT TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') as mes, COUNT(*) as lancamentos,
+    ROUND(SUM(COALESCE(a.litros,0))::numeric, 0) as litros,
+    ROUND(SUM(COALESCE(a.valor_total,0))::numeric, 2) as valor_total,
+    COUNT(*) FILTER (WHERE a.id_profrotas IS NOT NULL) as convenio
+FROM airbyte.abastecimentos_abastecimento a
+WHERE a.datetime_abastecimento >= '2026-01-01' AND a.litros > 0 AND a.litros <= 500 AND a.valor_total > 0
+GROUP BY TO_CHAR(a.datetime_abastecimento, 'YYYY-MM') ORDER BY mes
+""")
+
+df_contratos = safe_read("""
+SELECT DISTINCT ON (ci.id) ci.id as item, c.id as contrato_id, g.nome as gre, ci.valor_unitario,
+    v.placa, v.status as sv, COALESCE(ct.nome,'Não definido') as turno,
+    (SELECT COUNT(*) FROM airbyte.rotas_escalarota e2 WHERE e2.veiculo_execucao_id = v.id AND e2.data >= CURRENT_DATE - INTERVAL '30 days' AND e2.anulada = false) as esc30d
+FROM airbyte.contratos_itemcontrato ci JOIN airbyte.contratos_contrato c ON ci.contrato_id = c.id
+LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+LEFT JOIN airbyte.motoristas_motorista m ON m.veiculo_id = v.id AND m.status = 'A'
+LEFT JOIN airbyte.contratos_itemcontrato_turnos cit ON cit.itemcontrato_id = ci.id
+LEFT JOIN airbyte.contratos_turno ct ON ct.id = cit.turno_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
+WHERE c.status = 'A' AND ci.status = 'ATIVO' AND m.id IS NULL
+ORDER BY ci.id, ci.valor_unitario DESC LIMIT 60
+""")
+
+df_contratos_noite_sabado = safe_read("""
+SELECT g.nome as gre, ci.id as item_contrato, v.placa, COALESCE(f.nome,'SEM FORN') as fornecedor,
+    ci.valor_unitario, ct.nome as turno,
+    STRING_AGG(DISTINCT ct2.nome, ' + ' ORDER BY ct2.nome) as todos_turnos,
+    COUNT(e.id) as escalas_sabado_noite, COUNT(e.id) FILTER (WHERE e.anulada = false) as executadas,
+    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as manuais_sem_gps,
+    COUNT(e.id) FILTER (WHERE e.anulada = false) * ci.valor_unitario as valor_pago_estimado
+FROM airbyte.contratos_itemcontrato ci JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+JOIN airbyte.contratos_itemcontrato_turnos cit ON cit.itemcontrato_id = ci.id
+JOIN airbyte.contratos_turno ct ON ct.id = cit.turno_id
+JOIN airbyte.contratos_itemcontrato_turnos cit2 ON cit2.itemcontrato_id = ci.id
+JOIN airbyte.contratos_turno ct2 ON ct2.id = cit2.turno_id
+LEFT JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
+LEFT JOIN airbyte.rotas_escalarota e ON e.contrato_rota_id = ci.id AND EXTRACT(DOW FROM e.data) = 6 AND e.data >= '2026-01-01'
+WHERE c.status = 'A' AND ci.status = 'ATIVO' AND ct.nome ILIKE '%noite%'
+GROUP BY g.nome, ci.id, v.placa, f.nome, ci.valor_unitario, ct.nome
+ORDER BY executadas DESC, ci.valor_unitario DESC LIMIT 25
+""")
+
+df_fiscal = safe_read("""
+SELECT g.nome as gre, func.nome as fiscal, COUNT(e.id) as total,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app=true AND e.data BETWEEN '2026-04-01' AND '2026-06-30')
+        *100.0/NULLIF(COUNT(e.id) FILTER (WHERE e.data BETWEEN '2026-04-01' AND '2026-06-30'),0),1) as pct_q2,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app=true AND e.data >= '2026-07-01')
+        *100.0/NULLIF(COUNT(e.id) FILTER (WHERE e.data >= '2026-07-01'),0),1) as pct_q3,
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10 AND e.data >= '2026-04-01') as suspeitas,
+    COUNT(e.id) FILTER (WHERE e.via_app=false AND e.confirmado_manualmente=true AND e.data >= '2026-04-01') as sem_rast
+FROM airbyte.rotas_escalarota e JOIN airbyte.rotas_rota r ON r.id = e.rota_id
+JOIN airbyte.escolas_gre g ON g.id = r.gre_id
+LEFT JOIN airbyte.motoristas_funcionario func ON func.id = g.fiscal_responsavel_id
+WHERE e.data >= '2026-04-01' AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
+GROUP BY g.nome, func.nome ORDER BY pct_q3 ASC
+""")
+
+df_fraude_emp = safe_read("""
+SELECT COALESCE(f.nome,'SEM FORNECEDOR') as empresa, COUNT(DISTINCT m.id) as motoristas,
+    COUNT(e.id) as total,
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas,
+    ROUND(COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0),1) as pct_susp,
+    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as sem_rast
+FROM airbyte.motoristas_fornecedor f JOIN airbyte.motoristas_motorista m ON m.fornecedor_id = f.id
+JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+WHERE e.data >= '2026-01-01' AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL
+GROUP BY f.nome HAVING COUNT(e.id) >= 20 ORDER BY pct_susp DESC LIMIT 15
+""")
+
+df_fraude_mensal = safe_read("""
+SELECT TO_CHAR(data,'YYYY-MM') as mes,
+    COUNT(*) FILTER (WHERE inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL) as com_horario,
+    COUNT(*) FILTER (WHERE inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (fim_execucao::timestamp - inicio_execucao::timestamp))/60 < 10) as suspeitas,
+    COUNT(*) FILTER (WHERE via_app = false AND confirmado_manualmente = true) as sem_rast
+FROM airbyte.rotas_escalarota WHERE data >= '2026-01-01'
+GROUP BY TO_CHAR(data,'YYYY-MM') ORDER BY mes
+""")
+
+df_fraude_mot = safe_read("""
+SELECT m.nome as motorista, COALESCE(f.nome,'PRÓPRIO') as empresa, m.cidade, g.nome as gre,
+    COUNT(e.id) as total,
+    COUNT(e.id) FILTER (WHERE EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas,
+    ROUND(COUNT(e.id) FILTER (WHERE EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10)*100.0/NULLIF(COUNT(e.id),0),1) as pct_susp,
+    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as sem_rast
+FROM airbyte.motoristas_motorista m JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+WHERE m.status = 'A' AND e.data >= '2026-01-01' AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL
+GROUP BY m.nome, f.nome, m.cidade, g.nome HAVING COUNT(e.id) >= 10 ORDER BY pct_susp DESC LIMIT 20
+""")
+
+df_frota = safe_read("""
+SELECT COALESCE(f.nome,'SEM FORNECEDOR') as fornecedor, COUNT(DISTINCT v.id) as total,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.status='A') as ativos,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.status='I') as inativos,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.multas=true) as multas,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.licenciamento::int < 2026) as lic_venc,
+    COUNT(DISTINCT v.id) FILTER (WHERE v.licenciamento::int >= 2026) as lic_ok
+FROM airbyte.motoristas_fornecedor f JOIN airbyte.veiculos_veiculo v ON v.fornecedor_id = f.id
+WHERE v.licenciamento IS NOT NULL GROUP BY f.nome HAVING COUNT(DISTINCT v.id) >= 2
+ORDER BY lic_venc DESC LIMIT 15
+""")
+
+df_frota_nunca = safe_read("""
+SELECT DISTINCT ON (v.id) v.placa, v.modelo, v.tipo_contrato_locacao,
+    COALESCE(f.nome,'SEM FORNECEDOR') as fornecedor, g.nome as gre, ci.valor_unitario, c.data_inicio, c.data_fim
+FROM airbyte.veiculos_veiculo v JOIN airbyte.contratos_itemcontrato ci ON ci.veiculo_id = v.id
+JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = v.gre_id
+WHERE v.status = 'A' AND c.status = 'A' AND ci.status = 'ATIVO'
+  AND NOT EXISTS (SELECT 1 FROM airbyte.rotas_escalarota e WHERE e.veiculo_execucao_id = v.id)
+ORDER BY v.id, ci.valor_unitario DESC LIMIT 30
+""")
+
+df_frota_parada = safe_read("""
+SELECT situacao, COUNT(*) as veiculos,
+    COUNT(*) FILTER (WHERE tipo_contrato_locacao = 'FROTA_PROPRIA') as propria,
+    COUNT(*) FILTER (WHERE tipo_contrato_locacao = 'FROTA_TERCEIRIZADA') as terceirizada,
+    COUNT(*) FILTER (WHERE tipo_contrato_locacao = 'FROTA_PARCEIRO') as parceiro
+FROM (
+    SELECT v.id, v.tipo_contrato_locacao,
+        CASE WHEN MAX(e.data) IS NULL THEN 'Nunca registrou rota'
+            WHEN MAX(e.data)::date < CURRENT_DATE - INTERVAL '90 days' THEN 'Parado há +90 dias'
+            WHEN MAX(e.data)::date < CURRENT_DATE - INTERVAL '60 days' THEN 'Parado há 60-90 dias'
+            WHEN MAX(e.data)::date < CURRENT_DATE - INTERVAL '30 days' THEN 'Parado há 30-60 dias'
+            ELSE 'Ativo (últimos 30 dias)' END as situacao
+    FROM airbyte.veiculos_veiculo v LEFT JOIN airbyte.rotas_escalarota e ON e.veiculo_execucao_id = v.id
+    WHERE v.status = 'A' GROUP BY v.id, v.tipo_contrato_locacao
+) sub GROUP BY situacao ORDER BY veiculos DESC
+""")
+
+df_gc_resumo = safe_read("""
+SELECT
+    (SELECT COUNT(*) FROM airbyte.contratos_contrato WHERE status = 'A') AS contratos_ativos,
+    (SELECT COUNT(*)
+       FROM airbyte.contratos_itemcontrato ci
+       JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+      WHERE ci.status = 'ATIVO' AND c.status = 'A') AS contratos_rota_ativos,
+    (SELECT COUNT(DISTINCT ci.veiculo_id)
+       FROM airbyte.contratos_itemcontrato ci
+       JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+       JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+      WHERE ci.status = 'ATIVO' AND c.status = 'A'
+        AND v.status = 'A' AND v.tipo_contrato_locacao = 'FROTA_TERCEIRIZADA') AS veic_terceirizados_contrato,
+    (SELECT COUNT(DISTINCT ci.veiculo_id)
+       FROM airbyte.contratos_itemcontrato ci
+       JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+       JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+      WHERE ci.status = 'ATIVO' AND c.status = 'A'
+        AND v.status = 'A' AND v.tipo_contrato_locacao = 'FROTA_PROPRIA') AS veic_proprios_com_contrato,
+    (SELECT COUNT(DISTINCT ci.veiculo_id)
+       FROM airbyte.contratos_itemcontrato ci
+       JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+       JOIN airbyte.veiculos_veiculo v ON v.id = ci.veiculo_id
+      WHERE ci.status = 'ATIVO' AND c.status = 'A'
+        AND v.status = 'A' AND v.tipo_contrato_locacao = 'FROTA_LOCADA') AS veic_locados_com_contrato
+""", pd.DataFrame([{
+    'contratos_ativos':0,'contratos_rota_ativos':0,'veic_terceirizados_contrato':0,
+    'veic_proprios_com_contrato':0,'veic_locados_com_contrato':0
+}]))
+
+# 2) FROTA GERAL — ATIVA, OPERAÇÃO REAL, OCIOSA COM CONTRATO, DISPONÍVEL E INATIVA COM CONTRATO
+# Operação considera somente escala não anulada com início de execução registrado.
+
+df_gre_hist = safe_read("""
+SELECT g.nome as gre, TO_CHAR(e.data,'YYYY-MM') as mes, COUNT(e.id) as total,
+    COUNT(e.id) FILTER (WHERE e.via_app = true) as rastreado,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app = true)*100.0/NULLIF(COUNT(e.id),0),1) as pct,
+    COUNT(e.id) FILTER (WHERE e.via_app = false AND e.confirmado_manualmente = true) as sem_rast,
+    COUNT(e.id) FILTER (WHERE anulada = true) as anuladas,
+    COUNT(e.id) FILTER (WHERE inicio_execucao IS NOT NULL AND fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas
+FROM airbyte.rotas_escalarota e JOIN airbyte.rotas_rota r ON r.id = e.rota_id
+JOIN airbyte.escolas_gre g ON g.id = r.gre_id
+WHERE e.data >= '2026-04-01' AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
+GROUP BY g.nome, TO_CHAR(e.data,'YYYY-MM') ORDER BY g.nome, mes
+""")
+
+df_manut_forn = safe_read("""
+SELECT COALESCE(f.nome,'SEM FORNECEDOR') as fornecedor, COUNT(DISTINCT c.id) as chamados,
+    COUNT(DISTINCT c.id) FILTER (WHERE c.status='CA') as abertos,
+    COUNT(DISTINCT c.id) FILTER (WHERE c.status='CO') as oficina,
+    COUNT(DISTINCT c.veiculo_id) as veiculos,
+    ROUND(AVG(CASE WHEN c.entrega IS NOT NULL AND c.emissao IS NOT NULL
+        THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END)::numeric,1) as media_dias
+FROM airbyte.ordens_chamado c JOIN airbyte.veiculos_veiculo v ON v.id = c.veiculo_id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
+WHERE c.emissao >= '2026-01-01' GROUP BY f.nome ORDER BY abertos DESC, chamados DESC LIMIT 12
+""")
+
+df_mot_chamados = safe_read("""
+SELECT m.nome, COALESCE(f.nome,'PRÓPRIO') as empresa, g.nome as gre, COUNT(c.id) as chamados,
+    COUNT(c.id) FILTER (WHERE c.falha_humana=true) as falha_hum, COUNT(c.id) FILTER (WHERE c.status='CA') as abertos
+FROM airbyte.ordens_chamado c JOIN airbyte.motoristas_motorista m ON m.id = c.motorista_id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+WHERE c.emissao >= '2026-01-01' GROUP BY m.nome, f.nome, g.nome HAVING COUNT(c.id) >= 3
+ORDER BY chamados DESC LIMIT 15
+""")
+
+df_mot_rank = safe_read("""
+SELECT m.nome, COALESCE(f.nome,'PRÓPRIO') as empresa, m.cidade, g.nome as gre, COUNT(e.id) as total,
+    ROUND(COUNT(e.id) FILTER (WHERE e.via_app=true)*100.0/NULLIF(COUNT(e.id),0),1) as pct_rast,
+    COUNT(e.id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL AND
+        EXTRACT(EPOCH FROM (e.fim_execucao::timestamp - e.inicio_execucao::timestamp))/60 < 10) as suspeitas,
+    COUNT(e.id) FILTER (WHERE e.via_app=false AND e.confirmado_manualmente=true) as sem_rast
+FROM airbyte.motoristas_motorista m JOIN airbyte.rotas_escalarota e ON e.motorista_id = m.id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = m.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
+WHERE m.status='A' AND e.data >= '2026-04-01' GROUP BY m.nome, f.nome, m.cidade, g.nome
+HAVING COUNT(e.id) >= 20 ORDER BY pct_rast ASC LIMIT 30
+""")
+
+df_veic_prob = safe_read("""
+SELECT v.placa, v.modelo, v.ano, COALESCE(f.nome,'SEM FORN') as fornecedor, g.nome as gre,
+    COUNT(DISTINCT c.id) as chamados, COUNT(DISTINCT c.id) FILTER (WHERE c.status='CA') as abertos,
+    COUNT(DISTINCT c.id) FILTER (WHERE c.falha_humana=true) as falha_hum,
+    ROUND(AVG(CASE WHEN c.entrega IS NOT NULL AND c.emissao IS NOT NULL
+        THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END)::numeric,1) as media_dias,
+    ROUND(SUM(CASE WHEN c.entrega IS NOT NULL AND c.emissao IS NOT NULL
+        THEN EXTRACT(EPOCH FROM (c.entrega - c.emissao))/86400 END)::numeric,0) as total_dias,
+    COALESCE(SUM(p.valor * p.quantidade), 0) as custo_pecas,
+    COALESCE(SUM(s.valor * s.quantidade), 0) as custo_servicos,
+    COALESCE(SUM(p.valor * p.quantidade), 0) + COALESCE(SUM(s.valor * s.quantidade), 0) as custo_total
+FROM airbyte.veiculos_veiculo v JOIN airbyte.ordens_chamado c ON c.veiculo_id = v.id
+LEFT JOIN airbyte.ordens_ordemservico os ON os.chamado_id = c.id
+LEFT JOIN airbyte.ordens_peca p ON p.os_id = os.id
+LEFT JOIN airbyte.ordens_servico s ON s.os_id = os.id
+LEFT JOIN airbyte.motoristas_fornecedor f ON f.id = v.fornecedor_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = v.gre_id
+WHERE c.emissao >= '2026-01-01' GROUP BY v.placa, v.modelo, v.ano, f.nome, g.nome
+HAVING COUNT(DISTINCT c.id) >= 5 ORDER BY custo_total DESC NULLS LAST, chamados DESC LIMIT 15
+""")
 # 2) FROTA GERAL — ATIVA, OPERAÇÃO REAL, OCIOSA COM CONTRATO, DISPONÍVEL E INATIVA COM CONTRATO
 # Operação considera somente escala não anulada com início de execução registrado.
 df_gc_frota_geral = safe_read("""
