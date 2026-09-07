@@ -506,7 +506,8 @@ SELECT
     'veic_proprios_com_contrato':0,'veic_locados_com_contrato':0
 }]))
 
-# 2) FROTA GERAL — ATIVA, OPERAÇÃO, OCIOSA COM CONTRATO, DISPONÍVEL E INATIVA COM CONTRATO
+# 2) FROTA GERAL — ATIVA, OPERAÇÃO REAL, OCIOSA COM CONTRATO, DISPONÍVEL E INATIVA COM CONTRATO
+# Operação considera somente escala não anulada com início de execução registrado.
 df_gc_frota_geral = safe_read("""
 SELECT
     COUNT(DISTINCT v.id) AS frota_total,
@@ -516,9 +517,10 @@ SELECT
         WHERE v.status = 'A'
           AND EXISTS (
               SELECT 1 FROM airbyte.rotas_escalarota e
-               WHERE e.veiculo_execucao_id = v.id
-                 AND e.data >= CURRENT_DATE - INTERVAL '30 days'
-                 AND e.anulada = false
+              WHERE e.veiculo_execucao_id = v.id
+                AND e.data >= CURRENT_DATE - INTERVAL '30 days'
+                AND e.anulada = false
+                AND e.inicio_execucao IS NOT NULL
           )
     ) AS em_operacao,
 
@@ -526,17 +528,18 @@ SELECT
         WHERE v.status = 'A'
           AND EXISTS (
               SELECT 1
-                FROM airbyte.contratos_itemcontrato ci2
-                JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
-               WHERE ci2.veiculo_id = v.id
-                 AND ci2.status = 'ATIVO'
-                 AND c2.status = 'A'
+              FROM airbyte.contratos_itemcontrato ci2
+              JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
+              WHERE ci2.veiculo_id = v.id
+                AND ci2.status = 'ATIVO'
+                AND c2.status = 'A'
           )
           AND NOT EXISTS (
               SELECT 1 FROM airbyte.rotas_escalarota e
-               WHERE e.veiculo_execucao_id = v.id
-                 AND e.data >= CURRENT_DATE - INTERVAL '30 days'
-                 AND e.anulada = false
+              WHERE e.veiculo_execucao_id = v.id
+                AND e.data >= CURRENT_DATE - INTERVAL '30 days'
+                AND e.anulada = false
+                AND e.inicio_execucao IS NOT NULL
           )
     ) AS ociosa_com_contrato,
 
@@ -545,11 +548,11 @@ SELECT
           AND v.tipo_contrato_locacao IN ('FROTA_TERCEIRIZADA','FROTA_LOCADA')
           AND NOT EXISTS (
               SELECT 1
-                FROM airbyte.contratos_itemcontrato ci2
-                JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
-               WHERE ci2.veiculo_id = v.id
-                 AND ci2.status = 'ATIVO'
-                 AND c2.status = 'A'
+              FROM airbyte.contratos_itemcontrato ci2
+              JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
+              WHERE ci2.veiculo_id = v.id
+                AND ci2.status = 'ATIVO'
+                AND c2.status = 'A'
           )
     ) AS disponivel_sem_contrato,
 
@@ -557,11 +560,11 @@ SELECT
         WHERE v.status <> 'A'
           AND EXISTS (
               SELECT 1
-                FROM airbyte.contratos_itemcontrato ci2
-                JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
-               WHERE ci2.veiculo_id = v.id
-                 AND ci2.status = 'ATIVO'
-                 AND c2.status = 'A'
+              FROM airbyte.contratos_itemcontrato ci2
+              JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
+              WHERE ci2.veiculo_id = v.id
+                AND ci2.status = 'ATIVO'
+                AND c2.status = 'A'
           )
     ) AS inativos_com_contrato,
 
@@ -620,6 +623,7 @@ SELECT
              WHERE e.veiculo_execucao_id = v.id
                AND e.data >= CURRENT_DATE - INTERVAL '30 days'
                AND e.anulada = false
+      AND e.inicio_execucao IS NOT NULL
         )
     ) AS em_operacao,
 
@@ -635,6 +639,7 @@ SELECT
               WHERE e.veiculo_execucao_id = v.id
                 AND e.data >= CURRENT_DATE - INTERVAL '30 days'
                 AND e.anulada = false
+      AND e.inicio_execucao IS NOT NULL
           )
     ) AS ociosos_com_contrato,
 
@@ -678,6 +683,7 @@ WITH frota_gre AS (
                 WHERE e.veiculo_execucao_id = v.id
                   AND e.data >= CURRENT_DATE - INTERVAL '30 days'
                   AND e.anulada = false
+      AND e.inicio_execucao IS NOT NULL
             )
         ) AS frota_operando
     FROM airbyte.veiculos_veiculo v
@@ -695,6 +701,7 @@ demanda_gre AS (
     JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id
     WHERE e.data >= CURRENT_DATE - INTERVAL '30 days'
       AND e.anulada = false
+      AND e.inicio_execucao IS NOT NULL
     GROUP BY m.gre_id
 )
 SELECT g.nome AS gre,
@@ -747,6 +754,7 @@ escalas AS (
     JOIN airbyte.veiculos_veiculo v ON v.id = e.veiculo_execucao_id
     WHERE e.data >= CURRENT_DATE - INTERVAL '90 days'
       AND e.anulada = false
+      AND e.inicio_execucao IS NOT NULL
       AND v.tipo_contrato_locacao IN ('FROTA_PROPRIA','FROTA_TERCEIRIZADA','FROTA_PARCEIRO','FROTA_LOCADA')
     GROUP BY TO_CHAR(e.data,'YYYY-MM'), v.tipo_contrato_locacao
 ),
@@ -944,6 +952,7 @@ WITH base AS (
     SELECT v.id AS veiculo_id, MAX(e.data)::date AS ultima_rota
     FROM airbyte.veiculos_veiculo v
     LEFT JOIN airbyte.rotas_escalarota e ON e.veiculo_execucao_id = v.id AND e.anulada = false
+      AND e.inicio_execucao IS NOT NULL
     GROUP BY v.id
 )
 SELECT
@@ -983,6 +992,7 @@ JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id
 JOIN airbyte.escolas_gre g ON g.id = m.gre_id
 WHERE e.data >= CURRENT_DATE - INTERVAL '30 days'
   AND e.anulada = false
+      AND e.inicio_execucao IS NOT NULL
   AND g.nome NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
 GROUP BY g.nome
 ORDER BY total_escalas DESC
@@ -990,12 +1000,12 @@ ORDER BY total_escalas DESC
 
 
 # 14) CALENDÁRIO FINANCEIRO — EXECUÇÃO REAL DAS DIÁRIAS E MENSALIDADES
-# Regra de negócio validada:
-#   DIÁRIA  = 1 pagamento por Contrato Rota + dia, desde que exista pelo menos
-#             uma execução não anulada naquele dia.
-#   MENSAL  = 1 pagamento por Contrato Rota + mês, desde que exista pelo menos
-#             uma execução não anulada no mês.
-# Portanto, várias escalas do mesmo Contrato Rota no mesmo dia NÃO multiplicam o valor.
+# Regra validada:
+#   DIÁRIA = 1 pagamento por DATA + CONTRATO ROTA, desde que exista
+#            pelo menos uma execução real (inicio_execucao preenchido) e não anulada.
+#   MENSAL = 1 pagamento por MÊS + CONTRATO ROTA, desde que exista
+#            pelo menos uma execução real no mês.
+# Portanto, várias viagens/rotas/escalas do mesmo Contrato Rota no mesmo período NÃO duplicam o valor.
 df_gc_pagamento_diario = safe_read("""
 WITH base AS (
     SELECT
@@ -1017,32 +1027,22 @@ WITH base AS (
     JOIN airbyte.contratos_contrato c
       ON c.id = ci.contrato_id
      AND c.status = 'A'
-    LEFT JOIN airbyte.veiculos_veiculo vx
-      ON vx.id = e.veiculo_execucao_id
-    LEFT JOIN airbyte.veiculos_veiculo vc
-      ON vc.id = ci.veiculo_id
-    LEFT JOIN airbyte.motoristas_motorista m
-      ON m.id = e.motorista_id
-    LEFT JOIN airbyte.motoristas_fornecedor fc
-      ON fc.id = c.fornecedor_id
-    LEFT JOIN airbyte.motoristas_fornecedor fv
-      ON fv.id = COALESCE(vx.fornecedor_id, vc.fornecedor_id)
-    LEFT JOIN airbyte.rotas_rota r
-      ON r.id = e.rota_id
-    LEFT JOIN airbyte.escolas_gre g
-      ON g.id = ci.gre_id
-    LEFT JOIN airbyte.escolas_gre gr
-      ON gr.id = r.gre_id
+    LEFT JOIN airbyte.veiculos_veiculo vx ON vx.id = e.veiculo_execucao_id
+    LEFT JOIN airbyte.veiculos_veiculo vc ON vc.id = ci.veiculo_id
+    LEFT JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id
+    LEFT JOIN airbyte.motoristas_fornecedor fc ON fc.id = c.fornecedor_id
+    LEFT JOIN airbyte.motoristas_fornecedor fv ON fv.id = COALESCE(vx.fornecedor_id, vc.fornecedor_id)
+    LEFT JOIN airbyte.rotas_rota r ON r.id = e.rota_id
+    LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
+    LEFT JOIN airbyte.escolas_gre gr ON gr.id = r.gre_id
     WHERE e.data >= DATE '2026-01-01'
       AND e.data <= CURRENT_DATE
       AND e.anulada = false
+      AND e.inicio_execucao IS NOT NULL
       AND e.contrato_rota_id IS NOT NULL
 ), unicas AS (
     SELECT DISTINCT ON (data, contrato_rota_id)
-        data,
-        contrato_rota_id,
-        contrato_id,
-        valor_unitario
+        data, contrato_rota_id, contrato_id, valor_unitario
     FROM base
     ORDER BY data, contrato_rota_id, escala_id
 )
@@ -1072,6 +1072,7 @@ WITH unicos AS (
     WHERE e.data >= DATE '2026-01-01'
       AND e.data <= CURRENT_DATE
       AND e.anulada = false
+      AND e.inicio_execucao IS NOT NULL
       AND e.contrato_rota_id IS NOT NULL
 )
 SELECT
@@ -1104,25 +1105,18 @@ WITH base AS (
     JOIN airbyte.contratos_contrato c
       ON c.id = ci.contrato_id
      AND c.status = 'A'
-    LEFT JOIN airbyte.veiculos_veiculo vx
-      ON vx.id = e.veiculo_execucao_id
-    LEFT JOIN airbyte.veiculos_veiculo vc
-      ON vc.id = ci.veiculo_id
-    LEFT JOIN airbyte.motoristas_motorista m
-      ON m.id = e.motorista_id
-    LEFT JOIN airbyte.motoristas_fornecedor fc
-      ON fc.id = c.fornecedor_id
-    LEFT JOIN airbyte.motoristas_fornecedor fv
-      ON fv.id = COALESCE(vx.fornecedor_id, vc.fornecedor_id)
-    LEFT JOIN airbyte.rotas_rota r
-      ON r.id = e.rota_id
-    LEFT JOIN airbyte.escolas_gre g
-      ON g.id = ci.gre_id
-    LEFT JOIN airbyte.escolas_gre gr
-      ON gr.id = r.gre_id
+    LEFT JOIN airbyte.veiculos_veiculo vx ON vx.id = e.veiculo_execucao_id
+    LEFT JOIN airbyte.veiculos_veiculo vc ON vc.id = ci.veiculo_id
+    LEFT JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id
+    LEFT JOIN airbyte.motoristas_fornecedor fc ON fc.id = c.fornecedor_id
+    LEFT JOIN airbyte.motoristas_fornecedor fv ON fv.id = COALESCE(vx.fornecedor_id, vc.fornecedor_id)
+    LEFT JOIN airbyte.rotas_rota r ON r.id = e.rota_id
+    LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
+    LEFT JOIN airbyte.escolas_gre gr ON gr.id = r.gre_id
     WHERE e.data >= DATE '2026-01-01'
       AND e.data <= CURRENT_DATE
       AND e.anulada = false
+      AND e.inicio_execucao IS NOT NULL
       AND e.contrato_rota_id IS NOT NULL
 )
 SELECT
@@ -1141,41 +1135,42 @@ GROUP BY data, contrato_rota_id, contrato_id
 ORDER BY data, valor_diaria DESC, contrato_rota_id
 """, pd.DataFrame())
 
-# 15) CONSOLIDADO OPERACIONAL DIÁRIO — BASE REAL DE EXECUÇÃO
-# Aqui NÃO existe valor financeiro. É o retrato da operação realizada no dia.
-# Uma execução é um registro em rotas_escalarota.
-# Um Contrato Rota pode aparecer em várias escalas/viagens no mesmo dia;
-# por isso, contratos_rota_executados usa COUNT(DISTINCT contrato_rota_id).
+# 15) CONSOLIDADO OPERACIONAL DIÁRIO — EXECUÇÃO REAL
+# Executada = não anulada + início de execução registrado.
+# Concluída = início e fim registrados.
+# Em andamento = início registrado e fim ainda vazio.
 df_gc_operacao_diaria = safe_read("""
 SELECT
     e.data::date AS data,
-    COUNT(*) AS execucoes,
-    COUNT(DISTINCT e.contrato_rota_id) FILTER (WHERE e.contrato_rota_id IS NOT NULL) AS contratos_rota_executados,
-    COUNT(DISTINCT e.rota_id) FILTER (WHERE e.rota_id IS NOT NULL) AS rotas_viagens,
-    COUNT(DISTINCT e.motorista_id) FILTER (WHERE e.motorista_id IS NOT NULL) AS motoristas,
-    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE e.veiculo_execucao_id IS NOT NULL) AS veiculos
+    COUNT(*) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL) AS execucoes,
+    COUNT(*) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) AS concluidas,
+    COUNT(*) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NULL) AS em_andamento,
+    COUNT(DISTINCT e.contrato_rota_id) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.contrato_rota_id IS NOT NULL) AS contratos_rota_executados,
+    COUNT(DISTINCT e.rota_id) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.rota_id IS NOT NULL) AS rotas_viagens,
+    COUNT(DISTINCT e.motorista_id) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.motorista_id IS NOT NULL) AS motoristas,
+    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.veiculo_execucao_id IS NOT NULL) AS veiculos
 FROM airbyte.rotas_escalarota e
 WHERE e.data >= DATE '2026-01-01'
   AND e.data <= CURRENT_DATE
-  AND e.anulada = false
 GROUP BY e.data::date
 ORDER BY e.data::date
 """, pd.DataFrame())
 
-# 16) CONSOLIDADO OPERACIONAL MENSAL — DISTINTOS NO MÊS
-# Não somamos contratos-rota dos dias, porque o mesmo contrato pode operar em vários dias.
+# 16) CONSOLIDADO OPERACIONAL MENSAL — EXECUÇÃO REAL
+# Os contratos-rota do mês são distintos no mês; não somamos os dias.
 df_gc_operacao_mensal = safe_read("""
 SELECT
     DATE_TRUNC('month', e.data)::date AS mes,
-    COUNT(*) AS execucoes,
-    COUNT(DISTINCT e.contrato_rota_id) FILTER (WHERE e.contrato_rota_id IS NOT NULL) AS contratos_rota_executados,
-    COUNT(DISTINCT e.rota_id) FILTER (WHERE e.rota_id IS NOT NULL) AS rotas_viagens,
-    COUNT(DISTINCT e.motorista_id) FILTER (WHERE e.motorista_id IS NOT NULL) AS motoristas,
-    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE e.veiculo_execucao_id IS NOT NULL) AS veiculos
+    COUNT(*) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL) AS execucoes,
+    COUNT(*) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) AS concluidas,
+    COUNT(*) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NULL) AS em_andamento,
+    COUNT(DISTINCT e.contrato_rota_id) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.contrato_rota_id IS NOT NULL) AS contratos_rota_executados,
+    COUNT(DISTINCT e.rota_id) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.rota_id IS NOT NULL) AS rotas_viagens,
+    COUNT(DISTINCT e.motorista_id) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.motorista_id IS NOT NULL) AS motoristas,
+    COUNT(DISTINCT e.veiculo_execucao_id) FILTER (WHERE e.anulada = false AND e.inicio_execucao IS NOT NULL AND e.veiculo_execucao_id IS NOT NULL) AS veiculos
 FROM airbyte.rotas_escalarota e
 WHERE e.data >= DATE '2026-01-01'
   AND e.data <= CURRENT_DATE
-  AND e.anulada = false
 GROUP BY DATE_TRUNC('month', e.data)::date
 ORDER BY mes
 """, pd.DataFrame())
@@ -1807,6 +1802,8 @@ if not df_gc_operacao_diaria.empty:
             'rotas': _gc_int(r.get('rotas_viagens')),
             'motoristas': _gc_int(r.get('motoristas')),
             'veiculos': _gc_int(r.get('veiculos')),
+            'concluidas': _gc_int(r.get('concluidas')),
+            'em_andamento': _gc_int(r.get('em_andamento')),
         }
 
 gc_oper_mes = {}
@@ -1819,6 +1816,8 @@ if not df_gc_operacao_mensal.empty:
             'rotas': _gc_int(r.get('rotas_viagens')),
             'motoristas': _gc_int(r.get('motoristas')),
             'veiculos': _gc_int(r.get('veiculos')),
+            'concluidas': _gc_int(r.get('concluidas')),
+            'em_andamento': _gc_int(r.get('em_andamento')),
         }
 
 # Monta o calendário mensal/dia a partir dos dados reais consultados no banco.
@@ -1873,7 +1872,7 @@ for ano in range(2026, _gc_hoje.year + 1):
         for d in range(1, limite_dia + 1):
             data_iso = f"{ano:04d}-{mes_num:02d}-{d:02d}"
             info = gc_pag_dia.get(data_iso, {'contratos':0,'valor':0.0})
-            oper = gc_oper_dia.get(data_iso, {'execucoes':0,'contratos':0,'rotas':0,'motoristas':0,'veiculos':0})
+            oper = gc_oper_dia.get(data_iso, {'execucoes':0,'contratos':0,'rotas':0,'motoristas':0,'veiculos':0,'concluidas':0,'em_andamento':0})
             tem = oper['execucoes'] > 0
             if tem:
                 dias_com_operacao += 1
@@ -1887,12 +1886,14 @@ for ano in range(2026, _gc_hoje.year + 1):
                 'rotas': oper['rotas'],
                 'motoristas': oper['motoristas'],
                 'veiculos': oper['veiculos'],
+                'concluidas': oper.get('concluidas',0),
+                'em_andamento': oper.get('em_andamento',0),
                 'contratos_diaria': info['contratos'],
                 'valor': info['valor'],
                 'detalhes': gc_pag_detalhes.get(data_iso, []),
             })
         mens = gc_pag_mensal.get(ym, {'contratos':0,'valor':0.0})
-        oper_mes = gc_oper_mes.get(ym, {'execucoes':0,'contratos':0,'rotas':0,'motoristas':0,'veiculos':0})
+        oper_mes = gc_oper_mes.get(ym, {'execucoes':0,'contratos':0,'rotas':0,'motoristas':0,'veiculos':0,'concluidas':0,'em_andamento':0})
         dias_com_valor = [d for d in dias if d['valor'] > 0]
         maior_dia = max(dias_com_valor, key=lambda d: d['valor'], default={'data':'—','label':'—','valor':0.0,'contratos':0})
         menor_dia = min(dias_com_valor, key=lambda d: d['valor'], default={'data':'—','label':'—','valor':0.0,'contratos':0})
@@ -1906,6 +1907,8 @@ for ano in range(2026, _gc_hoje.year + 1):
             'rotas_viagens': oper_mes['rotas'],
             'motoristas': oper_mes['motoristas'],
             'veiculos': oper_mes['veiculos'],
+            'concluidas': oper_mes.get('concluidas',0),
+            'em_andamento': oper_mes.get('em_andamento',0),
             'contratos_rota_diaria': total_contratos_diaria,
             'valor_diarias': total_diarias,
             'contratos_mensais': mens['contratos'],
@@ -1931,16 +1934,17 @@ def html_gc_pagamento_calendario():
               <span>{mes['execucoes']:,} execuções</span>
               <span>{mes['contratos_rota_executados']:,} Contratos Rota</span>
               <span>{mes['dias_com_operacao']} dias c/ operação</span>
+              <span>{mes['concluidas']:,} concluídas · {mes['em_andamento']:,} em andamento</span>
               <strong>R$ {fmt(mes['total_previsto'])}</strong>
             </span>
           </summary>
           <div class='gc-month-body'>
             <div class='gc-month-cards'>
-              <div class='gc-mini'><label>Execuções realizadas</label><b>{mes['execucoes']:,}</b><span>escalas não anuladas</span></div>
+              <div class='gc-mini'><label>Execuções válidas</label><b>{mes['execucoes']:,}</b><span>início registrado · não anuladas</span></div>
               <div class='gc-mini'><label>Contratos Rota executados</label><b>{mes['contratos_rota_executados']:,}</b><span>distintos no mês</span></div>
-              <div class='gc-mini'><label>Diárias previstas</label><b>R$ {fmt(mes['valor_diarias'])}</b><span>{mes['contratos_rota_diaria']:,} Contratos Rota-dia</span></div>
-              <div class='gc-mini'><label>Mensalidades previstas</label><b>R$ {fmt(mes['valor_mensal'])}</b><span>{mes['contratos_mensais']:,} contratos rota mensais</span></div>
-              <div class='gc-mini gc-mini-total'><label>Total previsto</label><b>R$ {fmt(mes['total_previsto'])}</b><span>execução registrada no mês</span></div>
+              <div class='gc-mini'><label>Diárias computadas</label><b>R$ {fmt(mes['valor_diarias'])}</b><span>{mes['contratos_rota_diaria']:,} Contratos Rota-dia</span></div>
+              <div class='gc-mini'><label>Mensalidades computadas</label><b>R$ {fmt(mes['valor_mensal'])}</b><span>{mes['contratos_mensais']:,} Contratos Rota com execução</span></div>
+              <div class='gc-mini gc-mini-total'><label>Já computado a pagar</label><b>R$ {fmt(mes['total_previsto'])}</b><span>execução real registrada no mês</span></div>
             </div>
             <div class='gc-day-list'>
         """
@@ -1952,28 +1956,30 @@ def html_gc_pagamento_calendario():
                 <summary>
                   <span class='gc-day-date'>{dia['label']}</span>
                   <span class='gc-day-count'>
-                    <b>{dia['execucoes']:,}</b> execuções · <b>{dia['contratos_executados']:,}</b> Contratos Rota ·
+                    <b>{dia['execucoes']:,}</b> execuções válidas · <b>{dia['contratos_executados']:,}</b> Contratos Rota ·
                     <b>{dia['contratos_diaria']:,}</b> diárias · <b>{dia['veiculos']:,}</b> veículos
                   </span>
                   <strong class='gc-day-value'>{'—' if zero else 'R$ '+fmt(dia['valor'])}</strong>
                 </summary>
             """
             if zero:
-                h += "<div class='gc-day-empty'>Nenhuma execução não anulada registrada para este dia.</div>"
+                h += "<div class='gc-day-empty'>Nenhuma execução válida registrada para este dia (início de execução não preenchido ou registro inexistente).</div>"
             else:
                 h += f"""
                   <div class='gc-day-detail'>
                     <div class='gc-day-stats'>
-                      <span><b>Execuções:</b> {dia['execucoes']:,}</span>
+                      <span><b>Execuções válidas:</b> {dia['execucoes']:,}</span>
                       <span><b>Contratos Rota executados:</b> {dia['contratos_executados']:,}</span>
+                      <span><b>Concluídas:</b> {dia['concluidas']:,}</span>
+                      <span><b>Em andamento:</b> {dia['em_andamento']:,}</span>
                       <span><b>Rotas/viagens:</b> {dia['rotas']:,}</span>
                       <span><b>Motoristas:</b> {dia['motoristas']:,}</span>
                       <span><b>Veículos:</b> {dia['veiculos']:,}</span>
                       <span><b>Diárias faturáveis:</b> {dia['contratos_diaria']:,}</span>
-                      <span><b>Previsão de diárias:</b> R$ {fmt(dia['valor'])}</span>
+                      <span><b>Já computado em diárias:</b> R$ {fmt(dia['valor'])}</span>
                     </div>
                     <div class='gc-day-note'>
-                      <b>Regra de pagamento:</b> para DIÁRIA, o valor é contado uma única vez por <b>Contrato Rota + dia</b>.
+                      <b>Regra de pagamento:</b> para DIÁRIA, o valor é computado uma única vez por <b>Contrato Rota + dia</b> com execução real.
                       O mesmo Contrato Rota pode estar em várias rotas/viagens e várias escalas no dia sem duplicar a diária.
                     </div>
                     <div class='tw'>
@@ -2000,6 +2006,19 @@ def html_gc_pagamento_calendario():
     return h
 
 
+
+# Valor já computado a pagar no mês corrente, baseado somente em execução real.
+gc_pag_atual = gc_cal_meses[-1] if gc_cal_meses else {
+    'nome': 'Mês atual', 'valor_diarias': 0.0, 'valor_mensal': 0.0, 'total_previsto': 0.0,
+    'execucoes': 0, 'concluidas': 0, 'em_andamento': 0, 'contratos_rota_diaria': 0, 'contratos_mensais': 0
+}
+gc_pag_atual_diarias = float(gc_pag_atual.get('valor_diarias', 0.0) or 0.0)
+gc_pag_atual_mensal = float(gc_pag_atual.get('valor_mensal', 0.0) or 0.0)
+gc_pag_atual_total = float(gc_pag_atual.get('total_previsto', 0.0) or 0.0)
+gc_pag_atual_execucoes = int(gc_pag_atual.get('execucoes', 0) or 0)
+gc_pag_atual_concluidas = int(gc_pag_atual.get('concluidas', 0) or 0)
+gc_pag_atual_andamento = int(gc_pag_atual.get('em_andamento', 0) or 0)
+
 def comentario_gc_pagamento_calendario():
     if not gc_cal_meses:
         return "Sem dados de pagamento por execução."
@@ -2010,9 +2029,9 @@ def comentario_gc_pagamento_calendario():
     maior = max(meses_com_valor, key=lambda x: x['total_previsto'])
     menor = min(meses_com_valor, key=lambda x: x['total_previsto'])
     return (
-        f"<b>Leitura operacional-financeira:</b> {atual['nome']} registra <b>{atual['execucoes']:,} execuções</b> não anuladas e <b>{atual['contratos_rota_executados']:,} Contratos Rota distintos</b> no mês, gerando <b>R$ {fmt(atual['total_previsto'])}</b> em previsão. "
-        f"O maior total do período é <b>{maior['nome']}</b> (R$ {fmt(maior['total_previsto'])}). "
-        f"No mês com menor total observado, <b>{menor['nome']}</b>, foram previstos R$ {fmt(menor['total_previsto'])}. "
+        f"<b>Leitura operacional-financeira:</b> {atual['nome']} registra <b>{atual['execucoes']:,} execuções válidas</b> (início registrado e não anuladas) e <b>{atual['contratos_rota_executados']:,} Contratos Rota distintos</b> no mês, gerando <b>R$ {fmt(atual['total_previsto'])}</b> já computados a pagar. "
+        f"O maior valor computado do período é <b>{maior['nome']}</b> (R$ {fmt(maior['total_previsto'])}). "
+        f"No mês com menor valor computado observado, <b>{menor['nome']}</b>, foram computados R$ {fmt(menor['total_previsto'])}. "
         f"No detalhe diário, cada <b>Contrato Rota</b> conta apenas uma vez por dia na modalidade DIARIA, mesmo que o mesmo contrato esteja em várias rotas/viagens e várias escalas."
     )
 
@@ -2782,10 +2801,10 @@ canvas{{max-height:270px}}
   <div class="kpi-grid">
     <div class="kpi"><label>Contratos Ativos</label><div class="v v-ac">{gc_total:,}</div><div class="sub">contratos mestres</div></div>
     <div class="kpi"><label>Contratos Rota Ativos</label><div class="v v-ac">{gc_itens_ativos:,}</div><div class="sub">contratos rota ativos</div></div>
-    <div class="kpi"><label>Previsão Terceirizados</label><div class="v v-ac">R$ {fmt(gc_fin_total_mes)}</div><div class="sub">R$ {fmt(gc_fin_vd)}/dia + R$ {fmt(gc_fin_vm)}/mês</div></div>
+    <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac">R$ {fmt(gc_pag_atual_total)}</div><div class="sub">{gc_pag_atual['nome']} · {gc_pag_atual_execucoes:,} execuções válidas</div></div>
     <div class="kpi"><label>Frota Total Ativa</label><div class="v v-ok">{gc_frota_ativa:,}</div><div class="sub">status A no cadastro</div></div>
-    <div class="kpi"><label>Frota em Operação</label><div class="v v-ok">{gc_frota_operando:,}</div><div class="sub">últimos 30 dias</div></div>
-    <div class="kpi"><label>Frota Ociosa c/ Contrato</label><div class="v {'v-cr' if gc_frota_ociosa>20 else 'v-wn'}">{gc_frota_ociosa:,}</div><div class="sub">ativa + contrato + sem rota</div></div>
+    <div class="kpi"><label>Frota em Operação</label><div class="v v-ok">{gc_frota_operando:,}</div><div class="sub">execução real nos últimos 30 dias</div></div>
+    <div class="kpi"><label>Frota Ociosa c/ Contrato</label><div class="v {'v-cr' if gc_frota_ociosa>20 else 'v-wn'}">{gc_frota_ociosa:,}</div><div class="sub">ativa + contrato + sem execução real</div></div>
     <div class="kpi"><label>Inativos c/ Contrato</label><div class="v v-cr">{gc_frota_inat_contrato:,}</div><div class="sub">inconsistência contratual</div></div>
     <div class="kpi"><label>Frota Comercial Disponível</label><div class="v v-ac">{gc_frota_sem_contrato:,}</div><div class="sub">terceirizados + locados sem contrato</div></div>
   </div>
@@ -2817,8 +2836,8 @@ canvas{{max-height:270px}}
     <div class="card">
       <h3>🚌 Frota Ativa por Tipo — Operação, Contrato e Disponibilidade</h3>
       <p class="desc">
-        <b>Em Operação</b> = veículo ativo com rota não anulada nos últimos 30 dias.
-        <b>Ocioso c/ Contrato</b> = ativo, contrato vigente e sem rota nos últimos 30 dias.
+        <b>Em Operação</b> = veículo ativo com execução real (início registrado) nos últimos 30 dias.
+        <b>Ocioso c/ Contrato</b> = ativo, contrato vigente e sem execução real nos últimos 30 dias.
         <b>S/ Contrato</b> = ativo no cadastro sem contrato vigente. O card superior de disponibilidade comercial considera somente <b>terceirizados + locados</b>; frota própria e parceira são analisadas separadamente.
       </p>
       <div class="tw">
@@ -2846,10 +2865,10 @@ canvas{{max-height:270px}}
   </div>
 
   <div class="card gc-payment-card">
-    <h3>💳 Previsão de Pagamento por Execução — Mês → Dias → Contratos Rota</h3>
+    <h3>💳 Pagamento Computado pela Execução — Mês → Dias → Contratos Rota</h3>
     <p class="desc" style="border-left-color:var(--ac)">{comentario_gc_pagamento_calendario()}</p>
     <p class="desc" style="border-left-color:var(--wn)">
-      <b>Como calcular:</b> a operação diária vem diretamente de <b>rotas_escalarota</b>. DIÁRIA = 1 valor por <b>Contrato Rota + dia</b> com pelo menos uma execução não anulada. MENSAL = 1 valor por <b>Contrato Rota + mês</b> com pelo menos uma execução não anulada. O mesmo Contrato Rota pode aparecer em várias rotas/viagens e várias escalas, mas <b>não multiplica o valor da diária</b>. O calendário mostra a previsão baseada na <b>execução efetivamente registrada</b>, não uma projeção fixa de 22 dias.
+      <b>Como calcular:</b> a operação diária vem diretamente de <b>rotas_escalarota</b>. DIÁRIA = 1 valor por <b>Contrato Rota + dia</b> com pelo menos uma execução real (início registrado) e não anulada. MENSAL = 1 valor por <b>Contrato Rota + mês</b> com pelo menos uma execução real e não anulada. O mesmo Contrato Rota pode aparecer em várias rotas/viagens e várias escalas, mas <b>não multiplica o valor da diária</b>. O calendário mostra a valor <b>já computado com base na execução efetivamente registrada</b>; não é uma projeção fixa de 22 dias.
     </p>
     {html_gc_pagamento_calendario()}
   </div>
@@ -2907,7 +2926,7 @@ canvas{{max-height:270px}}
 
   <div class="card">
     <h3>🚨 Frota Ociosa com Contrato Ativo (Parada +30 dias)</h3>
-    <p class="desc">Somente veículos <b>ativos + contrato ativo + sem rota não anulada nos últimos 30 dias</b>. O quadro não inclui a frota disponível sem contrato. Para contratos mensais, o risco acumulado é rateado proporcionalmente por 30 dias.</p>
+    <p class="desc">Somente veículos <b>ativos + contrato ativo + sem execução real nos últimos 30 dias</b>. O quadro não inclui a frota disponível sem contrato. Para contratos mensais, o risco acumulado é rateado proporcionalmente por 30 dias.</p>
     <input class="src" id="s_gc_o" oninput="fil('s_gc_o','t_gc_o')" placeholder="Filtrar por GRE, placa, fornecedor...">
     <div class="tw">
       <table id="t_gc_o">
