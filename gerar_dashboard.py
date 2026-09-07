@@ -3255,6 +3255,7 @@ canvas{{max-height:270px}}
 .strategy-nav button{{background:var(--bg);border:1px solid var(--bd);color:var(--mt);padding:8px 12px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700}}
 .strategy-nav button.active{{color:var(--ac);border-color:var(--ac);background:rgba(56,189,248,.07)}}
 .strategy-pillar{{display:none}}
+.strategy-pillar[hidden]{{display:none!important}}
 .strategy-pillar.active{{display:block}}
 .strategy-box{{background:var(--s1);border:1px solid var(--bd);border-radius:8px;margin-bottom:14px;overflow:hidden}}
 .strategy-box>summary{{list-style:none;cursor:pointer;padding:11px 14px;color:var(--ac);font-size:12px;font-weight:700;background:var(--s1);border-bottom:1px solid transparent}}
@@ -3301,20 +3302,49 @@ canvas{{max-height:270px}}
 
 <script>
 window.switchStrategyPillar = function(p, btn){{
-  const nav = document.getElementById('strategyNav');
-  if(!nav) return;
-  nav.querySelectorAll('button').forEach(function(b){{ b.classList.toggle('active', b === btn); }});
-  document.querySelectorAll('.strategy-pillar').forEach(function(sec){{
-    sec.classList.toggle('active', sec.dataset.pillar === p);
-  }});
-  if(window.Chart){{
+  try{{
+    const nav = document.getElementById('strategyNav');
+    const sections = document.querySelectorAll('#t1 .strategy-pillar');
+    if(!nav || !sections.length) return false;
+
+    nav.querySelectorAll('button').forEach(function(b){{
+      const active = (b === btn) || (b.getAttribute('data-pillar') === p);
+      b.classList.toggle('active', active);
+    }});
+
+    sections.forEach(function(sec){{
+      const active = sec.getAttribute('data-pillar') === p;
+      sec.classList.toggle('active', active);
+      sec.hidden = !active;
+    }});
+
+    // Gráficos ficam em containers ocultos; ao abrir o pilar, force o resize.
     setTimeout(function(){{
-      document.querySelectorAll('.strategy-pillar.active canvas').forEach(function(c){{
-        try{{ const chart = Chart.getChart(c); if(chart) chart.resize(); }}catch(e){{}}
-      }});
-    }}, 50);
+      if(window.Chart && typeof Chart.getChart === 'function'){{
+        document.querySelectorAll('#t1 .strategy-pillar.active canvas').forEach(function(c){{
+          try{{ const chart = Chart.getChart(c); if(chart) chart.resize(); }}catch(e){{}}
+        }});
+      }}
+    }}, 80);
+    return false;
+  }}catch(err){{
+    console.error('Erro ao alternar pilar estratégico:', err);
+    return false;
   }}
 }};
+
+document.addEventListener('DOMContentLoaded', function(){{
+  document.querySelectorAll('#strategyNav button[data-pillar]').forEach(function(btn){{
+    btn.addEventListener('click', function(ev){{
+      ev.preventDefault();
+      window.switchStrategyPillar(this.getAttribute('data-pillar'), this);
+    }});
+  }});
+
+  // Garante o estado inicial sem depender de onclick inline.
+  const first = document.querySelector('#strategyNav button[data-pillar].active') || document.querySelector('#strategyNav button[data-pillar]');
+  if(first) window.switchStrategyPillar(first.getAttribute('data-pillar'), first);
+}});
 </script>
 
 <!-- ABA 1: PAINEL EXECUTIVO -->
@@ -4508,26 +4538,26 @@ const stratCombGre = {jd(strat_comb_gre)};
 if(document.getElementById('c_strat_rotas_focus')) C.bar('c_strat_rotas_focus',stratLabels,[{{label:'% Execução RR',data:stratRRPlan.map((v,i)=>v?Number((stratRRExec[i]*100/v).toFixed(1)):0)}}]);
 
 if(document.getElementById('c_strat_oper')) C.line('c_strat_oper',stratLabels,[
-  {{{{label:'RR Planejadas',data:stratRRPlan,tension:.25}}}},
-  {{{{label:'RR Executadas',data:stratRRExec,tension:.25}}}},
-  {{{{label:'RR Concluídas',data:stratRRConc,tension:.25}}}},
-  {{{{label:'RR Não Iniciadas',data:stratRRNao,tension:.25}}}}
+  {{label:'RR Planejadas',data:stratRRPlan,tension:.25}},
+  {{label:'RR Executadas',data:stratRRExec,tension:.25}},
+  {{label:'RR Concluídas',data:stratRRConc,tension:.25}},
+  {{label:'RR Não Iniciadas',data:stratRRNao,tension:.25}}
 ]);
 
 let stratDailyChart=null;
-function renderStratDaily(ym,targetId='c_strat_daily_exec'){{{{
+function renderStratDaily(ym,targetId='c_strat_daily_exec'){{
   const rows=stratDayRows.filter(x=>String(x.d).slice(0,7)===ym);
   const labels=rows.map(x=>String(x.d).slice(8,10)+'/'+String(x.d).slice(5,7));
   const datasets=[
-    {{{{label:'RR Planejadas',data:rows.map(x=>x.plan),tension:.18}}}},
-    {{{{label:'RR Executadas',data:rows.map(x=>x.exec),tension:.18}}}},
-    {{{{label:'RR Concluídas',data:rows.map(x=>x.conc),tension:.18}}}}
+    {{label:'RR Planejadas',data:rows.map(x=>x.plan),tension:.18}},
+    {{label:'RR Executadas',data:rows.map(x=>x.exec),tension:.18}},
+    {{label:'RR Concluídas',data:rows.map(x=>x.conc),tension:.18}}
   ];
   const el=document.getElementById(targetId); if(!el)return;
-  if(targetId==='c_strat_daily_exec' && stratDailyChart){{{{try{{{{stratDailyChart.destroy()}}}}catch(e){{{{}}}}}}}}
+  if(targetId==='c_strat_daily_exec' && stratDailyChart){{try{{stratDailyChart.destroy()}}catch(e){{}}}}
   const ch=C.line(targetId,labels,datasets);
   if(targetId==='c_strat_daily_exec') stratDailyChart=ch;
-}}}}
+}}
 const stratDefaultMonth='{_atual_ym}';
 renderStratDaily(stratDefaultMonth,'c_strat_daily_exec');
 if(document.getElementById('c_strat_daily_exec2')) renderStratDaily(stratDefaultMonth,'c_strat_daily_exec2');
@@ -4535,17 +4565,17 @@ if(document.getElementById('c_strat_daily_exec2')) renderStratDaily(stratDefault
 document.getElementById('strat_month_select')?.addEventListener('change',e=>renderStratDaily(e.target.value,'c_strat_daily_exec'));
 document.getElementById('strat_month_select2')?.addEventListener('change',e=>renderStratDaily(e.target.value,'c_strat_daily_exec2'));
 
-if(document.getElementById('c_strat_fiscal') && stratFiscal.length) C.bar('c_strat_fiscal',stratFiscal.map(x=>String(x.fiscal).slice(0,24)),[{{{{label:'Conclusão RR %',data:stratFiscal.map(x=>x.pct_conc)}}}}]);
-if(document.getElementById('c_strat_fiscal2') && stratFiscal.length) C.bar('c_strat_fiscal2',stratFiscal.map(x=>String(x.fiscal).slice(0,24)),[{{{{label:'Conclusão RR %',data:stratFiscal.map(x=>x.pct_conc)}}}}]);
-if(document.getElementById('c_strat_gre_perf') && stratGrePerf.length) C.bar('c_strat_gre_perf',stratGrePerf.map(x=>x.gre),[{{{{label:'Conclusão RR %',data:stratGrePerf.map(x=>x.pct_conc)}}}}]);
-if(document.getElementById('c_strat_gre_perf2') && stratGrePerf.length) C.bar('c_strat_gre_perf2',stratGrePerf.map(x=>x.gre),[{{{{label:'Conclusão RR %',data:stratGrePerf.map(x=>x.pct_conc)}}}}]);
+if(document.getElementById('c_strat_fiscal') && stratFiscal.length) C.bar('c_strat_fiscal',stratFiscal.map(x=>String(x.fiscal).slice(0,24)),[{{label:'Conclusão RR %',data:stratFiscal.map(x=>x.pct_conc)}}]);
+if(document.getElementById('c_strat_fiscal2') && stratFiscal.length) C.bar('c_strat_fiscal2',stratFiscal.map(x=>String(x.fiscal).slice(0,24)),[{{label:'Conclusão RR %',data:stratFiscal.map(x=>x.pct_conc)}}]);
+if(document.getElementById('c_strat_gre_perf') && stratGrePerf.length) C.bar('c_strat_gre_perf',stratGrePerf.map(x=>x.gre),[{{label:'Conclusão RR %',data:stratGrePerf.map(x=>x.pct_conc)}}]);
+if(document.getElementById('c_strat_gre_perf2') && stratGrePerf.length) C.bar('c_strat_gre_perf2',stratGrePerf.map(x=>x.gre),[{{label:'Conclusão RR %',data:stratGrePerf.map(x=>x.pct_conc)}}]);
 if(document.getElementById('c_strat_mix')) C.pie('c_strat_mix',strat_extra_labels.concat(['RR']),strat_extra_vals.concat([stratRRExec[stratRRExec.length-1]||0]),['#f97316','#f59e0b','#a78bfa','#38bdf8','#22c55e']);
-if(document.getElementById('c_strat_pay')) C.bar('c_strat_pay',stratLabels,[{{{{label:'Já computado a pagar (R$)',data:stratPay}}}}]);
+if(document.getElementById('c_strat_pay')) C.bar('c_strat_pay',stratLabels,[{{label:'Já computado a pagar (R$)',data:stratPay}}]);
 if(document.getElementById('c_strat_frota')) C.pie('c_strat_frota',stratFleetLabels,stratFleetData,['#f59e0b','#22c55e','#38bdf8','#a78bfa']);
-if(document.getElementById('c_strat_dep')) C.bar('c_strat_dep',stratDepLabels,[{{{{label:'% Terceirizada da frota ativa',data:stratDepData}}}}]);
-if(document.getElementById('c_strat_daily')) C.line('c_strat_daily',stratDailyPayLabels,[{{{{label:'Valor computado por dia (R$)',data:stratDailyPayVals,tension:.25}}}}]);
+if(document.getElementById('c_strat_dep')) C.bar('c_strat_dep',stratDepLabels,[{{label:'% Terceirizada da frota ativa',data:stratDepData}}]);
+if(document.getElementById('c_strat_daily')) C.line('c_strat_daily',stratDailyPayLabels,[{{label:'Valor computado por dia (R$)',data:stratDailyPayVals,tension:.25}}]);
 
-if(document.getElementById('c_strat_combustivel') && stratCombGre.length) C.bar('c_strat_combustivel',stratCombGre.map(x=>x.gre),[{{{{label:'Gasto (R$)',data:stratCombGre.map(x=>x.gasto)}}}}]);
+if(document.getElementById('c_strat_combustivel') && stratCombGre.length) C.bar('c_strat_combustivel',stratCombGre.map(x=>x.gre),[{{label:'Gasto (R$)',data:stratCombGre.map(x=>x.gasto)}}]);
 
 // ─── RASTREAMENTO ────────────────────────────────────────────────────────────
 const trackerHealthLabels=['Com rastreador','Sem rastreador','Online','Falha +24h','Sem sinal histórico'];
