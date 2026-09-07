@@ -3298,7 +3298,7 @@ canvas{{max-height:270px}}
   <section class="strategy-pillar" data-pillar="rotas">
     <div class="strategy-grid">
       <details class="strategy-box" open><summary>🛣️ Rotas Regulares — Planejado × Executado × Concluído</summary><div class="strategy-box-body"><div class="g3"><div class="kpi"><label>RR Planejadas</label><div class="v v-ac">{_strat_cur_plan:,}</div></div><div class="kpi"><label>RR Executadas</label><div class="v v-ok">{_strat_cur_ini:,}</div></div><div class="kpi"><label>RR Concluídas</label><div class="v v-ok">{_strat_cur_conc:,}</div></div></div><canvas id="c_strat_rotas_focus"></canvas></div></details>
-      <details class="strategy-box" open><summary>📊 Composição da Operação</summary><div class="strategy-box-body"><div class="g2"><div class="chart-wrap"><canvas id="c_strat_mix"></canvas></div><div class="legend-list"><div class="legend-title">Volume no mês</div>{''.join([f"<div class='legend-item'><b>{htmlmod.escape(stratExtraLabels[_i] if _i < len(stratExtraLabels) else '')}</b><span>{stratExtraVals[_i] if _i < len(stratExtraVals) else 0:,}</span><small>executadas</small></div>" for _i in range(len(stratExtraLabels))])}<div class="legend-item"><b>Regular (RR)</b><span>{_strat_cur_ini:,}</span><small>base</small></div></div></div></div></details>
+      <details class="strategy-box" open><summary>📊 Composição da Operação</summary><div class="strategy-box-body"><div class="g2"><div class="chart-wrap"><canvas id="c_strat_mix"></canvas></div><div class="legend-list"><div class="legend-title">Volume no mês</div>{''.join([f"<div class='legend-item'><b>{htmlmod.escape(strat_extra_labels[_i] if _i < len(strat_extra_labels) else '')}</b><span>{strat_extra_vals[_i] if _i < len(strat_extra_vals) else 0:,}</span><small>executadas</small></div>" for _i in range(len(strat_extra_labels))])}<div class="legend-item"><b>Regular (RR)</b><span>{_strat_cur_ini:,}</span><small>base</small></div></div></div></div></details>
     </div>
     <details class="strategy-box" open><summary>📅 Evolução Diária — RR Planejadas × Executadas × Concluídas</summary><div class="strategy-box-body"><div class="inline-control"><label>Mês da análise</label><select id="strat_month_select2">{strat_month_options_html}</select></div><canvas id="c_strat_daily_exec2"></canvas></div></details>
   </section>
@@ -4418,8 +4418,8 @@ const stratSupplier = {jd(strat_supplier)};
 const stratDayRows = {jd([{'d':d,'plan':p,'exec':x,'conc':c,'extra':e} for d,p,x,c,e in zip(strat_day_labels,strat_day_plan,strat_day_ini,strat_day_conc,strat_day_extras)])};
 const stratFiscal = {jd(strat_fiscal_top)};
 const stratGrePerf = {jd(strat_gre_top[:5])};
-const stratExtraLabels = {jd(strat_extra_labels)};
-const stratExtraVals = {jd(strat_extra_vals)};
+const strat_extra_labels = {jd(strat_extra_labels)};
+const strat_extra_vals = {jd(strat_extra_vals)};
 const stratCombGre = {jd(strat_comb_gre)};
 
 if(document.getElementById('c_strat_rotas_focus')) C.bar('c_strat_rotas_focus',stratLabels,[{{label:'% Execução RR',data:stratRRPlan.map((v,i)=>v?Number((stratRRExec[i]*100/v).toFixed(1)):0)}}]);
@@ -4456,7 +4456,7 @@ if(document.getElementById('c_strat_fiscal') && stratFiscal.length) C.bar('c_str
 if(document.getElementById('c_strat_fiscal2') && stratFiscal.length) C.bar('c_strat_fiscal2',stratFiscal.map(x=>String(x.fiscal).slice(0,24)),[{{{{label:'Conclusão RR %',data:stratFiscal.map(x=>x.pct_conc)}}}}]);
 if(document.getElementById('c_strat_gre_perf') && stratGrePerf.length) C.bar('c_strat_gre_perf',stratGrePerf.map(x=>x.gre),[{{{{label:'Conclusão RR %',data:stratGrePerf.map(x=>x.pct_conc)}}}}]);
 if(document.getElementById('c_strat_gre_perf2') && stratGrePerf.length) C.bar('c_strat_gre_perf2',stratGrePerf.map(x=>x.gre),[{{{{label:'Conclusão RR %',data:stratGrePerf.map(x=>x.pct_conc)}}}}]);
-if(document.getElementById('c_strat_mix')) C.pie('c_strat_mix',stratExtraLabels.concat(['RR']),stratExtraVals.concat([stratRRExec[stratRRExec.length-1]||0]),['#f97316','#f59e0b','#a78bfa','#38bdf8','#22c55e']);
+if(document.getElementById('c_strat_mix')) C.pie('c_strat_mix',strat_extra_labels.concat(['RR']),strat_extra_vals.concat([stratRRExec[stratRRExec.length-1]||0]),['#f97316','#f59e0b','#a78bfa','#38bdf8','#22c55e']);
 if(document.getElementById('c_strat_pay')) C.bar('c_strat_pay',stratLabels,[{{{{label:'Já computado a pagar (R$)',data:stratPay}}}}]);
 if(document.getElementById('c_strat_frota')) C.pie('c_strat_frota',stratFleetLabels,stratFleetData,['#f59e0b','#22c55e','#38bdf8','#a78bfa']);
 if(document.getElementById('c_strat_dep')) C.bar('c_strat_dep',stratDepLabels,[{{{{label:'% Terceirizada da frota ativa',data:stratDepData}}}}]);
