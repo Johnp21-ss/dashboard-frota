@@ -1894,6 +1894,28 @@ if not df_exec_perf_fiscal.empty:
     strat_fiscal_top.sort(key=lambda x:(x['pct_conc'],x['planejadas']),reverse=True)
     strat_fiscal_bottom=sorted(strat_fiscal_top,key=lambda x:(x['pct_conc'], -x['planejadas']))[:5]
     strat_fiscal_top=strat_fiscal_top[:5]
+# Ranking estratégico de fiscais consolidado por fiscal (não duplica fiscais que atuam em mais de uma GRE).
+strat_fiscal_rank=[]
+if not df_exec_perf_fiscal.empty:
+    _fp=df_exec_perf_fiscal.copy()
+    _fp['fiscal']=_fp['fiscal'].fillna('SEM FISCAL').astype(str)
+    _g=_fp.groupby('fiscal',as_index=False)[['planejadas','iniciadas','concluidas','nao_executadas']].sum()
+    _g['pct_execucao']=(_g['iniciadas']*100/_g['planejadas'].replace(0,1)).round(1)
+    _g['pct_conclusao']=(_g['concluidas']*100/_g['planejadas'].replace(0,1)).round(1)
+    _g=_g[_g['planejadas']>=50].sort_values(['pct_conclusao','planejadas'],ascending=[False,False])
+    for _,rr in _g.iterrows():
+        strat_fiscal_rank.append({
+            'fiscal':str(rr['fiscal']),
+            'planejadas':int(rr['planejadas'] or 0),
+            'iniciadas':int(rr['iniciadas'] or 0),
+            'concluidas':int(rr['concluidas'] or 0),
+            'nao':int(rr['nao_executadas'] or 0),
+            'pct_exec':float(rr['pct_execucao'] or 0),
+            'pct_conc':float(rr['pct_conclusao'] or 0)
+        })
+strat_fiscal_rank_top=strat_fiscal_rank[:5]
+strat_fiscal_rank_bottom=sorted(strat_fiscal_rank,key=lambda x:(x['pct_conc'],-x['planejadas']))[:5]
+
 strat_gre_top=[]
 if not df_exec_perf_gre.empty:
     for _, rr in df_exec_perf_gre.iterrows():
@@ -3028,6 +3050,30 @@ for _i,_x in enumerate(strat_supplier,1):
         f"<div class='supplier-value'><b>R$ {fmt(_x['valor'])}/dia</b><small>{_share}% do Top 10</small></div></div>"
     )
 strat_supplier_cascade_html=''.join(_supplier_cascade) if _supplier_cascade else '<div class="info">Sem dados de fornecedores.</div>'
+strat_supplier_top_text=(f"{htmlmod.escape(strat_supplier[0]['fornecedor'])} · R$ {fmt(strat_supplier[0]['valor'])}/dia" if strat_supplier else 'Sem dados')
+
+# Mini-resumo das 3 principais prioridades para o painel estratégico.
+# Mantém a primeira tela enxuta: somente prioridade, GRE e ação.
+_strat_actions_mini_parts=[]
+for _a in _strat_gre_actions[:3]:
+    _pct=_a.get('assid',0)
+    _pt=_a.get('pct_terc',0)
+    if _pct < 70 and _pt >= 60:
+        _acao='Fiscalização contratual + recuperação operacional'
+    elif _pct < 70:
+        _acao='Recuperação da execução planejada'
+    elif _pt >= 70:
+        _acao='Revisar dependência e exposição contratual'
+    else:
+        _acao='Monitorar tendência'
+    _pr='🔴' if _a.get('score',0) >= 70 else ('🟠' if _a.get('score',0) >= 55 else '🟡')
+    _strat_actions_mini_parts.append(
+        f"<div class='action-mini-row'><span class='action-mini-pr'>{_pr}</span>"
+        f"<div class='action-mini-main'><b>{htmlmod.escape(str(_a.get('gre') or 'SEM GRE'))}</b>"
+        f"<small>{_a.get('frota',0):,} ativos · {_a.get('pct_terc',0):.1f}% terceiros · {_a.get('assid',0):.1f}% execução</small></div>"
+        f"<div class='action-mini-text'>{htmlmod.escape(_acao)}</div></div>"
+    )
+strat_actions_mini_html=''.join(_strat_actions_mini_parts) if _strat_actions_mini_parts else '<div class="info">Sem prioridades identificadas.</div>'
 
 strat_month_options=[]
 for _m in meses_ev:
@@ -3273,115 +3319,152 @@ window.switchStrategyPillar = function(p, btn){{
 
 <!-- ABA 1: PAINEL EXECUTIVO -->
 <div id="t1" class="tab active">
-  <div class="strategy-hero">
+  <div class="strategy-hero strategy-hero-compact">
     <div>
       <span class="strategy-kicker">🎯 VISÃO ESTRATÉGICA</span>
-      <h2>Planejamento, execução, pessoas, frota, contratos e ações</h2>
-      <p>{comentario_estrategico()}</p>
+      <h2>Cockpit de decisão — operação, pessoas, frota e compromissos</h2>
+      <p>Uma leitura executiva para identificar tendência, concentração, risco e prioridade de ação. O detalhe operacional permanece recolhido abaixo.</p>
     </div>
-    <div class="strategy-badge"><span>CONCLUSÃO RR</span><b>{round(_strat_cur_conc*100/max(_strat_cur_plan,1),1)}%</b><small>sobre o planejado</small></div>
+    <div class="strategy-badge">
+      <span>CONCLUSÃO RR — MÊS ATUAL</span>
+      <b id="strat_badge_pct">{round(_strat_cur_conc*100/max(_strat_cur_plan,1),1)}%</b>
+      <small>concluídas / planejadas</small>
+    </div>
+  </div>
+
+  <div class="strategy-controlbar">
+    <div class="strategy-period">
+      <label>📅 PERÍODO DA ANÁLISE</label>
+      <select id="strat_month_select">{strat_month_options_html}</select>
+    </div>
+    <div class="strategy-period-hint">Selecione um mês para atualizar os KPIs operacionais e o gráfico diário. A comparação mensal permanece no gráfico de tendência.</div>
   </div>
 
   <div class="strategy-nav" id="strategyNav">
-    <button class="active" type="button" onclick="switchStrategyPillar('overview',this)">🎯 Visão Geral</button>
-    <button type="button" onclick="switchStrategyPillar('rotas',this)">🛣️ Rotas</button>
-    <button type="button" onclick="switchStrategyPillar('motoristas',this)">👤 Motoristas</button>
-    <button type="button" onclick="switchStrategyPillar('frota',this)">🚌 Frota</button>
-    <button type="button" onclick="switchStrategyPillar('contratos',this)">📑 Contratos</button>
-    <button type="button" onclick="switchStrategyPillar('combustivel',this)">⛽ Combustível</button>
-    <button type="button" onclick="switchStrategyPillar('gestao',this)">👮 Gestão</button>
-    <button type="button" onclick="switchStrategyPillar('fornecedores',this)">🏢 Fornecedores</button>
-    <button type="button" onclick="switchStrategyPillar('tecnologia',this)">📡 Tecnologia</button>
-    <button type="button" onclick="switchStrategyPillar('acoes',this)">🚨 Ações</button>
+    <button class="active" type="button" data-pillar="overview" onclick="switchStrategyPillar('overview',this)">🎯 Geral</button>
+    <button type="button" data-pillar="rotas" onclick="switchStrategyPillar('rotas',this)">🛣️ Rotas</button>
+    <button type="button" data-pillar="motoristas" onclick="switchStrategyPillar('motoristas',this)">👤 Motoristas</button>
+    <button type="button" data-pillar="frota" onclick="switchStrategyPillar('frota',this)">🚌 Frota</button>
+    <button type="button" data-pillar="contratos" onclick="switchStrategyPillar('contratos',this)">📑 Contratos</button>
+    <button type="button" data-pillar="combustivel" onclick="switchStrategyPillar('combustivel',this)">⛽ Combustível</button>
+    <button type="button" data-pillar="gestao" onclick="switchStrategyPillar('gestao',this)">👮 Gestão</button>
+    <button type="button" data-pillar="fornecedores" onclick="switchStrategyPillar('fornecedores',this)">🏢 Fornecedores</button>
+    <button type="button" data-pillar="tecnologia" onclick="switchStrategyPillar('tecnologia',this)">📡 Tecnologia</button>
+    <button type="button" data-pillar="acoes" onclick="switchStrategyPillar('acoes',this)">🚨 Ações</button>
   </div>
 
   <section class="strategy-pillar active" data-pillar="overview">
-    <div class="kpi-grid strategy-kpis">
-      <div class="kpi"><label>RR Planejadas</label><div class="v v-ac">{_strat_cur_plan:,}</div><div class="sub">base regular</div></div>
-      <div class="kpi"><label>RR Executadas</label><div class="v v-ok">{_strat_cur_ini:,}</div><div class="sub">{round(_strat_cur_ini*100/max(_strat_cur_plan,1),1)}% do planejado</div></div>
-      <div class="kpi"><label>% Execução</label><div class="v v-ok">{round(_strat_cur_conc*100/max(_strat_cur_plan,1),1)}%</div><div class="sub">RR concluídas / planejadas</div></div>
-      <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac">R$ {fmt(gc_pag_atual_total)}</div><div class="sub">execução real</div></div>
-      <div class="kpi"><label>Previsão de Fechamento</label><div class="v v-ac">R$ {fmt(gc_previsao_fechamento)}</div><div class="sub">estimativa do mês</div></div>
+    <div class="strategy-kpi-grid">
+      <div class="kpi"><label>RR Planejadas</label><div class="v v-ac" id="strat_kpi_plan">{_strat_cur_plan:,}</div><div class="sub">base regular</div></div>
+      <div class="kpi"><label>RR Executadas</label><div class="v v-ok" id="strat_kpi_exec">{_strat_cur_ini:,}</div><div class="sub" id="strat_kpi_exec_sub">{_strat_cur_conc:,} concluídas</div></div>
+      <div class="kpi"><label>% Execução</label><div class="v v-ok" id="strat_kpi_exec_pct">{round(_strat_cur_ini*100/max(_strat_cur_plan,1),1)}%</div><div class="sub">executadas / planejadas</div></div>
+      <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac" id="strat_kpi_pay">R$ {fmt(gc_pag_atual_total)}</div><div class="sub">execução real</div></div>
       <div class="kpi"><label>Frota Ativa</label><div class="v v-ok">{gc_frota_ativa:,}</div><div class="sub">status A</div></div>
       <div class="kpi"><label>Terceirizados</label><div class="v v-wn">{gc_frota_terc:,}</div><div class="sub">{_strat_pct_terc}% da frota ativa</div></div>
-      <div class="kpi"><label>Inativos c/ Contrato</label><div class="v v-cr">{gc_inat_contrato:,}</div><div class="sub">risco contratual</div></div>
     </div>
 
-    <div class="strategy-grid">
-      <details class="strategy-box" open><summary>📈 Evolução da Operação — Mensal</summary><div class="strategy-box-body"><p class="desc">RR é a base planejada. A execução considera início registrado; conclusão exige início + fim.</p><canvas id="c_strat_oper"></canvas></div></details>
-      <details class="strategy-box" open><summary>📅 Execução Diária por Mês</summary><div class="strategy-box-body"><div class="inline-control"><label>Selecionar mês</label><select id="strat_month_select">{strat_month_options_html}</select></div><canvas id="c_strat_daily_exec"></canvas></div></details>
+    <div class="strategy-main-grid">
+      <div class="card strategy-card-priority">
+        <div class="strategy-card-head"><div><span class="strategy-overline">DECISÃO</span><h3>🚨 Onde agir primeiro</h3></div><span class="strategy-mini-note">Top 3</span></div>
+        <div class="action-mini-list">{strat_actions_mini_html}</div>
+        <button type="button" class="strategy-link-btn" onclick="switchStrategyPillar('acoes',document.querySelector('#strategyNav button[data-pillar=\'acoes\']'))">Ver todas as prioridades →</button>
+      </div>
+      <div class="card strategy-card-summary">
+        <div class="strategy-card-head"><div><span class="strategy-overline">LEITURA</span><h3>📌 Leitura Executiva</h3></div><span class="strategy-mini-note" id="strat_exec_comment_period">mês atual</span></div>
+        <p class="desc" id="strat_exec_comment">{comentario_estrategico()}</p>
+      </div>
+    </div>
+
+    <div class="strategy-chart-grid">
+      <div class="card strategy-chart-card">
+        <div class="strategy-card-head"><div><span class="strategy-overline">TENDÊNCIA</span><h3>📈 Operação ao longo de 2026</h3></div><span class="strategy-mini-note">RR</span></div>
+        <p class="desc">Planejadas × executadas × concluídas.</p>
+        <canvas id="c_strat_oper"></canvas>
+      </div>
+      <div class="card strategy-chart-card">
+        <div class="strategy-card-head"><div><span class="strategy-overline">PERÍODO</span><h3>📅 Mês selecionado</h3></div><span class="strategy-mini-note" id="strat_daily_label">mês atual</span></div>
+        <canvas id="c_strat_daily_exec"></canvas>
+      </div>
+    </div>
+
+    <div class="strategy-mini-strip">
+      <div class="strategy-mini-card"><span>🚌 Frota</span><b>{gc_frota_ativa:,}</b><small>{_strat_pct_terc}% terceirizada · {gc_frota_inat_contrato:,} inativos c/ contrato</small></div>
+      <div class="strategy-mini-card"><span>📑 Contratos</span><b>{gc_total:,} / {gc_itens_ativos:,}</b><small>mestres / Contratos Rota ativos</small></div>
+      <div class="strategy-mini-card"><span>📡 Rastreamento</span><b>{tracker_pct}%</b><small>frota ativa com rastreador</small></div>
+      <div class="strategy-mini-card"><span>🏢 Maior exposição</span><b style="font-size:12px">{strat_supplier_top_text}</b><small>terceirizado com maior compromisso diário</small></div>
     </div>
   </section>
 
   <section class="strategy-pillar" data-pillar="rotas">
-    <div class="strategy-grid">
-      <details class="strategy-box" open><summary>🛣️ Rotas Regulares — Planejado × Executado × Concluído</summary><div class="strategy-box-body"><div class="g3"><div class="kpi"><label>RR Planejadas</label><div class="v v-ac">{_strat_cur_plan:,}</div></div><div class="kpi"><label>RR Executadas</label><div class="v v-ok">{_strat_cur_ini:,}</div></div><div class="kpi"><label>RR Concluídas</label><div class="v v-ok">{_strat_cur_conc:,}</div></div></div><canvas id="c_strat_rotas_focus"></canvas></div></details>
-      <details class="strategy-box" open><summary>📊 Composição da Operação</summary><div class="strategy-box-body"><div class="g2"><div class="chart-wrap"><canvas id="c_strat_mix"></canvas></div><div class="legend-list"><div class="legend-title">Volume no mês</div>{''.join([f"<div class='legend-item'><b>{htmlmod.escape(strat_extra_labels[_i] if _i < len(strat_extra_labels) else '')}</b><span>{strat_extra_vals[_i] if _i < len(strat_extra_vals) else 0:,}</span><small>executadas</small></div>" for _i in range(len(strat_extra_labels))])}<div class="legend-item"><b>Regular (RR)</b><span>{_strat_cur_ini:,}</span><small>base</small></div></div></div></div></details>
+    <div class="strategy-section-head"><span class="strategy-overline">🛣️ ROTAS</span><h3>Planejado, executado e extras</h3><p>RR = base planejada. Extras são analisados separadamente.</p></div>
+    <div class="strategy-grid-two">
+      <details class="strategy-box" open><summary>📈 RR — Planejado × Executado × Concluído</summary><div class="strategy-box-body"><canvas id="c_strat_rotas_focus"></canvas></div></details>
+      <details class="strategy-box"><summary>📊 Composição das Execuções</summary><div class="strategy-box-body"><div class="g2"><div class="chart-wrap"><canvas id="c_strat_mix"></canvas></div><div class="legend-list"><div class="legend-title">Volume por tipo</div><div id="strat_mix_legend"></div></div></div></div></details>
     </div>
-    <details class="strategy-box" open><summary>📅 Evolução Diária — RR Planejadas × Executadas × Concluídas</summary><div class="strategy-box-body"><div class="inline-control"><label>Mês da análise</label><select id="strat_month_select2">{strat_month_options_html}</select></div><canvas id="c_strat_daily_exec2"></canvas></div></details>
+    <details class="strategy-box"><summary>📅 Execução diária do mês selecionado</summary><div class="strategy-box-body"><canvas id="c_strat_daily_exec2"></canvas></div></details>
   </section>
 
   <section class="strategy-pillar" data-pillar="motoristas">
-    <div class="strategy-grid">
-      <details class="strategy-box" open><summary>🏆 Performance dos Fiscais sobre a Operação</summary><div class="strategy-box-body"><p class="desc">Ranking pela conclusão das RR sobre a base planejada, com mínimo de 20 RR.</p><div class="strategy-chart-tall"><canvas id="c_strat_fiscal"></canvas></div></div></details>
-      <details class="strategy-box" open><summary>👤 Vínculo e Cobertura dos Motoristas</summary><div class="strategy-box-body"><div class="g3"><div class="kpi"><label>Motoristas em escala</label><div class="v v-ac">{exec_vinculo_mot:,}</div></div><div class="kpi"><label>Com veículo</label><div class="v v-ok">{exec_vinculo_vei:,}</div></div><div class="kpi"><label>Sem veículo</label><div class="v v-wn">{exec_vinculo_sem:,}</div></div></div><p class="desc">Base: motoristas ativos em escala; exclui GREs administrativas. Cada motorista é contado uma única vez.</p></div></details>
-    </div>
-    <details class="strategy-box" open><summary>🏆 Performance por GRE — Top 5</summary><div class="strategy-box-body"><div class="strategy-chart-tall"><canvas id="c_strat_gre_perf"></canvas></div></div></details>
+    <div class="strategy-section-head"><span class="strategy-overline">👤 MOTORISTAS</span><h3>Base em escala e cobertura</h3><p>Somente motoristas ativos em escala no período; cada motorista é contado uma vez.</p></div>
+    <details class="strategy-box" open><summary>👤 Vínculo com Veículo</summary><div class="strategy-box-body"><div class="g3"><div class="kpi"><label>Em escala</label><div class="v v-ac">{exec_vinculo_mot:,}</div></div><div class="kpi"><label>Com veículo</label><div class="v v-ok">{exec_vinculo_vei:,}</div></div><div class="kpi"><label>Sem veículo</label><div class="v v-wn">{exec_vinculo_sem:,}</div></div></div><p class="desc">Exclui GREs administrativas, Logística Capital e Logística Interior.</p></div></details>
+    <details class="strategy-box"><summary>📊 Cobertura por GRE</summary><div class="strategy-box-body"><div class="tw"><table id="t_exec_vinculo"><thead><tr><th>GRE</th><th>Mot.</th><th>Com V.</th><th>Sem V.</th></tr></thead><tbody>{html_exec_vinculo_inicial()}</tbody></table></div></div></details>
   </section>
 
   <section class="strategy-pillar" data-pillar="frota">
-    <div class="strategy-grid">
-      <details class="strategy-box" open><summary>🚌 Composição da Frota Ativa</summary><div class="strategy-box-body"><div class="g2"><div class="chart-wrap"><canvas id="c_strat_frota"></canvas></div><div class="legend-list"><div class="legend-title">Predominância de vínculo — status A</div>{strat_fleet_legend_html}</div></div></div></details>
-      <details class="strategy-box" open><summary>🎯 Dependência de Terceiros por GRE</summary><div class="strategy-box-body"><p class="desc">Percentual de terceirização sobre a frota ativa de cada GRE.</p><div class="strategy-chart-tall"><canvas id="c_strat_dep"></canvas></div></div></details>
+    <div class="strategy-section-head"><span class="strategy-overline">🚌 FROTA</span><h3>Composição e dependência</h3><p>Veículos ativos (`status = A`) e predominância de vínculo.</p></div>
+    <div class="strategy-grid-two">
+      <details class="strategy-box" open><summary>🚌 Composição da Frota Ativa</summary><div class="strategy-box-body"><div class="g2"><div class="chart-wrap"><canvas id="c_strat_frota"></canvas></div><div class="legend-list"><div class="legend-title">Predominância de vínculo</div>{strat_fleet_legend_html}</div></div></div></details>
+      <details class="strategy-box" open><summary>🎯 Dependência de Terceiros por GRE</summary><div class="strategy-box-body"><div class="strategy-chart-tall"><canvas id="c_strat_dep"></canvas></div></div></details>
     </div>
+    <details class="strategy-box"><summary>⚠️ Situações para auditoria</summary><div class="strategy-box-body"><div class="g3"><div class="kpi"><label>Inativos c/ contrato</label><div class="v v-cr">{gc_frota_inat_contrato:,}</div></div><div class="kpi"><label>Ociosos c/ contrato</label><div class="v v-wn">{gc_frota_ociosa:,}</div></div><div class="kpi"><label>Própria c/ contrato</label><div class="v v-ac">{gc_propria_com_contrato:,}</div></div></div></div></details>
   </section>
 
   <section class="strategy-pillar" data-pillar="contratos">
-    <div class="strategy-grid">
-      <details class="strategy-box" open><summary>💰 Compromisso Financeiro dos Contratos</summary><div class="strategy-box-body"><div class="g3"><div class="kpi"><label>Contratos Mestres</label><div class="v v-ac">{gc_total:,}</div></div><div class="kpi"><label>Contratos Rota Ativos</label><div class="v v-ac">{gc_itens_ativos:,}</div><div class="sub">base cadastrada</div></div><div class="kpi"><label>Já Computado</label><div class="v v-ac">R$ {fmt(gc_pag_atual_total)}</div></div></div><canvas id="c_strat_pay"></canvas></div></details>
-      <details class="strategy-box" open><summary>📅 Pagamento Computado por Dia</summary><div class="strategy-box-body"><p class="desc">1 diária por Contrato Rota + dia, sem duplicar múltiplas rotas/viagens do mesmo contrato.</p><canvas id="c_strat_daily"></canvas></div></details>
+    <div class="strategy-section-head"><span class="strategy-overline">📑 CONTRATOS & FINANCEIRO</span><h3>Compromisso e pagamento</h3><p>Diária computada uma vez por Contrato Rota/dia; mensal uma vez por Contrato Rota/mês.</p></div>
+    <div class="strategy-grid-two">
+      <details class="strategy-box" open><summary>💰 Resumo</summary><div class="strategy-box-body"><div class="g3"><div class="kpi"><label>Contratos Mestres</label><div class="v v-ac">{gc_total:,}</div></div><div class="kpi"><label>Contratos Rota</label><div class="v v-ac">{gc_itens_ativos:,}</div></div><div class="kpi"><label>Já Computado</label><div class="v v-ac">R$ {fmt(gc_pag_atual_total)}</div></div></div><canvas id="c_strat_pay"></canvas></div></details>
+      <details class="strategy-box" open><summary>📅 Pagamento Computado por Dia</summary><div class="strategy-box-body"><canvas id="c_strat_daily"></canvas></div></details>
     </div>
   </section>
 
   <section class="strategy-pillar" data-pillar="combustivel">
-    <details class="strategy-box" open><summary>⛽ Combustível — Visão Estratégica</summary><div class="strategy-box-body"><p class="desc">Gasto por GRE no mês atual, com os dados existentes no banco. O detalhamento completo permanece na aba Combustível.</p><div class="strategy-chart-tall"><canvas id="c_strat_combustivel"></canvas></div></div></details>
+    <div class="strategy-section-head"><span class="strategy-overline">⛽ COMBUSTÍVEL</span><h3>Concentração de gasto</h3><p>Resumo por GRE, sem substituir a análise completa da aba de combustível.</p></div>
+    <details class="strategy-box" open><summary>⛽ Gasto por GRE</summary><div class="strategy-box-body"><canvas id="c_strat_combustivel"></canvas></div></details>
   </section>
 
   <section class="strategy-pillar" data-pillar="gestao">
-    <div class="strategy-grid">
-      <details class="strategy-box" open><summary>🏆 Performance por Fiscal</summary><div class="strategy-box-body"><p class="desc">Conclusão das RR sobre o planejado. Top 5 com mínimo de 20 RR.</p><div class="strategy-chart-tall"><canvas id="c_strat_fiscal2"></canvas></div></div></details>
-      <details class="strategy-box" open><summary>🏆 Performance por GRE</summary><div class="strategy-box-body"><p class="desc">Conclusão das RR planejadas por regional.</p><div class="strategy-chart-tall"><canvas id="c_strat_gre_perf2"></canvas></div></div></details>
+    <div class="strategy-section-head"><span class="strategy-overline">👮 GESTÃO</span><h3>Performance de Fiscal e GRE</h3><p>Comparação pela base regular planejada, com consolidação por fiscal.</p></div>
+    <div class="strategy-grid-two">
+      <details class="strategy-box" open><summary>🏆 Fiscais — Top 5</summary><div class="strategy-box-body"><canvas id="c_strat_fiscal"></canvas></div></details>
+      <details class="strategy-box" open><summary>🏆 GREs — Top 5</summary><div class="strategy-box-body"><canvas id="c_strat_gre_perf"></canvas></div></details>
     </div>
-    <details class="strategy-box" open><summary>🧠 Leitura Gerencial</summary><div class="strategy-box-body"><div class="gc-analysis"><p class="desc" style="border-left-color:var(--ac)">{comentario_estrategico()}</p></div></div></details>
   </section>
 
   <section class="strategy-pillar" data-pillar="fornecedores">
-    <details class="strategy-box" open><summary>🏢 Concentração dos Terceirizados — Cascata Financeira</summary><div class="strategy-box-body"><p class="desc">Ordem: fornecedor → quantidade de Contratos Rota → compromisso diário → participação no Top 10.</p><div class="supplier-cascade">{strat_supplier_cascade_html}</div></div></details>
+    <div class="strategy-section-head"><span class="strategy-overline">🏢 FORNECEDORES</span><h3>Concentração operacional e financeira</h3><p>Leitura em cascata: quantidade de Contratos Rota → compromisso diário → participação.</p></div>
+    <details class="strategy-box" open><summary>🏢 Terceirizados</summary><div class="strategy-box-body"><div class="supplier-cascade">{strat_supplier_cascade_html}</div></div></details>
   </section>
 
   <section class="strategy-pillar" data-pillar="tecnologia">
-    <div class="strategy-grid">
-      <details class="strategy-box" open><summary>📱 Usabilidade do Sistema</summary><div class="strategy-box-body"><div class="g3"><div class="kpi"><label>Escalados</label><div class="v v-ac">{exec_motoristas_escalados:,}</div></div><div class="kpi"><label>Executaram</label><div class="v v-ok">{exec_motoristas_executaram:,}</div></div><div class="kpi"><label>Usabilidade</label><div class="v v-ok">{exec_tec_usabilidade}%</div></div></div><canvas id="c_exec_tec_hist"></canvas></div></details>
-      <details class="strategy-box" open><summary>📡 Saúde do Rastreamento</summary><div class="strategy-box-body"><div class="g2"><div class="kpi"><label>Frota ativa</label><div class="v">{tracker_frota_ativa:,}</div></div><div class="kpi"><label>Com rastreador</label><div class="v v-ok">{tracker_com:,}</div><div class="sub">{tracker_pct}%</div></div><div class="kpi"><label>Online</label><div class="v v-ac">{tracker_online:,}</div></div><div class="kpi"><label>Falha +24h</label><div class="v v-cr">{tracker_falha:,}</div></div></div></div></details>
+    <div class="strategy-section-head"><span class="strategy-overline">📡 TECNOLOGIA & RASTREAMENTO</span><h3>Saúde da infraestrutura</h3><p>Visão estratégica; acompanhamento minuto a minuto fica para o sistema via API.</p></div>
+    <div class="strategy-grid-two">
+      <details class="strategy-box" open><summary>📱 Usabilidade</summary><div class="strategy-box-body"><div class="g3"><div class="kpi"><label>Escalados</label><div class="v v-ac">{exec_motoristas_escalados:,}</div></div><div class="kpi"><label>Executaram</label><div class="v v-ok">{exec_motoristas_executaram:,}</div></div><div class="kpi"><label>Usabilidade</label><div class="v v-ok">{exec_tec_usabilidade}%</div></div></div><canvas id="c_exec_tec_hist"></canvas></div></details>
+      <details class="strategy-box"><summary>📡 Rastreamento</summary><div class="strategy-box-body"><div class="g2"><div class="kpi"><label>Frota ativa</label><div class="v">{tracker_frota_ativa:,}</div></div><div class="kpi"><label>Com rastreador</label><div class="v v-ok">{tracker_com:,}</div><div class="sub">{tracker_pct}%</div></div><div class="kpi"><label>Online</label><div class="v v-ac">{tracker_online:,}</div></div><div class="kpi"><label>Falha +24h</label><div class="v v-cr">{tracker_falha:,}</div></div></div></div></details>
     </div>
-    <details class="strategy-box" open><summary>🚍 Cobertura de Rastreamento por Tipo de Frota</summary><div class="strategy-box-body"><canvas id="c_tracker_tipo"></canvas></div></details>
   </section>
 
   <section class="strategy-pillar" data-pillar="acoes">
-    <div class="card strategy-actions"><h3>🚨 Prioridades Estratégicas</h3><p class="desc">Cruza dependência de terceiros e desempenho das RR para orientar a fiscalização.</p><div class="tw"><table><thead><tr><th>Prioridade</th><th>GRE</th><th>Frota Ativa</th><th>% Terceiros</th><th>Conclusão RR</th><th>Score</th><th>Ação Sugerida</th></tr></thead><tbody id="t_strat_actions"><tr><td colspan="7">Carregando...</td></tr></tbody></table></div></div>
+    <div class="strategy-section-head"><span class="strategy-overline">🚨 AÇÕES</span><h3>Prioridades para fiscalização e gestão</h3><p>O score é um sinal de atenção; a decisão final depende do contexto operacional.</p></div>
+    <div class="card strategy-actions"><div class="tw"><table><thead><tr><th>Prioridade</th><th>GRE</th><th>Frota Ativa</th><th>% Terceiros</th><th>Conclusão RR</th><th>Score</th><th>Ação</th></tr></thead><tbody id="t_strat_actions"><tr><td colspan="7">Carregando...</td></tr></tbody></table></div></div>
   </section>
 
-  <details class="strategy-detail" open>
+  <details class="strategy-detail">
     <summary>🔍 Exploração Operacional Detalhada <span>filtros, rankings, municípios, tecnologia e ocorrências</span></summary>
     <div class="strategy-detail-body">
-      <!-- Conteúdo operacional existente continua abaixo, preservando os filtros e tabelas. -->
       <div class="filter-box">
         <div class="filter-title">🔎 FILTROS OPERACIONAIS</div>
         <div class="filter-grid">
-          <div class="filter-item"><label>PERÍODO DO DETALHE</label><select id="fx_periodo">
-            <option value="current" selected>MÊS ATUAL</option>
-            <option value="last30">ÚLTIMOS 30 DIAS</option>
-          </select><small style="display:block;margin-top:4px;color:var(--mt)">O histórico multimensal está nos gráficos estratégicos; o detalhe bruto permanece limitado para manter o HTML leve.</small></div>
+          <div class="filter-item"><label>PERÍODO DO DETALHE</label><select id="fx_periodo"><option value="current" selected>MÊS ATUAL</option><option value="last30">ÚLTIMOS 30 DIAS</option></select><small style="display:block;margin-top:4px;color:var(--mt)">O histórico multimensal fica nos gráficos estratégicos.</small></div>
           <div class="filter-item"><label>TIPO</label><select id="fx_tipo"><option value="" selected>TODOS</option><option value="RR">REGULARES</option><option value="EX">EXTRAS</option><option value="OUTROS">OUTROS</option></select></div>
           <div class="filter-item"><label>TURNO</label><select id="fx_turno">{exec_html_options(_exec_vals['turno'])}</select></div>
           <div class="filter-item"><label>DIREÇÃO</label><select id="fx_direcao">{exec_html_options(_exec_vals['direcao'])}</select></div>
@@ -3392,7 +3475,6 @@ window.switchStrategyPillar = function(p, btn){{
           <div class="filter-item"><label>FORNECEDOR</label><select id="fx_fornecedor">{exec_html_options(_exec_vals['fornecedor'])}</select></div>
         </div>
       </div>
-
       <div class="kpi-grid">
         <div class="kpi"><label>Total Analisado</label><div class="v v-ac" id="x_total">{exec_total:,}</div><div class="sub">registros não anulados</div></div>
         <div class="kpi"><label>Concluído</label><div class="v v-ok" id="x_conc">{exec_conc:,}</div><div class="sub">início + fim</div></div>
@@ -3401,36 +3483,18 @@ window.switchStrategyPillar = function(p, btn){{
         <div class="kpi"><label>Volume Extras</label><div class="v v-wn" id="x_extra">{exec_extras:,}</div><div class="sub">tipo EX</div></div>
         <div class="kpi"><label>Em Andamento</label><div class="v v-wn" id="x_and">{exec_and:,}</div><div class="sub">início sem fim</div></div>
       </div>
-
       <div class="card gc-analysis"><h3>👤 Performance Campo</h3><p class="desc" id="exec_analysis" style="border-left-color:var(--ac)">{comentario_executivo()}</p><div class="exec-coverage">📊 <span>Cobertura geral:</span> <b id="x_cov">{exec_pct_assid}%</b></div></div>
-
-      <div class="g2">
-        <div class="card"><h3>📈 Histórico de Rotas — Planejadas x Concluídas x Não Executadas</h3><p class="desc">Histórico mensal de 2026 baseado diretamente em rotas_escalarota.</p><canvas id="c_exec_hist"></canvas></div>
-        <div class="card"><h3>📊 Assiduidade Mensal</h3><p class="desc">Concluídas ÷ analisadas.</p><canvas id="c_exec_assid"></canvas></div>
-      </div>
-
-      <div class="g2">
-        <div class="card"><h3>🏆 Ranking de Responsáveis — Performance Campo</h3><div class="tw"><table id="t_exec_fiscal"><thead><tr><th>Pos</th><th>Responsável</th><th>GRE</th><th>Total</th><th>Concl.</th><th>Assid.</th></tr></thead><tbody>{html_exec_fiscal_inicial()}</tbody></table></div></div>
-        <div class="card"><h3>🏆 Performance — Assiduidade: Top 5 Fiscais</h3><canvas id="c_exec_topfiscal"></canvas></div>
-      </div>
-
+      <div class="g2"><div class="card"><h3>📈 Histórico de Rotas</h3><canvas id="c_exec_hist"></canvas></div><div class="card"><h3>📊 Assiduidade Mensal</h3><canvas id="c_exec_assid"></canvas></div></div>
+      <div class="g2"><div class="card"><h3>🏆 Ranking de Responsáveis</h3><div class="tw"><table id="t_exec_fiscal"><thead><tr><th>Pos</th><th>Responsável</th><th>GRE</th><th>Total</th><th>Concl.</th><th>Assid.</th></tr></thead><tbody>{html_exec_fiscal_inicial()}</tbody></table></div></div><div class="card"><h3>🏆 Performance — Assiduidade</h3><canvas id="c_exec_topfiscal"></canvas></div></div>
       <div class="card"><h3>👥 Motoristas Ativos em Escala — Vínculo com Veículo</h3><div class="g3"><div class="kpi"><label>Mot. Ativos em Escala</label><div class="v v-ac" id="x_mot">{exec_vinculo_mot:,}</div></div><div class="kpi"><label>Com Veículo</label><div class="v v-ok" id="x_mot_vei">{exec_vinculo_vei:,}</div></div><div class="kpi"><label>Sem Veículo</label><div class="v v-wn" id="x_mot_sem">{exec_vinculo_sem:,}</div></div></div><div class="tw"><table id="t_exec_vinculo"><thead><tr><th>Regional (GRE)</th><th>Mot.</th><th>Com V.</th><th>Sem V.</th></tr></thead><tbody>{html_exec_vinculo_inicial()}</tbody></table></div></div>
-
-      <div class="g2">
-        <div class="card"><h3>🏆 Rotas por Regional (GRE)</h3><div class="tw"><table id="t_exec_gre"><thead><tr><th>Pos</th><th>Regional</th><th>Total</th><th>Ok</th><th>Assid.</th></tr></thead><tbody></tbody></table></div></div>
-        <div class="card"><h3>🏙️ Rotas por Município</h3><div class="tw"><table id="t_exec_city"><thead><tr><th>Pos</th><th>Cidade</th><th>Total</th><th>Ok</th><th>Assid.</th></tr></thead><tbody></tbody></table></div></div>
-      </div>
-
-      <div class="g2">
-        <div class="card"><h3>📏 KM Executado por GRE</h3><div class="tw"><table id="t_exec_km_gre"><thead><tr><th>Pos</th><th>GRE</th><th>KM Exec.</th></tr></thead><tbody>{html_exec_km_inicial('g')}</tbody></table></div></div>
-        <div class="card"><h3>📏 KM Executado por Município</h3><div class="tw"><table id="t_exec_km_city"><thead><tr><th>Pos</th><th>Município</th><th>KM Exec.</th></tr></thead><tbody>{html_exec_km_inicial('c')}</tbody></table></div></div>
-      </div>
+      <div class="g2"><div class="card"><h3>🏆 Rotas por Regional</h3><div class="tw"><table id="t_exec_gre"><thead><tr><th>Pos</th><th>Regional</th><th>Total</th><th>Ok</th><th>Assid.</th></tr></thead><tbody></tbody></table></div></div><div class="card"><h3>🏙️ Rotas por Município</h3><div class="tw"><table id="t_exec_city"><thead><tr><th>Pos</th><th>Cidade</th><th>Total</th><th>Ok</th><th>Assid.</th></tr></thead><tbody></tbody></table></div></div></div>
+      <div class="g2"><div class="card"><h3>📏 KM Executado por GRE</h3><div class="tw"><table id="t_exec_km_gre"><thead><tr><th>Pos</th><th>GRE</th><th>KM Exec.</th></tr></thead><tbody>{html_exec_km_inicial('g')}</tbody></table></div></div><div class="card"><h3>📏 KM Executado por Município</h3><div class="tw"><table id="t_exec_km_city"><thead><tr><th>Pos</th><th>Município</th><th>KM Exec.</th></tr></thead><tbody>{html_exec_km_inicial('c')}</tbody></table></div></div></div>
       <div class="card"><h3>🏆 Rotas Concluídas por Município</h3><div class="tw"><table id="t_exec_city_conc"><thead><tr><th>Pos</th><th>Município</th><th>Concluídas</th></tr></thead><tbody></tbody></table></div></div>
       <div class="card"><h3>⚠️ Municípios Ofensores — Não Executadas</h3><div class="tw"><table id="t_exec_off"><thead><tr><th>Pos</th><th>Cidade</th><th>Total</th><th>Não Ex.</th><th>Assid.</th></tr></thead><tbody>{html_exec_off_inicial()}</tbody></table></div></div>
       <div class="card"><h3>🏅 Ranking Municípios — Assiduidade</h3><div class="tw"><table id="t_exec_city_assid"><thead><tr><th>Pos</th><th>Cidade</th><th>Total</th><th>Ok</th><th>Assid.</th></tr></thead><tbody></tbody></table></div></div>
       <div class="g2"><div class="card"><h3>🚛 Tipologia de Frota</h3><div class="tw"><table id="t_exec_frota"><thead><tr><th>Categoria / Regional</th><th>Rotas</th><th>Vei.</th></tr></thead><tbody></tbody></table></div></div><div class="card"><h3>🤝 Fornecedores</h3><div class="tw"><table id="t_exec_fornecedor"><thead><tr><th>Fornecedor</th><th>Rotas</th><th>Ok</th><th>Assid.</th></tr></thead><tbody></tbody></table></div></div></div>
       <div class="card"><h3>📝 Ocorrências por Fiscal</h3><p class="desc">Lê <b>observacao</b> de rotas_escalarota; IDs técnicos automáticos são ignorados.</p><div class="tw"><table id="t_exec_ocorr"><thead><tr><th>Fiscal</th><th>GRE</th><th>Ocorrências</th><th>Principais registros</th></tr></thead><tbody>{html_exec_ocorr_inicial()}</tbody></table></div></div>
-      <div class="card"><h3>📱 Tecnologia — Usabilidade do Sistema</h3><p class="desc">Histórico mensal de motoristas escalados x motoristas que iniciaram execução; exclui os fiscais AYSLAN DE SOUSA COSTA e JOSE MAYLSON ALVES MACEDO.</p><canvas id="c_exec_tec_hist"></canvas><div class="tw"><table id="t_exec_tec"><thead><tr><th>Hierarquia</th><th>Mot. Esc.</th><th>Mot. Exec.</th><th>Via App</th><th>Link/Outro</th><th>% App</th><th>% Usabilidade</th></tr></thead><tbody>{html_exec_tec_inicial()}</tbody></table></div></div>
+      <div class="card"><h3>📱 Tecnologia — Usabilidade do Sistema</h3><canvas id="c_exec_tec_hist"></canvas><div class="tw"><table id="t_exec_tec"><thead><tr><th>Hierarquia</th><th>Mot. Esc.</th><th>Mot. Exec.</th><th>Via App</th><th>Link/Outro</th><th>% App</th><th>% Usabilidade</th></tr></thead><tbody>{html_exec_tec_inicial()}</tbody></table></div></div>
     </div>
   </details>
 </div>
@@ -4434,7 +4498,8 @@ const stratDailyPayLabels = {jd(strat_daily_labels)};
 const stratDailyPayVals = {jd(strat_daily_vals)};
 const stratSupplier = {jd(strat_supplier)};
 const stratDayRows = {jd([{'d':d,'plan':p,'exec':x,'conc':c,'extra':e} for d,p,x,c,e in zip(strat_day_labels,strat_day_plan,strat_day_ini,strat_day_conc,strat_day_extras)])};
-const stratFiscal = {jd(strat_fiscal_top)};
+const stratFiscal = {jd(strat_fiscal_rank_top)};
+const stratFiscalBottom = {jd(strat_fiscal_rank_bottom)};
 const stratGrePerf = {jd(strat_gre_top[:5])};
 const strat_extra_labels = {jd(strat_extra_labels)};
 const strat_extra_vals = {jd(strat_extra_vals)};
@@ -4481,32 +4546,6 @@ if(document.getElementById('c_strat_dep')) C.bar('c_strat_dep',stratDepLabels,[{
 if(document.getElementById('c_strat_daily')) C.line('c_strat_daily',stratDailyPayLabels,[{{{{label:'Valor computado por dia (R$)',data:stratDailyPayVals,tension:.25}}}}]);
 
 if(document.getElementById('c_strat_combustivel') && stratCombGre.length) C.bar('c_strat_combustivel',stratCombGre.map(x=>x.gre),[{{{{label:'Gasto (R$)',data:stratCombGre.map(x=>x.gasto)}}}}]);
-
-// Navegação dos pilares: um único pilar visível por vez para deixar a visão maleável.
-document.querySelectorAll('#strategyNav button').forEach(btn=>{{{{
-  btn.addEventListener('click',()=>{{{{
-    const p=btn.dataset.pillar;
-    document.querySelectorAll('#strategyNav button').forEach(b=>b.classList.toggle('active',b===btn));
-    document.querySelectorAll('.strategy-pillar').forEach(sec=>sec.classList.toggle('active',sec.dataset.pillar===p));
-    setTimeout(()=>{{{{document.querySelectorAll('canvas').forEach(c=>{{{{const chart=Chart.getChart(c); if(chart){{{{try{{{{chart.resize()}}}}catch(e){{{{}}}}}}}}}}}});}}}},30);
-  }}}});
-}}}});
-
-function renderStrategicActions(){{{{
-  const el=document.getElementById('t_strat_actions');
-  if(!el)return;
-  if(!stratActions.length){{{{el.innerHTML='<tr><td colspan="7">Sem dados suficientes.</td></tr>';return;}}}}
-  el.innerHTML=stratActions.map(x=>{{{{
-    const pr=x.score>=70?'🔴 CRÍTICA':(x.score>=55?'🟠 ALTA':(x.score>=40?'🟡 MODERADA':'🟢 NORMAL'));
-    let ac='Manter tendência e acompanhamento.';
-    if(x.total_op<20) ac='Aprofundar análise; base pequena.';
-    else if(x.assid<70 && x.pct_terc>=60) ac='Fiscalização contratual + plano de recuperação.';
-    else if(x.assid<70) ac='Atacar baixa execução e cobrar plano.';
-    else if(x.pct_terc>=70) ac='Fiscalização reforçada e revisão da exposição.';
-    return '<tr><td>'+pr+'</td><td><b>'+exEsc(x.gre)+'</b></td><td>'+exNum(x.frota)+'</td><td>'+exPct(x.pct_terc)+'</td><td>'+exPct(x.assid)+'</td><td><b>'+x.score+'</b></td><td>'+ac+'</td></tr>';
-  }}}}).join('');
-}}}}
-renderStrategicActions();
 
 // ─── RASTREAMENTO ────────────────────────────────────────────────────────────
 const trackerHealthLabels=['Com rastreador','Sem rastreador','Online','Falha +24h','Sem sinal histórico'];
