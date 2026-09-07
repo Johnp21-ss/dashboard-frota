@@ -135,6 +135,74 @@ GROUP BY TO_CHAR(e.data,'YYYY-MM')
 ORDER BY mes
 """, pd.DataFrame())
 
+df_exec_tec_hist = safe_read("""
+SELECT
+    TO_CHAR(e.data, 'YYYY-MM') AS mes,
+    COUNT(DISTINCT e.motorista_id) AS motoristas_escalados,
+    COUNT(DISTINCT e.motorista_id) FILTER (WHERE e.inicio_execucao IS NOT NULL) AS motoristas_executaram,
+    COUNT(DISTINCT e.motorista_id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.via_app = true) AS via_app,
+    COUNT(DISTINCT e.motorista_id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND COALESCE(e.via_app,false) = false) AS via_link_outro
+FROM airbyte.rotas_escalarota e
+WHERE e.data >= DATE '2026-01-01'
+  AND e.data <= CURRENT_DATE
+  AND e.anulada = false
+  AND e.motorista_id IS NOT NULL
+GROUP BY TO_CHAR(e.data, 'YYYY-MM')
+ORDER BY mes
+""", pd.DataFrame(columns=['mes','motoristas_escalados','motoristas_executaram','via_app','via_link_outro']))
+
+# 1b) Aggregates server-side for current-month KM and offender views.
+df_exec_km_gre = safe_read("""
+SELECT
+    COALESCE(g.nome,'SEM GRE') AS gre,
+    COUNT(*) AS execucoes,
+    COALESCE(SUM(e.km_executado),0) AS km_executado
+FROM airbyte.rotas_escalarota e
+LEFT JOIN airbyte.rotas_rota r ON r.id = e.rota_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = r.gre_id
+WHERE e.data >= DATE_TRUNC('month', CURRENT_DATE)
+  AND e.data <= CURRENT_DATE
+  AND e.anulada = false
+  AND e.inicio_execucao IS NOT NULL
+GROUP BY COALESCE(g.nome,'SEM GRE')
+ORDER BY km_executado DESC
+LIMIT 50
+""", pd.DataFrame(columns=['gre','execucoes','km_executado']))
+
+df_exec_km_cidade = safe_read("""
+SELECT
+    COALESCE(r.cidade,'SEM CIDADE') AS cidade,
+    COUNT(*) AS execucoes,
+    COALESCE(SUM(e.km_executado),0) AS km_executado
+FROM airbyte.rotas_escalarota e
+LEFT JOIN airbyte.rotas_rota r ON r.id = e.rota_id
+WHERE e.data >= DATE_TRUNC('month', CURRENT_DATE)
+  AND e.data <= CURRENT_DATE
+  AND e.anulada = false
+  AND e.inicio_execucao IS NOT NULL
+GROUP BY COALESCE(r.cidade,'SEM CIDADE')
+ORDER BY km_executado DESC
+LIMIT 80
+""", pd.DataFrame(columns=['cidade','execucoes','km_executado']))
+
+df_exec_off_city = safe_read("""
+SELECT
+    COALESCE(r.cidade,'SEM CIDADE') AS cidade,
+    COUNT(*) AS total,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) AS concluidas,
+    COUNT(*) FILTER (WHERE e.inicio_execucao IS NULL) AS nao_executadas,
+    ROUND(COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) * 100.0 / NULLIF(COUNT(*),0),1) AS assiduidade
+FROM airbyte.rotas_escalarota e
+LEFT JOIN airbyte.rotas_rota r ON r.id = e.rota_id
+WHERE e.data >= DATE_TRUNC('month', CURRENT_DATE)
+  AND e.data <= CURRENT_DATE
+  AND e.anulada = false
+GROUP BY COALESCE(r.cidade,'SEM CIDADE')
+HAVING COUNT(*) >= 5
+ORDER BY nao_executadas DESC, total DESC
+LIMIT 50
+""", pd.DataFrame(columns=['cidade','total','concluidas','nao_executadas','assiduidade']))
+
 df_exec_motoristas = safe_read("""
 SELECT
     COALESCE(g.nome,'SEM GRE') AS gre,
@@ -1536,6 +1604,9 @@ exec_pct_rast = round(exec_rast/max(_exec_started,1)*100,1)
 exec_pct_susp = 0.0
 exec_rotas = len({(r['d'],r['m'],r['v']) for r in _exec_cur})
 exec_contratos = len({r['cr'] for r in _exec_cur if r.get('cr')})
+exec_motoristas_escalados = len({r['m'] for r in _exec_cur if r.get('m') and r.get('m') != 'SEM MOTORISTA'})
+exec_motoristas_executaram = len({r['m'] for r in _exec_cur if r.get('m') and r.get('m') != 'SEM MOTORISTA' and r['i']})
+exec_tec_usabilidade = round(exec_motoristas_executaram/max(exec_motoristas_escalados,1)*100,1)
 
 # Histórico mensal de operação para os gráficos do Executivo.
 # Esses dados vêm agregados do banco; não dependem do detalhe embutido no HTML.
@@ -1548,6 +1619,16 @@ if not df_exec_hist.empty:
     ev_assid = [round((c/max(t,1))*100,1) for c,t in zip(ev_conc,ev_tot)]
 else:
     meses_ev=[]; ev_tot=[]; ev_conc=[]; ev_nao=[]; ev_km=[]; ev_assid=[]
+
+if not df_exec_tec_hist.empty:
+    tec_meses = df_exec_tec_hist['mes'].astype(str).tolist()
+    tec_escalados = [int(v or 0) for v in df_exec_tec_hist['motoristas_escalados'].tolist()]
+    tec_executaram = [int(v or 0) for v in df_exec_tec_hist['motoristas_executaram'].tolist()]
+    tec_usabilidade = [round(x/max(y,1)*100,1) for x,y in zip(tec_executaram, tec_escalados)]
+    tec_app = [int(v or 0) for v in df_exec_tec_hist['via_app'].tolist()]
+    tec_outro = [int(v or 0) for v in df_exec_tec_hist['via_link_outro'].tolist()]
+else:
+    tec_meses=[]; tec_escalados=[]; tec_executaram=[]; tec_usabilidade=[]; tec_app=[]; tec_outro=[]
 
 def exec_html_options(values):
     opts = ["<option value=''>TODOS</option>"]
@@ -1566,6 +1647,78 @@ _exec_vals = {
     'fiscal': {r['f'] for r in exec_data},
     'fornecedor': {r['p'] for r in exec_data}
 }
+
+def _html_tr(values):
+    return '<tr>' + ''.join(f'<td>{v}</td>' for v in values) + '</tr>'
+
+def _static_exec_group(rows, key):
+    out = {}
+    for r in rows:
+        k = r.get(key) or 'SEM DADO'
+        if k not in out:
+            out[k] = {'total':0,'ok':0,'nao':0,'and':0,'km':0.0}
+        o = out[k]
+        o['total'] += 1
+        if r.get('i') and r.get('z'): o['ok'] += 1
+        elif not r.get('i'): o['nao'] += 1
+        elif r.get('i') and not r.get('z'): o['and'] += 1
+        if r.get('i'): o['km'] += float(r.get('k') or 0)
+    return out
+
+def html_exec_fiscal_inicial():
+    m = {}
+    for r in _exec_cur:
+        k = (r.get('f') or 'SEM FISCAL') + '||' + (r.get('g') or 'SEM GRE')
+        if k not in m: m[k] = {'f':r.get('f') or 'SEM FISCAL','g':r.get('g') or 'SEM GRE','total':0,'ok':0}
+        m[k]['total'] += 1
+        if r.get('i') and r.get('z'): m[k]['ok'] += 1
+    a = sorted(m.values(), key=lambda x: (x['ok']/x['total']*100 if x['total'] else 0, x['total']), reverse=True)
+    if not a: return '<tr><td colspan="6">Sem dados para o período atual.</td></tr>'
+    return ''.join(_html_tr([f'<b>#{i+1}</b>',htmlmod.escape(o['f']),htmlmod.escape(o['g']),f"{o['total']:,}",f"{o['ok']:,}",f"{(o['ok']/o['total']*100 if o['total'] else 0):.1f}%"]) for i,o in enumerate(a[:30]))
+
+def html_exec_km_inicial(key):
+    m = _static_exec_group(_exec_cur, key)
+    a = sorted(m.items(), key=lambda kv: kv[1]['km'], reverse=True)
+    if not a or all(v['km'] == 0 for _,v in a): return '<tr><td colspan="3">Sem KM executado registrado no período atual.</td></tr>'
+    return ''.join(_html_tr([f'<b>#{i+1}</b>',htmlmod.escape(k),f"{fmt(v['km'])} km"]) for i,(k,v) in enumerate(a[:40]))
+
+def html_exec_off_inicial():
+    m = _static_exec_group(_exec_cur, 'c')
+    a = [(k,v) for k,v in m.items() if v['nao'] > 0]
+    a.sort(key=lambda kv:(kv[1]['nao'], -kv[1]['total']), reverse=True)
+    if not a: return '<tr><td colspan="5">Nenhum município com não executadas no período atual.</td></tr>'
+    return ''.join(_html_tr([f'<b>#{i+1}</b>',htmlmod.escape(k),f"{v['total']:,}",f"{v['nao']:,}",f"{(v['ok']/v['total']*100 if v['total'] else 0):.1f}%"]) for i,(k,v) in enumerate(a[:40]))
+
+def html_exec_ocorr_inicial():
+    m = {}
+    for r in _exec_cur:
+        obs = str(r.get('o') or '').strip()
+        if not obs: continue
+        k=(r.get('f') or 'SEM FISCAL')+'||'+(r.get('g') or 'SEM GRE')
+        if k not in m: m[k]={'f':r.get('f') or 'SEM FISCAL','g':r.get('g') or 'SEM GRE','n':0,'motivos':[]}
+        m[k]['n'] += 1
+        if len(m[k]['motivos']) < 3: m[k]['motivos'].append(' '.join(obs.split())[:140])
+    a=sorted(m.values(), key=lambda x:x['n'], reverse=True)
+    if not a: return '<tr><td colspan="4">Sem ocorrências com observação preenchida no período.</td></tr>'
+    return ''.join(_html_tr([htmlmod.escape(o['f']),htmlmod.escape(o['g']),str(o['n']),htmlmod.escape(' · '.join(o['motivos']))]) for o in a[:40])
+
+def html_exec_tec_inicial():
+    m={}
+    for r in _exec_cur:
+        mot=r.get('m')
+        if not mot or mot=='SEM MOTORISTA': continue
+        k=(r.get('f') or 'SEM FISCAL')+'||'+(r.get('g') or 'SEM GRE')+'||'+(r.get('c') or 'SEM CIDADE')
+        if k not in m: m[k]={'f':r.get('f') or 'SEM FISCAL','g':r.get('g') or 'SEM GRE','c':r.get('c') or 'SEM CIDADE','tot':set(),'ok':set(),'app':set(),'outro':set()}
+        o=m[k]; o['tot'].add(mot)
+        if r.get('i'): o['ok'].add(mot); (o['app'] if r.get('a') is True else o['outro']).add(mot)
+    a=[]
+    for o in m.values():
+        total=len(o['tot']); ok=len(o['ok']); app=len(o['app']); outro=len(o['outro'])
+        a.append((ok/max(total,1)*100, o['f'],o['g'],o['c'],total,ok,app,outro,app/max(ok,1)*100,ok/max(total,1)*100))
+    a.sort(key=lambda x:(x[0],x[4]), reverse=True)
+    if not a: return '<tr><td colspan="9">Sem dados de tecnologia para o período.</td></tr>'
+    return ''.join(_html_tr([htmlmod.escape(x[1]),htmlmod.escape(x[2]),htmlmod.escape(x[3]),str(x[4]),str(x[5]),str(x[6]),str(x[7]),f"{x[8]:.1f}%",f"{x[9]:.1f}%"]) for x in a[:100])
+
 # ─── COMBUSTÍVEL ────────────────────────────────────────────────────────────
 MESES_COMB = ['2026-02','2026-03','2026-04','2026-05','2026-06','2026-07','2026-08']
 MESES_COMB_NOMES = {'2026-02':'Fev','2026-03':'Mar','2026-04':'Abr','2026-05':'Mai','2026-06':'Jun','2026-07':'Jul','2026-08':'Ago'}
@@ -2819,9 +2972,9 @@ canvas{{max-height:270px}}
 
   <div class="g2">
     <div class="card"><h3>🏆 Ranking de Responsáveis — Performance Campo</h3><p class="desc">Top por assiduidade, respeitando os filtros selecionados.</p>
-      <div class="tw"><table id="t_exec_fiscal"><thead><tr><th>Pos</th><th>Responsável</th><th>GRE</th><th>Total</th><th>Concl.</th><th>Assid.</th></tr></thead><tbody></tbody></table></div>
+      <div class="tw"><table id="t_exec_fiscal"><thead><tr><th>Pos</th><th>Responsável</th><th>GRE</th><th>Total</th><th>Concl.</th><th>Assid.</th></tr></thead><tbody>{html_exec_fiscal_inicial()}</tbody></table></div>
     </div>
-    <div class="card"><h3>📈 Visão Detalhada de Assiduidade: Top 5</h3><canvas id="c_exec_topfiscal"></canvas></div>
+    <div class="card"><h3>🏆 Performance — Assiduidade: Top 5 Fiscais</h3><p class="desc">Top 5 por assiduidade entre responsáveis com pelo menos 20 registros no período selecionado.</p><canvas id="c_exec_topfiscal"></canvas></div>
   </div>
 
   <div class="card"><h3>👥 Motoristas — Vínculo com Veículo</h3>
@@ -2840,13 +2993,13 @@ canvas{{max-height:270px}}
   </div>
 
   <div class="g2">
-    <div class="card"><h3>📏 KM Executado por GRE</h3><div class="tw"><table id="t_exec_km_gre"><thead><tr><th>Pos</th><th>GRE</th><th>KM Exec.</th></tr></thead><tbody></tbody></table></div></div>
-    <div class="card"><h3>📏 KM Executado por Município</h3><div class="tw"><table id="t_exec_km_city"><thead><tr><th>Pos</th><th>Município</th><th>KM Exec.</th></tr></thead><tbody></tbody></table></div></div>
+    <div class="card"><h3>📏 KM Executado por GRE</h3><p class="desc">Soma de <b>km_executado</b> somente das execuções com início registrado no mês atual. Se o detalhe filtrado não tiver KM, o painel usa o consolidado do banco.</p><div class="tw"><table id="t_exec_km_gre"><thead><tr><th>Pos</th><th>GRE</th><th>KM Exec.</th></tr></thead><tbody>{html_exec_km_inicial("g")}</tbody></table></div></div>
+    <div class="card"><h3>📏 KM Executado por Município</h3><p class="desc">Soma de <b>km_executado</b> somente das execuções com início registrado no mês atual.</p><div class="tw"><table id="t_exec_km_city"><thead><tr><th>Pos</th><th>Município</th><th>KM Exec.</th></tr></thead><tbody>{html_exec_km_inicial("c")}</tbody></table></div></div>
   </div>
 
   <div class="card"><h3>🏆 Rotas Concluídas por Município</h3><div class="tw"><table id="t_exec_city_conc"><thead><tr><th>Pos</th><th>Município</th><th>Concluídas</th></tr></thead><tbody></tbody></table></div></div>
 
-  <div class="card"><h3>⚠️ Municípios Ofensores — Não Executadas</h3><p class="desc">Ordenado pelo volume de não executadas.</p><div class="tw"><table id="t_exec_off"><thead><tr><th>Pos</th><th>Cidade</th><th>Total</th><th>Não Ex.</th><th>Assid.</th></tr></thead><tbody></tbody></table></div></div>
+  <div class="card"><h3>⚠️ Municípios Ofensores — Não Executadas</h3><p class="desc">Ordenado pelo volume de não executadas no período selecionado. A lista destaca municípios que concentram maior volume de falhas de execução.</p><div class="tw"><table id="t_exec_off"><thead><tr><th>Pos</th><th>Cidade</th><th>Total</th><th>Não Ex.</th><th>Assid.</th></tr></thead><tbody>{html_exec_off_inicial()}</tbody></table></div></div>
 
   <div class="card"><h3>🏅 Ranking Municípios — Assiduidade</h3><div class="tw"><table id="t_exec_city_assid"><thead><tr><th>Pos</th><th>Cidade</th><th>Total</th><th>Ok</th><th>Assid.</th></tr></thead><tbody></tbody></table></div></div>
 
@@ -2855,10 +3008,12 @@ canvas{{max-height:270px}}
     <div class="card"><h3>🤝 Fornecedores</h3><div class="tw"><table id="t_exec_fornecedor"><thead><tr><th>Fornecedor</th><th>Rotas</th><th>Ok</th><th>Assid.</th></tr></thead><tbody></tbody></table></div></div>
   </div>
 
-  <div class="card"><h3>📝 Ocorrências por Fiscal</h3><p class="desc">Registros com observação preenchida.</p><div class="tw"><table id="t_exec_ocorr"><thead><tr><th>Fiscal</th><th>GRE</th><th>Ocorrências</th></tr></thead><tbody></tbody></table></div></div>
+  <div class="card"><h3>📝 Ocorrências por Fiscal</h3><p class="desc">Lê diretamente a coluna <b>observacao</b> de <b>rotas_escalarota</b> no período selecionado. Mostra quantidade e exemplos dos principais registros de ocorrência por fiscal/GRE.</p><div class="tw"><table id="t_exec_ocorr"><thead><tr><th>Fiscal</th><th>GRE</th><th>Ocorrências</th><th>Principais registros</th></tr></thead><tbody>{html_exec_ocorr_inicial()}</tbody></table></div></div>
 
-  <div class="card"><h3>📱 Análise de Tecnologia (Origem Localização)</h3><p class="desc">Motoristas únicos. Via App usa <b>via_app=true</b>; Via Link/Outro usa <b>via_app=false</b>. Taxa de abertura = motoristas com início / motoristas analisados.</p>
-    <div class="tw"><table id="t_exec_tec"><thead><tr><th>Fiscal</th><th>GRE</th><th>Cidade</th><th>Motorista</th><th>Total Mots.</th><th>Mots. OK</th><th>Via App</th><th>Via Link/Outro</th><th>% App</th><th>% Abertura</th></tr></thead><tbody></tbody></table></div>
+  <div class="card"><h3>📱 Tecnologia — Usabilidade do Sistema</h3><p class="desc">Acompanha mês a mês quantos motoristas foram escalados e quantos efetivamente iniciaram uma execução no sistema. <b>% Usabilidade geral</b> = motoristas que executaram ÷ motoristas escalados. O detalhamento abaixo segue <b>Fiscal › GRE › Cidade</b>; Via App e Link/Outro mostram a origem das execuções.</p>
+    <div class="g2" style="margin-bottom:12px"><div class="kpi"><label>Motoristas Escalados — Mês Atual</label><div class="v v-ac">{exec_motoristas_escalados:,}</div></div><div class="kpi"><label>Motoristas que Executaram</label><div class="v v-ok">{exec_motoristas_executaram:,}</div><div class="sub">Usabilidade {exec_tec_usabilidade}%</div></div></div>
+    <div style="height:280px;margin-bottom:12px"><canvas id="c_exec_tec_hist"></canvas></div>
+    <div class="tw"><table id="t_exec_tec"><thead><tr><th>Fiscal</th><th>GRE</th><th>Cidade</th><th>Mot. Esc.</th><th>Mot. Exec.</th><th>Via App</th><th>Link/Outro</th><th>% App</th><th>% Usabilidade</th></tr></thead><tbody>{html_exec_tec_inicial()}</tbody></table></div>
   </div>
 </div>
 
@@ -3516,6 +3671,10 @@ const C={{
 const execRows = {jd(exec_data)};
 const execToday = '{exec_today_iso}';
 const execCurrentYM = execToday.slice(0,7);
+const execTecHist = {{meses:{jd(tec_meses)},escalados:{jd(tec_escalados)},executaram:{jd(tec_executaram)},usabilidade:{jd(tec_usabilidade)},app:{jd(tec_app)},outro:{jd(tec_outro)}}};
+const execKmGreStatic = {jd(df_exec_km_gre.to_dict('records') if not df_exec_km_gre.empty else [])};
+const execKmCidadeStatic = {jd(df_exec_km_cidade.to_dict('records') if not df_exec_km_cidade.empty else [])};
+const execOffCidadeStatic = {jd(df_exec_off_city.to_dict('records') if not df_exec_off_city.empty else [])};
 
 function exEsc(v){{
   return String(v??'').replace(/[&<>"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}})[m]);
@@ -3629,11 +3788,17 @@ function exRenderFiscal(rows){{
   const m=new Map();
   rows.forEach(r=>{{
     const k=(r.f||'SEM FISCAL')+'||'+(r.g||'SEM GRE');
-    if(!m.has(k))m.set(k,{{f:r.f,g:r.g,total:0,ok:0}});
-    const o=m.get(k);o.total++;if(r.i&&r.z)o.ok++;
+    if(!m.has(k))m.set(k,{{f:r.f,g:r.g,total:0,ok:0,nao:0,and:0}});
+    const o=m.get(k);o.total++;if(r.i&&r.z)o.ok++;else if(!r.i)o.nao++;else if(r.i&&!r.z)o.and++;
   }});
   const a=[...m.values()].map(o=>({{...o,ass:o.total?o.ok/o.total*100:0}})).sort((x,y)=>y.ass-x.ass||y.total-x.total);
   exTable('t_exec_fiscal',a.slice(0,30).map((o,i)=>exTr(['<b>#'+(i+1)+'</b>',exEsc(o.f),exEsc(o.g),exNum(o.total),exNum(o.ok),exPct(o.ass)])).join(''),6);
+  const elegiveis=a.filter(o=>o.total>=20); const top=(elegiveis.length?elegiveis:a).slice(0,5);
+  const canvas=document.getElementById('c_exec_topfiscal');
+  if(canvas){{
+    if(window._topFiscalChart){{try{{window._topFiscalChart.destroy()}}catch(e){{}}}}
+    window._topFiscalChart=new Chart(canvas,{{type:'bar',data:{{labels:top.map(o=>String(o.f).replace(/\s+/g,' ').slice(0,28)),datasets:[{{label:'Assiduidade %',data:top.map(o=>Number(o.ass.toFixed(1)))}}]}},options:{{indexAxis:'y',responsive:true,plugins:{{legend:{{display:false}}}},scales:{{x:{{beginAtZero:true,max:100}}}}}}}});
+  }}
 }}
 function exRenderGre(rows){{
   const a=exGroup(rows,'g').map(o=>({{...o,ass:exAssid(o)}})).sort((x,y)=>y.total-x.total);
@@ -3646,12 +3811,34 @@ function exRenderCity(rows){{
   exTable('t_exec_city_conc',conc.slice(0,40).map((o,i)=>exTr(['<b>#'+(i+1)+'</b>',exEsc(o.nome),exNum(o.ok)])).join(''),3);
   const ass=[...a].filter(o=>o.total>=10).sort((x,y)=>y.ass-x.ass);
   exTable('t_exec_city_assid',ass.slice(0,40).map((o,i)=>exTr(['<b>#'+(i+1)+'</b>',exEsc(o.nome),exNum(o.total),exNum(o.ok),exPct(o.ass)])).join(''),5);
+  let off=[...a].filter(o=>o.nao>0).sort((x,y)=>y.nao-x.nao||x.ass-y.ass);
+  if(!off.length && !exHasOperationalFilter() && document.getElementById('fx_periodo').value==='current'){{
+    off=[...execOffCidadeStatic].filter(o=>Number(o.nao_executadas||0)>0).sort((x,y)=>Number(y.nao_executadas||0)-Number(x.nao_executadas||0));
+    exTable('t_exec_off',off.slice(0,40).map((o,i)=>exTr(['<b>#'+(i+1)+'</b>',exEsc(o.cidade),exNum(o.total),exNum(o.nao_executadas),exPct(o.assiduidade)])).join(''),5);
+  }}else{{
+    exTable('t_exec_off',off.slice(0,40).map((o,i)=>exTr(['<b>#'+(i+1)+'</b>',exEsc(o.nome),exNum(o.total),exNum(o.nao),exPct(o.ass)])).join(''),5);
+  }}
+}}
+function exHasOperationalFilter(){{
+  const ids=['fx_tipo','fx_turno','fx_direcao','fx_gre','fx_cidade','fx_fiscal','fx_regiao','fx_fornecedor'];
+  return ids.some(id=>{{ const el=document.getElementById(id); return el && el.value; }});
 }}
 function exRenderKm(rows){{
-  const a=exGroup(rows,'g').sort((x,y)=>y.km-x.km);
-  exTable('t_exec_km_gre',a.slice(0,30).map((o,i)=>exTr(['<b>#'+(i+1)+'</b>',exEsc(o.nome),exKm(o.km)+' km'])).join(''),3);
-  const b=exGroup(rows,'c').sort((x,y)=>y.km-x.km);
-  exTable('t_exec_km_city',b.slice(0,40).map((o,i)=>exTr(['<b>#'+(i+1)+'</b>',exEsc(o.nome),exKm(o.km)+' km'])).join(''),3);
+  const haveKm=rows.some(r=>Number(r.k||0)>0);
+  if(haveKm){{
+    const a=exGroup(rows,'g').sort((x,y)=>y.km-x.km);
+    exTable('t_exec_km_gre',a.slice(0,30).map((o,i)=>exTr(['<b>#'+(i+1)+'</b>',exEsc(o.nome),exKm(o.km)+' km'])).join(''),3);
+    const b=exGroup(rows,'c').sort((x,y)=>y.km-x.km);
+    exTable('t_exec_km_city',b.slice(0,40).map((o,i)=>exTr(['<b>#'+(i+1)+'</b>',exEsc(o.nome),exKm(o.km)+' km'])).join(''),3);
+  }}else if(!exHasOperationalFilter() && document.getElementById('fx_periodo').value==='current'){{
+    const ag=[...execKmGreStatic].sort((a,b)=>Number(b.km_executado||0)-Number(a.km_executado||0));
+    const ac=[...execKmCidadeStatic].sort((a,b)=>Number(b.km_executado||0)-Number(a.km_executado||0));
+    exTable('t_exec_km_gre',ag.slice(0,30).map((o,i)=>exTr(['<b>#'+(i+1)+'</b>',exEsc(o.gre),exKm(o.km_executado)+' km'])).join(''),3);
+    exTable('t_exec_km_city',ac.slice(0,40).map((o,i)=>exTr(['<b>#'+(i+1)+'</b>',exEsc(o.cidade),exKm(o.km_executado)+' km'])).join(''),3);
+  }}else{{
+    exTable('t_exec_km_gre','<tr><td colspan="3">Sem KM executado registrado para os filtros selecionados.</td></tr>',3);
+    exTable('t_exec_km_city','<tr><td colspan="3">Sem KM executado registrado para os filtros selecionados.</td></tr>',3);
+  }}
 }}
 function exRenderFrota(rows){{
   const m=new Map();
@@ -3669,19 +3856,46 @@ function exRenderFornecedor(rows){{
 }}
 function exRenderOcorr(rows){{
   const m=new Map();
-  rows.forEach(r=>{{ if(!r.o)return; const k=(r.f||'SEM FISCAL')+'||'+(r.g||'SEM GRE'); m.set(k,(m.get(k)||0)+1); }});
-  const a=[...m.entries()].map(([k,v])=>{{const q=k.split('||');return{{f:q[0],g:q[1],n:v}}}}).sort((x,y)=>y.n-x.n);
-  exTable('t_exec_ocorr',a.slice(0,40).map(o=>exTr([exEsc(o.f),exEsc(o.g),exNum(o.n)])).join(''),3);
+  rows.forEach(r=>{{
+    const obs=String(r.o||'').trim(); if(!obs)return;
+    const k=(r.f||'SEM FISCAL')+'||'+(r.g||'SEM GRE');
+    if(!m.has(k))m.set(k,{{f:r.f,g:r.g,n:0,motivos:[]}});
+    const o=m.get(k); o.n++; if(o.motivos.length<3)o.motivos.push(obs.replace(/\s+/g,' ').slice(0,140));
+  }});
+  const a=[...m.values()].sort((x,y)=>y.n-x.n);
+  exTable('t_exec_ocorr',a.slice(0,40).map(o=>exTr([exEsc(o.f),exEsc(o.g),exNum(o.n),exEsc(o.motivos.join(' · '))])).join(''),4);
 }}
 function exRenderTec(rows){{
   const m=new Map();
   rows.forEach(r=>{{
-    const k=[r.f,r.g,r.c,r.m].join('||');
-    if(!m.has(k))m.set(k,{{f:r.f,g:r.g,c:r.c,m:r.m,total:0,start:false,concl:false,app:false,link:false}});
-    const o=m.get(k);o.total++;if(r.i)o.start=true;if(r.i&&r.z)o.concl=true;if(r.i&&r.a===true)o.app=true;if(r.i&&r.a===false)o.link=true;
+    const key=[r.f,r.g,r.c].join('||');
+    if(!m.has(key))m.set(key,{{f:r.f,g:r.g,c:r.c,mot:new Set(),ok:new Set(),app:new Set(),outro:new Set()}});
+    const o=m.get(key);
+    if(r.m && r.m!=='SEM MOTORISTA')o.mot.add(r.m);
+    if(r.i && r.m && r.m!=='SEM MOTORISTA')o.ok.add(r.m);
+    if(r.i && r.a===true && r.m && r.m!=='SEM MOTORISTA')o.app.add(r.m);
+    if(r.i && r.a!==true && r.m && r.m!=='SEM MOTORISTA')o.outro.add(r.m);
   }});
-  const a=[...m.values()].map(o=>({{...o,pctApp:o.concl?(o.app?100:0):0,pctOpen:o.total?(o.start?100:0):0}})).sort((x,y)=>y.total-x.total);
-  exTable('t_exec_tec',a.slice(0,100).map(o=>exTr([exEsc(o.f),exEsc(o.g),exEsc(o.c),'<b>'+exEsc(o.m)+'</b>',exNum(o.total),o.concl?'1':'0',o.app?'1':'0',o.link?'1':'0',exPct(o.pctApp),exPct(o.pctOpen)])).join(''),10);
+  const a=[...m.values()].map(o=>({{...o,total:o.mot.size,executaram:o.ok.size,app:o.app.size,outro:o.outro.size,usab:o.mot.size?o.ok.size/o.mot.size*100:0,pctApp:o.ok.size?o.app.size/o.ok.size*100:0}})).sort((x,y)=>y.usab-x.usab||y.total-x.total);
+  const h=[];
+  let lastF='',lastG='',lastC='';
+  a.forEach(o=>{{
+    const indentF=o.f!==lastF; const indentG=o.g!==lastG;
+    h.push(exTr([indentF?'<b>'+exEsc(o.f)+'</b>':'',indentG?'<b>'+exEsc(o.g)+'</b>':'', '<b>'+exEsc(o.c)+'</b>', exNum(o.total), exNum(o.executaram), exNum(o.app), exNum(o.outro), exPct(o.pctApp), exPct(o.usab)]));
+    lastF=o.f; lastG=o.g; lastC=o.c;
+  }});
+  exTable('t_exec_tec',h.join(''),9);
+  const ch=document.getElementById('c_exec_tec_hist');
+  if(ch){{
+    if(window._tecHistChart){{try{{window._tecHistChart.destroy()}}catch(e){{}}}}
+    const monthNames=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    const labels=execTecHist.meses.map(m=>{{const p=String(m).split('-');return monthNames[Number(p[1])-1]+'/'+p[0].slice(2)}});
+    window._tecHistChart=new Chart(ch,{{type:'line',data:{{labels,datasets:[
+      {{label:'Motoristas escalados',data:execTecHist.escalados,tension:.25}},
+      {{label:'Motoristas que executaram',data:execTecHist.executaram,tension:.25}},
+      {{label:'% Usabilidade',data:execTecHist.usabilidade,tension:.25,yAxisID:'y1'}}
+    ]}},options:{{responsive:true,scales:{{y:{{beginAtZero:true}},y1:{{beginAtZero:true,max:100,position:'right'}}}}}}}});
+  }}
 }}
 function exRenderVinculo(rows){{
   const mm=new Map(), gps=new Map(), allMot=new Set(), allV=new Set(), allS=new Set();
