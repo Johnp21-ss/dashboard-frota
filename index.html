@@ -115,16 +115,43 @@ canvas{max-height:270px}
 @media(max-width:1100px){.filter-grid{grid-template-columns:repeat(3,minmax(130px,1fr))}}
 @media(max-width:700px){.filter-grid{grid-template-columns:1fr 1fr}}
 
+.strategy-hero{display:grid;grid-template-columns:1fr 230px;gap:14px;margin-bottom:14px}
+.strategy-hero>div{background:var(--s1);border:1px solid var(--bd);border-radius:10px;padding:16px}
+.strategy-kicker{font-size:10px;color:var(--ac);font-weight:800;letter-spacing:.8px}
+.strategy-hero h2{font-size:21px;margin:5px 0 8px;color:var(--tx)}
+.strategy-hero p{font-size:12px;color:var(--mt);line-height:1.65}
+.strategy-badge{display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;border-left:3px solid var(--ac)!important}
+.strategy-badge span{font-size:9px;color:var(--mt);font-weight:800;letter-spacing:.6px}
+.strategy-badge b{font-size:32px;color:var(--ac);line-height:1.1;margin:5px 0}
+.strategy-badge small{font-size:10px;color:var(--mt)}
+.strategy-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+.strategy-grid-main .card{min-height:320px}
+.strategy-chart-tall{height:260px}
+.strategy-actions{border-left:3px solid var(--wn)!important}
+.strategy-detail{margin-top:14px;background:transparent}
+.strategy-detail>summary{list-style:none;cursor:pointer;background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:11px 14px;color:var(--tx);font-size:12px;font-weight:700;display:flex;justify-content:space-between;gap:10px}
+.strategy-detail>summary::-webkit-details-marker{display:none}
+.strategy-detail>summary span{font-size:10px;color:var(--mt);font-weight:500}
+.strategy-detail-body{padding-top:14px}
+.card-acc{margin-bottom:14px}
+.card-acc>summary{list-style:none;cursor:pointer;background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:11px 14px;color:var(--ac);font-size:12px;font-weight:700}
+.card-acc>summary::-webkit-details-marker{display:none}
+.card-acc>summary:hover{background:var(--s2)}
+.card-acc[open]>summary{border-radius:8px 8px 0 0}
+.card-acc>.card{margin-bottom:0;border-radius:0 0 8px 8px;border-top:0}
+.card-acc>.card>h3{display:none}
+@media(max-width:900px){.strategy-hero,.strategy-grid{grid-template-columns:1fr}.strategy-hero h2{font-size:18px}}
+
 .gc-analysis .desc{margin-top:8px}
 </style>
 </head>
 <body>
 <div class="hdr">
   <h1>🛡️ Torre de Controle — Fiscalização de Rotas Escolares | Piauí</h1>
-  <div class="meta">Atualizado em 07/09/2026 13:56 &nbsp;·&nbsp; Fonte: Banco de dados operacional</div>
+  <div class="meta">Atualizado em 07/09/2026 15:00 &nbsp;·&nbsp; Fonte: Banco de dados operacional</div>
 </div>
 <div class="nav">
-  <button class="active" onclick="tab('t1',this)">📊 Painel Executivo</button>
+  <button class="active" onclick="tab('t1',this)">🎯 Visão Estratégica</button>
   <button onclick="tab('t2',this)">📍 Regionais (GRE)</button>
   <button onclick="tab('t3',this)">🏙️ Cidades</button>
   <button onclick="tab('t4',this)">⚠️ Rotas Suspeitas</button>
@@ -148,6 +175,51 @@ canvas{max-height:270px}
     Registros anulados ficam fora da análise.
   </div>
 
+  <!-- CAMADA ESTRATÉGICA -->
+  <div class="strategy-hero">
+    <div>
+      <span class="strategy-kicker">🎯 VISÃO ESTRATÉGICA</span>
+      <h2>Operação, exposição financeira e composição da frota</h2>
+      <p>No mês atual, <b>5,008</b> registros foram concluídos de <b>10,475</b> analisados (47.8%).<br>A frota ativa é de <b>820</b> veículos; <b>462</b> são terceirizados (56.3%).<br>Já foram computados <b>R$ 432.841,67</b> para pagamento com base em execução real no mês.<br>Maior dependência de terceiros entre as GREs analisadas: <b>16ª GRE</b> (100.0% da frota ativa).<br>Maior exposição diária entre terceirizados: <b>SIGA ALUGUEL DE CARROS E SERVICOS LTDA (STENIO)</b>, com R$ 8.512,36/dia em 15 contratos rota.</p>
+    </div>
+    <div class="strategy-badge"><span>SAÚDE OPERACIONAL</span><b id="strat_health">47.8%</b><small>conclusão no mês atual</small></div>
+  </div>
+
+  <div class="kpi-grid strategy-kpis">
+    <div class="kpi"><label>Execução do Mês</label><div class="v v-ok" id="st_exec_pct">47.8%</div><div class="sub">concluídas / analisadas</div></div>
+    <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac">R$ 432.841,67</div><div class="sub">execução real registrada</div></div>
+    <div class="kpi"><label>Previsão de Fechamento</label><div class="v v-ac">R$ 1.959.449,79</div><div class="sub">estimativa do mês</div></div>
+    <div class="kpi"><label>Frota Ativa</label><div class="v v-ok">820</div><div class="sub">status A</div></div>
+    <div class="kpi"><label>Terceirizados</label><div class="v v-wn">462</div><div class="sub">56.3% da frota ativa</div></div>
+    <div class="kpi"><label>Próprios</label><div class="v">213</div><div class="sub">26.0% da frota ativa</div></div>
+    <div class="kpi"><label>Locados</label><div class="v">8</div><div class="sub">1.0% da frota ativa</div></div>
+    <div class="kpi"><label>Inativos c/ Contrato</label><div class="v v-cr">1</div><div class="sub">prioridade contratual</div></div>
+  </div>
+
+  <div class="strategy-grid strategy-grid-main">
+    <div class="card strategy-open"><h3>📈 Evolução da Operação — Analisadas x Concluídas x Não Executadas</h3><canvas id="c_strat_oper"></canvas></div>
+    <div class="card strategy-open"><h3>💰 Já Computado a Pagar — Evolução Mensal</h3><canvas id="c_strat_pay"></canvas></div>
+  </div>
+
+  <div class="strategy-grid">
+    <div class="card strategy-open"><h3>🚌 Composição da Frota Ativa por Vínculo</h3><p class="desc">Base: somente veículos com <b>status = A</b>. O percentual mostra a composição da frota atualmente ativa.</p><div class="strategy-chart-tall"><canvas id="c_strat_frota"></canvas></div></div>
+    <div class="card strategy-open"><h3>🎯 Dependência de Terceiros por GRE</h3><p class="desc">Percentual de terceirização sobre a frota ativa de cada GRE. Referência para priorização de fiscalização.</p><div class="strategy-chart-tall"><canvas id="c_strat_dep"></canvas></div></div>
+  </div>
+
+  <div class="strategy-grid">
+    <div class="card strategy-open"><h3>📅 Pagamento Computado por Dia — Mês Atual</h3><p class="desc">Valor já computado por execução real, deduplicado por <b>Contrato Rota + dia</b>. Ajuda a visualizar os dias de maior e menor desembolso.</p><div class="strategy-chart-tall"><canvas id="c_strat_daily"></canvas></div></div>
+    <div class="card strategy-open"><h3>🏢 Concentração dos Terceirizados por R$/Dia</h3><p class="desc">Top 10 fornecedores terceirizados pelo valor diário agregado dos Contratos Rota ativos. Indica concentração da exposição financeira.</p><div class="strategy-chart-tall"><canvas id="c_strat_supplier"></canvas></div></div>
+  </div>
+
+  <div class="card strategy-open strategy-actions">
+    <h3>🚨 Prioridades Estratégicas de Fiscalização</h3>
+    <p class="desc">Índice referencial: maior dependência de terceiros + menor assiduidade. Serve para orientar onde aprofundar a análise, não substitui apuração.</p>
+    <div class="tw"><table><thead><tr><th>Prioridade</th><th>GRE</th><th>Frota Ativa</th><th>% Terceiros</th><th>Assiduidade</th><th>Score</th><th>Ação Sugerida</th></tr></thead><tbody id="t_strat_actions"><tr><td colspan="7">Carregando...</td></tr></tbody></table></div>
+  </div>
+
+  <details class="strategy-detail" open>
+    <summary>🔍 Exploração Operacional Detalhada <span>filtros, rankings, municípios, GREs, tecnologia e ocorrências</span></summary>
+    <div class="strategy-detail-body">
   <div class="filter-box">
     <div class="filter-title">🔎 FILTROS OPERACIONAIS</div>
     <div class="filter-grid">
@@ -240,6 +312,9 @@ canvas{max-height:270px}
     <div class="tw"><table id="t_exec_tec"><thead><tr><th>Fiscal</th><th>GRE</th><th>Cidade</th><th>Motorista</th><th>Total Mots.</th><th>Mots. OK</th><th>Via App</th><th>Via Link/Outro</th><th>% App</th><th>% Abertura</th></tr></thead><tbody></tbody></table></div>
   </div>
 </div>
+
+    </div>
+  </details>
 
 <!-- ABA 2: REGIONAIS (GRE) -->
 <div id="t2" class="tab">
@@ -9595,6 +9670,79 @@ function exRenderCharts(rows){
   exCharts.push(new Chart(document.getElementById('c_exec_assid'),{type:'line',data:{labels,datasets:[{label:'Assiduidade %',data:histAssid,tension:.25}]},options:{responsive:true,scales:{y:{beginAtZero:true,max:100}}}}));
   exCharts.push(new Chart(document.getElementById('c_exec_km'),{type:'bar',data:{labels,datasets:[{label:'KM Executado',data:histKm}]},options:{responsive:true}}));
 }
+
+// ─── GRÁFICOS DA VISÃO ESTRATÉGICA ─────────────────────────────────────────
+const stratMonths = ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"];
+const stratLabels = stratMonths.map(m=>{const a=String(m).split('-'); const names=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; return names[Number(a[1])-1]+'/'+a[0].slice(2)});
+const stratOpTotal = [2440, 27568, 51541, 44798, 50551, 52768, 52670, 53808, 10475];
+const stratOpConc = [320, 4204, 14534, 16032, 29406, 28749, 12383, 27615, 5008];
+const stratOpNao = [2120, 23364, 37007, 28766, 21144, 24014, 40287, 26188, 5417];
+const stratPay = [0.0, 0.0, 0.0, 0.0, 259694.52999999994, 1658246.71, 884415.25, 1842656.34, 432841.67];
+const stratFleetLabels = ['Terceirizada','Própria','Locada','Parceira'];
+const stratFleetData = [462,213,8,137];
+const stratGre = [{"gre": "16ª GRE", "frota": 29, "terc": 29, "propria": 0, "locada": 0, "parceiro": 0, "pct_terc": 100.0, "total_op": 340, "exec_reais": 104, "conc": 102, "nao": 236, "and": 2, "assid": 30.0, "score": 85.0}, {"gre": "12ª GRE", "frota": 141, "terc": 128, "propria": 8, "locada": 0, "parceiro": 5, "pct_terc": 90.8, "total_op": 1852, "exec_reais": 471, "conc": 469, "nao": 1381, "and": 2, "assid": 25.3, "score": 82.8}, {"gre": "7ª GRE", "frota": 56, "terc": 47, "propria": 9, "locada": 0, "parceiro": 0, "pct_terc": 83.9, "total_op": 670, "exec_reais": 322, "conc": 320, "nao": 348, "and": 2, "assid": 47.8, "score": 68.1}, {"gre": "5ª GRE", "frota": 72, "terc": 57, "propria": 12, "locada": 0, "parceiro": 3, "pct_terc": 79.2, "total_op": 870, "exec_reais": 578, "conc": 575, "nao": 292, "and": 3, "assid": 66.1, "score": 56.6}, {"gre": "18ª GRE", "frota": 173, "terc": 131, "propria": 31, "locada": 0, "parceiro": 11, "pct_terc": 75.7, "total_op": 2251, "exec_reais": 1148, "conc": 1137, "nao": 1103, "and": 11, "assid": 50.5, "score": 62.6}, {"gre": "20ª GRE", "frota": 87, "terc": 27, "propria": 35, "locada": 0, "parceiro": 25, "pct_terc": 31.0, "total_op": 1110, "exec_reais": 679, "conc": 677, "nao": 431, "and": 2, "assid": 61.0, "score": 35.0}, {"gre": "19ª GRE", "frota": 100, "terc": 23, "propria": 38, "locada": 6, "parceiro": 33, "pct_terc": 23.0, "total_op": 1431, "exec_reais": 666, "conc": 658, "nao": 765, "and": 8, "assid": 46.0, "score": 38.5}, {"gre": "4ª GRE", "frota": 75, "terc": 15, "propria": 33, "locada": 1, "parceiro": 26, "pct_terc": 20.0, "total_op": 1032, "exec_reais": 490, "conc": 489, "nao": 542, "and": 1, "assid": 47.4, "score": 36.3}, {"gre": "21ª GRE", "frota": 30, "terc": 2, "propria": 14, "locada": 1, "parceiro": 13, "pct_terc": 6.7, "total_op": 532, "exec_reais": 243, "conc": 240, "nao": 289, "and": 3, "assid": 45.1, "score": 30.8}, {"gre": "SEM GRE", "frota": 43, "terc": 1, "propria": 28, "locada": 0, "parceiro": 14, "pct_terc": 2.3, "total_op": 0, "exec_reais": 0, "conc": 0, "nao": 0, "and": 0, "assid": NaN, "score": 2.3}];
+const stratDepLabels = stratGre.map(x=>x.gre);
+const stratDepData = stratGre.map(x=>x.pct_terc);
+const stratActions = [{"gre": "16ª GRE", "frota": 29, "terc": 29, "propria": 0, "locada": 0, "parceiro": 0, "pct_terc": 100.0, "total_op": 340, "exec_reais": 104, "conc": 102, "nao": 236, "and": 2, "assid": 30.0, "score": 85.0}, {"gre": "12ª GRE", "frota": 141, "terc": 128, "propria": 8, "locada": 0, "parceiro": 5, "pct_terc": 90.8, "total_op": 1852, "exec_reais": 471, "conc": 469, "nao": 1381, "and": 2, "assid": 25.3, "score": 82.8}, {"gre": "7ª GRE", "frota": 56, "terc": 47, "propria": 9, "locada": 0, "parceiro": 0, "pct_terc": 83.9, "total_op": 670, "exec_reais": 322, "conc": 320, "nao": 348, "and": 2, "assid": 47.8, "score": 68.1}, {"gre": "18ª GRE", "frota": 173, "terc": 131, "propria": 31, "locada": 0, "parceiro": 11, "pct_terc": 75.7, "total_op": 2251, "exec_reais": 1148, "conc": 1137, "nao": 1103, "and": 11, "assid": 50.5, "score": 62.6}, {"gre": "5ª GRE", "frota": 72, "terc": 57, "propria": 12, "locada": 0, "parceiro": 3, "pct_terc": 79.2, "total_op": 870, "exec_reais": 578, "conc": 575, "nao": 292, "and": 3, "assid": 66.1, "score": 56.6}, {"gre": "19ª GRE", "frota": 100, "terc": 23, "propria": 38, "locada": 6, "parceiro": 33, "pct_terc": 23.0, "total_op": 1431, "exec_reais": 666, "conc": 658, "nao": 765, "and": 8, "assid": 46.0, "score": 38.5}, {"gre": "4ª GRE", "frota": 75, "terc": 15, "propria": 33, "locada": 1, "parceiro": 26, "pct_terc": 20.0, "total_op": 1032, "exec_reais": 490, "conc": 489, "nao": 542, "and": 1, "assid": 47.4, "score": 36.3}, {"gre": "20ª GRE", "frota": 87, "terc": 27, "propria": 35, "locada": 0, "parceiro": 25, "pct_terc": 31.0, "total_op": 1110, "exec_reais": 679, "conc": 677, "nao": 431, "and": 2, "assid": 61.0, "score": 35.0}];
+const stratDailyLabels = ["01/09/2026", "02/09/2026", "03/09/2026", "04/09/2026", "05/09/2026", "06/09/2026"];
+const stratDailyVals = [87478.54, 89666.58, 90349.74, 87707.05, 14593.41, 637.27];
+const stratSupplier = [{"fornecedor": "SIGA ALUGUEL DE CARROS E SERVICOS LTDA (STENIO)", "contratos": 15, "valor": 8512.36}, {"fornecedor": "MAICON WILLYAMS DOS S MARQUES LTDA", "contratos": 10, "valor": 5929.4}, {"fornecedor": "SHAMURAY SOARES DE CARVALHO", "contratos": 9, "valor": 4881.0}, {"fornecedor": "TEODOZIO SÁLVIO FERREIRA SILVA", "contratos": 11, "valor": 3935.0}, {"fornecedor": "A. S. MONTE", "contratos": 5, "valor": 3450.0}, {"fornecedor": "M DE S RIBEIRO", "contratos": 8, "valor": 3330.0}, {"fornecedor": "C W AUTO SERVICOS LTDA", "contratos": 5, "valor": 3240.0}, {"fornecedor": "J RIBEIRO SOARES", "contratos": 5, "valor": 2850.0}, {"fornecedor": "KLEBERT WEINER RODRIGUES CAMPELO LEITE", "contratos": 13, "valor": 2600.0}, {"fornecedor": "ELIETE DE SOUSA DANTAS", "contratos": 8, "valor": 2350.0}];
+
+if(document.getElementById('c_strat_oper')) C.line('c_strat_oper',stratLabels,[
+  {label:'Analisadas',data:stratOpTotal,tension:.25},
+  {label:'Concluídas',data:stratOpConc,tension:.25},
+  {label:'Não Executadas',data:stratOpNao,tension:.25}
+]);
+if(document.getElementById('c_strat_pay')) C.bar('c_strat_pay',stratLabels,[
+  {label:'Já computado a pagar (R$)',data:stratPay,backgroundColor:'rgba(56,189,248,.25)',borderColor:'#38bdf8',borderWidth:1}
+]);
+if(document.getElementById('c_strat_frota')) C.pie('c_strat_frota',stratFleetLabels,stratFleetData,['#f59e0b','#22c55e','#38bdf8','#a78bfa']);
+if(document.getElementById('c_strat_dep')) C.bar('c_strat_dep',stratDepLabels,[
+  {label:'% Terceirizada da frota ativa',data:stratDepData,backgroundColor:'rgba(245,158,11,.35)',borderColor:'#f59e0b',borderWidth:1}
+]);
+if(document.getElementById('c_strat_daily')) C.line('c_strat_daily',stratDailyLabels,[
+  {label:'Valor computado por dia (R$)',data:stratDailyVals,tension:.25}
+]);
+if(document.getElementById('c_strat_supplier')) C.bar('c_strat_supplier',stratSupplier.map(x=>x.fornecedor),[
+  {label:'R$/dia',data:stratSupplier.map(x=>x.valor),backgroundColor:'rgba(56,189,248,.35)',borderColor:'#38bdf8',borderWidth:1}
+]);
+
+function renderStrategicActions(){
+  const el=document.getElementById('t_strat_actions');
+  if(!el)return;
+  if(!stratActions.length){el.innerHTML='<tr><td colspan="7">Sem dados suficientes.</td></tr>';return;}
+  el.innerHTML=stratActions.map((x,i)=>{
+    const pr=x.score>=70?'🔴 CRÍTICA':(x.score>=55?'🟠 ALTA':(x.score>=40?'🟡 MODERADA':'🟢 NORMAL'));
+    let ac='Monitoramento padrão; manter tendência.';
+    if(x.total_op<20) ac='Aprofundar acompanhamento; base operacional recente pequena.';
+    else if(x.assid<70 && x.pct_terc>=60) ac='Fiscalização contratual + plano de recuperação operacional.';
+    else if(x.assid<70) ac='Atacar baixa execução e cobrar plano de recuperação.';
+    else if(x.pct_terc>=70) ac='Fiscalização contratual reforçada e revisão da exposição.';
+    return '<tr><td>'+pr+'</td><td><b>'+exEsc(x.gre)+'</b></td><td>'+exNum(x.frota)+'</td><td>'+exPct(x.pct_terc)+'</td><td>'+exPct(x.assid)+'</td><td><b>'+x.score+'</b></td><td>'+ac+'</td></tr>';
+  }).join('');
+}
+renderStrategicActions();
+
+// Torna todos os cards expansíveis sem fechar cards de gráficos por padrão.
+// Cards marcados com .no-collapse permanecem abertos como elementos estratégicos.
+function makeCardsExpandable(){
+  document.querySelectorAll('.tab .card').forEach(card=>{
+    if(card.closest('.card-acc')) return;
+    const title=card.querySelector(':scope > h3');
+    if(!title) return;
+    const parent=card.parentNode;
+    if(!parent) return;
+    const acc=document.createElement('details');
+    acc.className='card-acc';
+    acc.open=!!card.querySelector('canvas') || card.classList.contains('strategy-open');
+    const sum=document.createElement('summary');
+    sum.innerHTML=title.innerHTML;
+    acc.appendChild(sum);
+    parent.insertBefore(acc,card);
+    acc.appendChild(card);
+  });
+}
+makeCardsExpandable();
 
 ['fx_periodo','fx_tipo','fx_turno','fx_direcao','fx_gre','fx_cidade','fx_fiscal','fx_regiao','fx_fornecedor'].forEach(id=>document.getElementById(id).addEventListener('change',exRender));
 exRender();

@@ -640,6 +640,62 @@ FROM airbyte.veiculos_veiculo v
     'propria_com_contrato':0,'propria_sem_contrato':0
 }]))
 
+
+# ─── VISÃO ESTRATÉGICA — COMPOSIÇÃO DA FROTA + DEPENDÊNCIA POR GRE ─────────────
+# Somente leitura. A composição considera somente veículos ativos (status = 'A').
+# Dependência de terceiros = veículos FROTA_TERCEIRIZADA / frota ativa.
+df_strat_frota_gre = safe_read("""
+WITH frota AS (
+    SELECT
+        v.gre_id,
+        COALESCE(g.nome,'SEM GRE') AS gre,
+        COUNT(DISTINCT v.id) AS frota_ativa,
+        COUNT(DISTINCT v.id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_TERCEIRIZADA') AS terceirizada,
+        COUNT(DISTINCT v.id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PROPRIA') AS propria,
+        COUNT(DISTINCT v.id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_LOCADA') AS locada,
+        COUNT(DISTINCT v.id) FILTER (WHERE v.tipo_contrato_locacao = 'FROTA_PARCEIRO') AS parceiro
+    FROM airbyte.veiculos_veiculo v
+    LEFT JOIN airbyte.escolas_gre g ON g.id = v.gre_id
+    WHERE v.status = 'A'
+      AND COALESCE(g.nome,'') NOT IN ('ADMINISTRATIVO','LOGISTICA CAPITAL','LOGISTICA INTERIOR','TESTE','SEMEC - SUDESTE')
+    GROUP BY v.gre_id, g.nome
+),
+op AS (
+    SELECT
+        r.gre_id,
+        COUNT(*) AS total_analisado,
+        COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL) AS execucoes_reais,
+        COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NOT NULL) AS concluidas,
+        COUNT(*) FILTER (WHERE e.inicio_execucao IS NULL) AS nao_executadas,
+        COUNT(*) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.fim_execucao IS NULL) AS em_andamento
+    FROM airbyte.rotas_escalarota e
+    JOIN airbyte.rotas_rota r ON r.id = e.rota_id
+    WHERE e.data >= DATE_TRUNC('month', CURRENT_DATE)
+      AND e.data <= CURRENT_DATE
+      AND e.anulada = false
+      AND r.gre_id IS NOT NULL
+    GROUP BY r.gre_id
+)
+SELECT
+    f.gre,
+    f.frota_ativa,
+    f.terceirizada,
+    f.propria,
+    f.locada,
+    f.parceiro,
+    ROUND(f.terceirizada * 100.0 / NULLIF(f.frota_ativa,0),1) AS pct_terceirizada,
+    COALESCE(o.total_analisado,0) AS total_analisado,
+    COALESCE(o.execucoes_reais,0) AS execucoes_reais,
+    COALESCE(o.concluidas,0) AS concluidas,
+    COALESCE(o.nao_executadas,0) AS nao_executadas,
+    COALESCE(o.em_andamento,0) AS em_andamento,
+    ROUND(COALESCE(o.concluidas,0) * 100.0 / NULLIF(o.total_analisado,0),1) AS assiduidade
+FROM frota f
+LEFT JOIN op o ON o.gre_id = f.gre_id
+ORDER BY pct_terceirizada DESC, frota_ativa DESC
+LIMIT 40
+""", pd.DataFrame(columns=['gre','frota_ativa','terceirizada','propria','locada','parceiro','pct_terceirizada','total_analisado','execucoes_reais','concluidas','nao_executadas','em_andamento','assiduidade']))
+
 # 3) FROTA POR TIPO — SEM TRATAR "SEM CONTRATO" COMO OCIOSIDADE
 # Em frota própria, ter ou não contrato é uma análise de consistência, não ausência operacional.
 df_gc_frota_status = safe_read("""
@@ -2415,6 +2471,79 @@ if not df_gc_demanda_diaria.empty:
 gc_frota_tipos = {'Própria':gc_frota_propria,'Terceirizada':gc_frota_terc,'Parceiro':gc_frota_parceiro,'Locada':gc_frota_locada}
 gc_gap_counts = df_gc_gap_gre['situacao'].value_counts().to_dict() if not df_gc_gap_gre.empty else {}
 
+# ─── DADOS DA VISÃO ESTRATÉGICA ──────────────────────────────────────────────
+_strat_frota = {
+    'total': gc_frota_ativa,
+    'terceirizada': gc_frota_terc,
+    'propria': gc_frota_propria,
+    'locada': gc_frota_locada,
+    'parceiro': gc_frota_parceiro,
+}
+_strat_total_frota = max(int(_strat_frota.get('total',0) or 0), 1)
+_strat_pct_terc = round(_strat_frota['terceirizada'] / _strat_total_frota * 100, 1)
+_strat_pct_propria = round(_strat_frota['propria'] / _strat_total_frota * 100, 1)
+_strat_pct_locada = round(_strat_frota['locada'] / _strat_total_frota * 100, 1)
+_strat_pct_parceiro = round(_strat_frota['parceiro'] / _strat_total_frota * 100, 1)
+
+_strat_gre = []
+if not df_strat_frota_gre.empty:
+    for _, r in df_strat_frota_gre.iterrows():
+        ass = float(r.get('assiduidade') or 0)
+        pctt = float(r.get('pct_terceirizada') or 0)
+        total_op = int(r.get('total_analisado') or 0)
+        score = round((pctt * 0.5) + ((100-ass) * 0.5),1) if total_op >= 20 else round(pctt,1)
+        _strat_gre.append({
+            'gre': str(r.get('gre') or 'SEM GRE'),
+            'frota': int(r.get('frota_ativa') or 0),
+            'terc': int(r.get('terceirizada') or 0),
+            'propria': int(r.get('propria') or 0),
+            'locada': int(r.get('locada') or 0),
+            'parceiro': int(r.get('parceiro') or 0),
+            'pct_terc': pctt,
+            'total_op': total_op,
+            'exec_reais': int(r.get('execucoes_reais') or 0),
+            'conc': int(r.get('concluidas') or 0),
+            'nao': int(r.get('nao_executadas') or 0),
+            'and': int(r.get('em_andamento') or 0),
+            'assid': ass,
+            'score': score,
+        })
+_strat_gre_top_dep = sorted([x for x in _strat_gre if x['frota'] >= 5], key=lambda x:(x['pct_terc'], x['frota']), reverse=True)[:10]
+_strat_gre_actions = sorted(_strat_gre, key=lambda x:(x['score'], x['frota']), reverse=True)[:8]
+strat_pag_vals = [float(exec_pag_hist.get(m,0.0)) for m in meses_ev]
+strat_pag_labels = [_gc_mes_nome(m) for m in meses_ev]
+strat_daily_labels = []
+strat_daily_vals = []
+for _d in sorted(gc_pag_dia.keys()):
+    if _d[:7] == _atual_ym:
+        strat_daily_labels.append(_gc_fmt_data(_d))
+        strat_daily_vals.append(float(gc_pag_dia.get(_d,{}).get('valor',0.0) or 0.0))
+strat_supplier = []
+if not df_gc_rank_terceiros.empty:
+    _sr = df_gc_rank_terceiros.sort_values(['valor_diaria_dia','contratos_rota'], ascending=[False,False]).head(10)
+    for _, r in _sr.iterrows():
+        strat_supplier.append({
+            'fornecedor': str(r.get('fornecedor') or 'SEM FORNECEDOR'),
+            'contratos': int(r.get('contratos_rota') or 0),
+            'valor': float(r.get('valor_diaria_dia') or 0.0)
+        })
+
+def comentario_estrategico():
+    partes = []
+    if exec_total:
+        partes.append(f"No mês atual, <b>{exec_conc:,}</b> registros foram concluídos de <b>{exec_total:,}</b> analisados ({exec_pct_assid}%).")
+    if gc_frota_ativa:
+        partes.append(f"A frota ativa é de <b>{gc_frota_ativa:,}</b> veículos; <b>{gc_frota_terc:,}</b> são terceirizados ({_strat_pct_terc}%).")
+    if gc_pag_atual_total:
+        partes.append(f"Já foram computados <b>R$ {fmt(gc_pag_atual_total)}</b> para pagamento com base em execução real no mês.")
+    if _strat_gre_top_dep:
+        top = _strat_gre_top_dep[0]
+        partes.append(f"Maior dependência de terceiros entre as GREs analisadas: <b>{top['gre']}</b> ({top['pct_terc']}% da frota ativa).")
+    if strat_supplier:
+        topf = strat_supplier[0]
+        partes.append(f"Maior exposição diária entre terceirizados: <b>{htmlmod.escape(topf['fornecedor'])}</b>, com R$ {fmt(topf['valor'])}/dia em {topf['contratos']:,} contratos rota.")
+    return "<br>".join(partes) if partes else "Sem dados suficientes para a visão estratégica."
+
 # ─── HTML FINAL ─────────────────────────────────────────────────────────────
 gerado = datetime.now().strftime("%d/%m/%Y %H:%M")
 
@@ -2535,6 +2664,33 @@ canvas{{max-height:270px}}
 @media(max-width:1100px){{.filter-grid{{grid-template-columns:repeat(3,minmax(130px,1fr))}}}}
 @media(max-width:700px){{.filter-grid{{grid-template-columns:1fr 1fr}}}}
 
+.strategy-hero{{display:grid;grid-template-columns:1fr 230px;gap:14px;margin-bottom:14px}}
+.strategy-hero>div{{background:var(--s1);border:1px solid var(--bd);border-radius:10px;padding:16px}}
+.strategy-kicker{{font-size:10px;color:var(--ac);font-weight:800;letter-spacing:.8px}}
+.strategy-hero h2{{font-size:21px;margin:5px 0 8px;color:var(--tx)}}
+.strategy-hero p{{font-size:12px;color:var(--mt);line-height:1.65}}
+.strategy-badge{{display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;border-left:3px solid var(--ac)!important}}
+.strategy-badge span{{font-size:9px;color:var(--mt);font-weight:800;letter-spacing:.6px}}
+.strategy-badge b{{font-size:32px;color:var(--ac);line-height:1.1;margin:5px 0}}
+.strategy-badge small{{font-size:10px;color:var(--mt)}}
+.strategy-grid{{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}}
+.strategy-grid-main .card{{min-height:320px}}
+.strategy-chart-tall{{height:260px}}
+.strategy-actions{{border-left:3px solid var(--wn)!important}}
+.strategy-detail{{margin-top:14px;background:transparent}}
+.strategy-detail>summary{{list-style:none;cursor:pointer;background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:11px 14px;color:var(--tx);font-size:12px;font-weight:700;display:flex;justify-content:space-between;gap:10px}}
+.strategy-detail>summary::-webkit-details-marker{{display:none}}
+.strategy-detail>summary span{{font-size:10px;color:var(--mt);font-weight:500}}
+.strategy-detail-body{{padding-top:14px}}
+.card-acc{{margin-bottom:14px}}
+.card-acc>summary{{list-style:none;cursor:pointer;background:var(--s1);border:1px solid var(--bd);border-radius:8px;padding:11px 14px;color:var(--ac);font-size:12px;font-weight:700}}
+.card-acc>summary::-webkit-details-marker{{display:none}}
+.card-acc>summary:hover{{background:var(--s2)}}
+.card-acc[open]>summary{{border-radius:8px 8px 0 0}}
+.card-acc>.card{{margin-bottom:0;border-radius:0 0 8px 8px;border-top:0}}
+.card-acc>.card>h3{{display:none}}
+@media(max-width:900px){{.strategy-hero,.strategy-grid{{grid-template-columns:1fr}}.strategy-hero h2{{font-size:18px}}}}
+
 .gc-analysis .desc{{margin-top:8px}}
 </style>
 </head>
@@ -2544,7 +2700,7 @@ canvas{{max-height:270px}}
   <div class="meta">Atualizado em {gerado} &nbsp;·&nbsp; Fonte: Banco de dados operacional</div>
 </div>
 <div class="nav">
-  <button class="active" onclick="tab('t1',this)">📊 Painel Executivo</button>
+  <button class="active" onclick="tab('t1',this)">🎯 Visão Estratégica</button>
   <button onclick="tab('t2',this)">📍 Regionais (GRE)</button>
   <button onclick="tab('t3',this)">🏙️ Cidades</button>
   <button onclick="tab('t4',this)">⚠️ Rotas Suspeitas</button>
@@ -2568,6 +2724,51 @@ canvas{{max-height:270px}}
     Registros anulados ficam fora da análise.
   </div>
 
+  <!-- CAMADA ESTRATÉGICA -->
+  <div class="strategy-hero">
+    <div>
+      <span class="strategy-kicker">🎯 VISÃO ESTRATÉGICA</span>
+      <h2>Operação, exposição financeira e composição da frota</h2>
+      <p>{comentario_estrategico()}</p>
+    </div>
+    <div class="strategy-badge"><span>SAÚDE OPERACIONAL</span><b id="strat_health">{exec_pct_assid}%</b><small>conclusão no mês atual</small></div>
+  </div>
+
+  <div class="kpi-grid strategy-kpis">
+    <div class="kpi"><label>Execução do Mês</label><div class="v v-ok" id="st_exec_pct">{exec_pct_assid}%</div><div class="sub">concluídas / analisadas</div></div>
+    <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac">R$ {fmt(gc_pag_atual_total)}</div><div class="sub">execução real registrada</div></div>
+    <div class="kpi"><label>Previsão de Fechamento</label><div class="v v-ac">R$ {fmt(gc_previsao_fechamento)}</div><div class="sub">estimativa do mês</div></div>
+    <div class="kpi"><label>Frota Ativa</label><div class="v v-ok">{gc_frota_ativa:,}</div><div class="sub">status A</div></div>
+    <div class="kpi"><label>Terceirizados</label><div class="v v-wn">{gc_frota_terc:,}</div><div class="sub">{_strat_pct_terc}% da frota ativa</div></div>
+    <div class="kpi"><label>Próprios</label><div class="v">{gc_frota_propria:,}</div><div class="sub">{_strat_pct_propria}% da frota ativa</div></div>
+    <div class="kpi"><label>Locados</label><div class="v">{gc_frota_locada:,}</div><div class="sub">{_strat_pct_locada}% da frota ativa</div></div>
+    <div class="kpi"><label>Inativos c/ Contrato</label><div class="v v-cr">{gc_inat_contrato:,}</div><div class="sub">prioridade contratual</div></div>
+  </div>
+
+  <div class="strategy-grid strategy-grid-main">
+    <div class="card strategy-open"><h3>📈 Evolução da Operação — Analisadas x Concluídas x Não Executadas</h3><canvas id="c_strat_oper"></canvas></div>
+    <div class="card strategy-open"><h3>💰 Já Computado a Pagar — Evolução Mensal</h3><canvas id="c_strat_pay"></canvas></div>
+  </div>
+
+  <div class="strategy-grid">
+    <div class="card strategy-open"><h3>🚌 Composição da Frota Ativa por Vínculo</h3><p class="desc">Base: somente veículos com <b>status = A</b>. O percentual mostra a composição da frota atualmente ativa.</p><div class="strategy-chart-tall"><canvas id="c_strat_frota"></canvas></div></div>
+    <div class="card strategy-open"><h3>🎯 Dependência de Terceiros por GRE</h3><p class="desc">Percentual de terceirização sobre a frota ativa de cada GRE. Referência para priorização de fiscalização.</p><div class="strategy-chart-tall"><canvas id="c_strat_dep"></canvas></div></div>
+  </div>
+
+  <div class="strategy-grid">
+    <div class="card strategy-open"><h3>📅 Pagamento Computado por Dia — Mês Atual</h3><p class="desc">Valor já computado por execução real, deduplicado por <b>Contrato Rota + dia</b>. Ajuda a visualizar os dias de maior e menor desembolso.</p><div class="strategy-chart-tall"><canvas id="c_strat_daily"></canvas></div></div>
+    <div class="card strategy-open"><h3>🏢 Concentração dos Terceirizados por R$/Dia</h3><p class="desc">Top 10 fornecedores terceirizados pelo valor diário agregado dos Contratos Rota ativos. Indica concentração da exposição financeira.</p><div class="strategy-chart-tall"><canvas id="c_strat_supplier"></canvas></div></div>
+  </div>
+
+  <div class="card strategy-open strategy-actions">
+    <h3>🚨 Prioridades Estratégicas de Fiscalização</h3>
+    <p class="desc">Índice referencial: maior dependência de terceiros + menor assiduidade. Serve para orientar onde aprofundar a análise, não substitui apuração.</p>
+    <div class="tw"><table><thead><tr><th>Prioridade</th><th>GRE</th><th>Frota Ativa</th><th>% Terceiros</th><th>Assiduidade</th><th>Score</th><th>Ação Sugerida</th></tr></thead><tbody id="t_strat_actions"><tr><td colspan="7">Carregando...</td></tr></tbody></table></div>
+  </div>
+
+  <details class="strategy-detail" open>
+    <summary>🔍 Exploração Operacional Detalhada <span>filtros, rankings, municípios, GREs, tecnologia e ocorrências</span></summary>
+    <div class="strategy-detail-body">
   <div class="filter-box">
     <div class="filter-title">🔎 FILTROS OPERACIONAIS</div>
     <div class="filter-grid">
@@ -2660,6 +2861,9 @@ canvas{{max-height:270px}}
     <div class="tw"><table id="t_exec_tec"><thead><tr><th>Fiscal</th><th>GRE</th><th>Cidade</th><th>Motorista</th><th>Total Mots.</th><th>Mots. OK</th><th>Via App</th><th>Via Link/Outro</th><th>% App</th><th>% Abertura</th></tr></thead><tbody></tbody></table></div>
   </div>
 </div>
+
+    </div>
+  </details>
 
 <!-- ABA 2: REGIONAIS (GRE) -->
 <div id="t2" class="tab">
@@ -3518,6 +3722,79 @@ function exRenderCharts(rows){{
   exCharts.push(new Chart(document.getElementById('c_exec_assid'),{{type:'line',data:{{labels,datasets:[{{label:'Assiduidade %',data:histAssid,tension:.25}}]}},options:{{responsive:true,scales:{{y:{{beginAtZero:true,max:100}}}}}}}}));
   exCharts.push(new Chart(document.getElementById('c_exec_km'),{{type:'bar',data:{{labels,datasets:[{{label:'KM Executado',data:histKm}}]}},options:{{responsive:true}}}}));
 }}
+
+// ─── GRÁFICOS DA VISÃO ESTRATÉGICA ─────────────────────────────────────────
+const stratMonths = {jd(meses_ev)};
+const stratLabels = stratMonths.map(m=>{{const a=String(m).split('-'); const names=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; return names[Number(a[1])-1]+'/'+a[0].slice(2)}});
+const stratOpTotal = {jd(ev_tot)};
+const stratOpConc = {jd(ev_conc)};
+const stratOpNao = {jd(ev_nao)};
+const stratPay = {jd(strat_pag_vals)};
+const stratFleetLabels = ['Terceirizada','Própria','Locada','Parceira'];
+const stratFleetData = [{_strat_frota['terceirizada']},{_strat_frota['propria']},{_strat_frota['locada']},{_strat_frota['parceiro']}];
+const stratGre = {jd(_strat_gre_top_dep)};
+const stratDepLabels = stratGre.map(x=>x.gre);
+const stratDepData = stratGre.map(x=>x.pct_terc);
+const stratActions = {jd(_strat_gre_actions)};
+const stratDailyLabels = {jd(strat_daily_labels)};
+const stratDailyVals = {jd(strat_daily_vals)};
+const stratSupplier = {jd(strat_supplier)};
+
+if(document.getElementById('c_strat_oper')) C.line('c_strat_oper',stratLabels,[
+  {{label:'Analisadas',data:stratOpTotal,tension:.25}},
+  {{label:'Concluídas',data:stratOpConc,tension:.25}},
+  {{label:'Não Executadas',data:stratOpNao,tension:.25}}
+]);
+if(document.getElementById('c_strat_pay')) C.bar('c_strat_pay',stratLabels,[
+  {{label:'Já computado a pagar (R$)',data:stratPay,backgroundColor:'rgba(56,189,248,.25)',borderColor:'#38bdf8',borderWidth:1}}
+]);
+if(document.getElementById('c_strat_frota')) C.pie('c_strat_frota',stratFleetLabels,stratFleetData,['#f59e0b','#22c55e','#38bdf8','#a78bfa']);
+if(document.getElementById('c_strat_dep')) C.bar('c_strat_dep',stratDepLabels,[
+  {{label:'% Terceirizada da frota ativa',data:stratDepData,backgroundColor:'rgba(245,158,11,.35)',borderColor:'#f59e0b',borderWidth:1}}
+]);
+if(document.getElementById('c_strat_daily')) C.line('c_strat_daily',stratDailyLabels,[
+  {{label:'Valor computado por dia (R$)',data:stratDailyVals,tension:.25}}
+]);
+if(document.getElementById('c_strat_supplier')) C.bar('c_strat_supplier',stratSupplier.map(x=>x.fornecedor),[
+  {{label:'R$/dia',data:stratSupplier.map(x=>x.valor),backgroundColor:'rgba(56,189,248,.35)',borderColor:'#38bdf8',borderWidth:1}}
+]);
+
+function renderStrategicActions(){{
+  const el=document.getElementById('t_strat_actions');
+  if(!el)return;
+  if(!stratActions.length){{el.innerHTML='<tr><td colspan="7">Sem dados suficientes.</td></tr>';return;}}
+  el.innerHTML=stratActions.map((x,i)=>{{
+    const pr=x.score>=70?'🔴 CRÍTICA':(x.score>=55?'🟠 ALTA':(x.score>=40?'🟡 MODERADA':'🟢 NORMAL'));
+    let ac='Monitoramento padrão; manter tendência.';
+    if(x.total_op<20) ac='Aprofundar acompanhamento; base operacional recente pequena.';
+    else if(x.assid<70 && x.pct_terc>=60) ac='Fiscalização contratual + plano de recuperação operacional.';
+    else if(x.assid<70) ac='Atacar baixa execução e cobrar plano de recuperação.';
+    else if(x.pct_terc>=70) ac='Fiscalização contratual reforçada e revisão da exposição.';
+    return '<tr><td>'+pr+'</td><td><b>'+exEsc(x.gre)+'</b></td><td>'+exNum(x.frota)+'</td><td>'+exPct(x.pct_terc)+'</td><td>'+exPct(x.assid)+'</td><td><b>'+x.score+'</b></td><td>'+ac+'</td></tr>';
+  }}).join('');
+}}
+renderStrategicActions();
+
+// Torna todos os cards expansíveis sem fechar cards de gráficos por padrão.
+// Cards marcados com .no-collapse permanecem abertos como elementos estratégicos.
+function makeCardsExpandable(){{
+  document.querySelectorAll('.tab .card').forEach(card=>{{
+    if(card.closest('.card-acc')) return;
+    const title=card.querySelector(':scope > h3');
+    if(!title) return;
+    const parent=card.parentNode;
+    if(!parent) return;
+    const acc=document.createElement('details');
+    acc.className='card-acc';
+    acc.open=!!card.querySelector('canvas') || card.classList.contains('strategy-open');
+    const sum=document.createElement('summary');
+    sum.innerHTML=title.innerHTML;
+    acc.appendChild(sum);
+    parent.insertBefore(acc,card);
+    acc.appendChild(card);
+  }});
+}}
+makeCardsExpandable();
 
 ['fx_periodo','fx_tipo','fx_turno','fx_direcao','fx_gre','fx_cidade','fx_fiscal','fx_regiao','fx_fornecedor'].forEach(id=>document.getElementById(id).addEventListener('change',exRender));
 exRender();
