@@ -3052,6 +3052,29 @@ for _i,_x in enumerate(strat_supplier,1):
 strat_supplier_cascade_html=''.join(_supplier_cascade) if _supplier_cascade else '<div class="info">Sem dados de fornecedores.</div>'
 strat_supplier_top_text=(f"{htmlmod.escape(strat_supplier[0]['fornecedor'])} · R$ {fmt(strat_supplier[0]['valor'])}/dia" if strat_supplier else 'Sem dados')
 
+# Mini-resumo das 3 principais prioridades para o painel estratégico.
+# Mantém a primeira tela enxuta: somente prioridade, GRE e ação.
+_strat_actions_mini_parts=[]
+for _a in _strat_gre_actions[:3]:
+    _pct=_a.get('assid',0)
+    _pt=_a.get('pct_terc',0)
+    if _pct < 70 and _pt >= 60:
+        _acao='Fiscalização contratual + recuperação operacional'
+    elif _pct < 70:
+        _acao='Recuperação da execução planejada'
+    elif _pt >= 70:
+        _acao='Revisar dependência e exposição contratual'
+    else:
+        _acao='Monitorar tendência'
+    _pr='🔴' if _a.get('score',0) >= 70 else ('🟠' if _a.get('score',0) >= 55 else '🟡')
+    _strat_actions_mini_parts.append(
+        f"<div class='action-mini-row'><span class='action-mini-pr'>{_pr}</span>"
+        f"<div class='action-mini-main'><b>{htmlmod.escape(str(_a.get('gre') or 'SEM GRE'))}</b>"
+        f"<small>{_a.get('frota',0):,} ativos · {_a.get('pct_terc',0):.1f}% terceiros · {_a.get('assid',0):.1f}% execução</small></div>"
+        f"<div class='action-mini-text'>{htmlmod.escape(_acao)}</div></div>"
+    )
+strat_actions_mini_html=''.join(_strat_actions_mini_parts) if _strat_actions_mini_parts else '<div class="info">Sem prioridades identificadas.</div>'
+
 strat_month_options=[]
 for _m in meses_ev:
     _sel=' selected' if _m == _atual_ym else ''
