@@ -88,6 +88,7 @@ SELECT
         ELSE 'INTERIOR'
     END AS regiao,
     COALESCE(fm.nome, fv.nome, 'SEM FORNECEDOR') AS fornecedor,
+    e.motorista_id AS motorista_id,
     COALESCE(m.nome,'SEM MOTORISTA') AS motorista,
     COALESCE(v.placa,'SEM PLACA') AS placa,
     COALESCE(v.tipo_contrato_locacao,'SEM TIPO') AS tipo_frota,
@@ -143,10 +144,14 @@ SELECT
     COUNT(DISTINCT e.motorista_id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND e.via_app = true) AS via_app,
     COUNT(DISTINCT e.motorista_id) FILTER (WHERE e.inicio_execucao IS NOT NULL AND COALESCE(e.via_app,false) = false) AS via_link_outro
 FROM airbyte.rotas_escalarota e
+LEFT JOIN airbyte.rotas_rota r ON r.id = e.rota_id
+LEFT JOIN airbyte.escolas_gre g ON g.id = r.gre_id
+LEFT JOIN airbyte.motoristas_funcionario func ON func.id = g.fiscal_responsavel_id
 WHERE e.data >= DATE '2026-01-01'
   AND e.data <= CURRENT_DATE
   AND e.anulada = false
   AND e.motorista_id IS NOT NULL
+  AND UPPER(COALESCE(func.nome,'')) NOT IN ('AYSLAN DE SOUSA COSTA','JOSE MAYLSON ALVES MACEDO')
 GROUP BY TO_CHAR(e.data, 'YYYY-MM')
 ORDER BY mes
 """, pd.DataFrame(columns=['mes','motoristas_escalados','motoristas_executaram','via_app','via_link_outro']))
@@ -205,16 +210,26 @@ LIMIT 50
 
 df_exec_motoristas = safe_read("""
 SELECT
-    COALESCE(g.nome,'SEM GRE') AS gre,
     m.id,
     COALESCE(m.nome,'SEM NOME') AS motorista,
-    CASE WHEN m.veiculo_id IS NOT NULL THEN true ELSE false END AS tem_veiculo,
+    COALESCE(g.nome,'SEM GRE') AS gre,
+    CASE WHEN v.id IS NOT NULL THEN true ELSE false END AS tem_veiculo,
     COALESCE(v.placa,'') AS placa
 FROM airbyte.motoristas_motorista m
 LEFT JOIN airbyte.escolas_gre g ON g.id = m.gre_id
 LEFT JOIN airbyte.veiculos_veiculo v ON v.id = m.veiculo_id
 WHERE m.status = 'A'
-""", pd.DataFrame(columns=['gre','id','motorista','tem_veiculo','placa']))
+  AND UPPER(COALESCE(g.nome,'')) NOT IN ('LOGISTICA CAPITAL','LOGISTICA INTERIOR','ADMINISTRATIVO')
+  AND EXISTS (
+      SELECT 1
+      FROM airbyte.rotas_escalarota e
+      WHERE e.motorista_id = m.id
+        AND e.anulada = false
+        AND e.data >= DATE_TRUNC('month', CURRENT_DATE)
+        AND e.data <= CURRENT_DATE
+  )
+ORDER BY g.nome, m.nome
+""", pd.DataFrame(columns=['id','motorista','gre','tem_veiculo','placa']))
 
 
 # ─── QUERIES RESTAURADAS PARA COMPATIBILIDADE DAS ABAS ─────────────────────────
@@ -1557,6 +1572,7 @@ else:
             'f': _s(r.get('fiscal')) or 'SEM FISCAL',
             'rg': _s(r.get('regiao')) or 'INTERIOR',
             'p': _s(r.get('fornecedor')) or 'SEM FORNECEDOR',
+            'mid': _s(r.get('motorista_id')) or '',
             'm': _s(r.get('motorista')) or 'SEM MOTORISTA',
             'v': _s(r.get('placa')) or 'SEM PLACA',
             'ft': _s(r.get('tipo_frota')) or 'SEM TIPO',
@@ -1604,9 +1620,38 @@ exec_pct_rast = round(exec_rast/max(_exec_started,1)*100,1)
 exec_pct_susp = 0.0
 exec_rotas = len({(r['d'],r['m'],r['v']) for r in _exec_cur})
 exec_contratos = len({r['cr'] for r in _exec_cur if r.get('cr')})
-exec_motoristas_escalados = len({r['m'] for r in _exec_cur if r.get('m') and r.get('m') != 'SEM MOTORISTA'})
-exec_motoristas_executaram = len({r['m'] for r in _exec_cur if r.get('m') and r.get('m') != 'SEM MOTORISTA' and r['i']})
+_TEC_EXCL_FISCAIS = {'AYSLAN DE SOUSA COSTA','JOSE MAYLSON ALVES MACEDO'}
+_tec_rows_cur = [r for r in _exec_cur if str(r.get('f') or '').strip().upper() not in _TEC_EXCL_FISCAIS]
+exec_motoristas_escalados = len({(r.get('mid') or r.get('m')) for r in _tec_rows_cur if r.get('m') and r.get('m') != 'SEM MOTORISTA'})
+exec_motoristas_executaram = len({(r.get('mid') or r.get('m')) for r in _tec_rows_cur if r.get('m') and r.get('m') != 'SEM MOTORISTA' and r['i']})
 exec_tec_usabilidade = round(exec_motoristas_executaram/max(exec_motoristas_escalados,1)*100,1)
+
+# Motoristas ativos que efetivamente estão em escala no mês atual,
+# excluindo GREs administrativas/logística.
+def html_exec_vinculo_inicial():
+    if df_exec_motoristas.empty:
+        return '<tr><td colspan="4">Sem motoristas ativos em escala no mês atual.</td></tr>'
+    by_gre = {}
+    for _, r in df_exec_motoristas.iterrows():
+        gre = str(r.get('gre') or 'SEM GRE')
+        if gre.upper() in ('LOGISTICA CAPITAL','LOGISTICA INTERIOR','ADMINISTRATIVO'):
+            continue
+        by_gre.setdefault(gre, {'mot':0,'vei':0,'sem':0})
+        by_gre[gre]['mot'] += 1
+        if bool(r.get('tem_veiculo')):
+            by_gre[gre]['vei'] += 1
+        else:
+            by_gre[gre]['sem'] += 1
+    if not by_gre:
+        return '<tr><td colspan="4">Sem motoristas após os filtros de GRE.</td></tr>'
+    return ''.join(
+        _html_tr([htmlmod.escape(g), f"{v['mot']:,}", f"{v['vei']:,}", f"{v['sem']:,}"])
+        for g,v in sorted(by_gre.items(), key=lambda kv: kv[1]['mot'], reverse=True)
+    )
+
+exec_vinculo_mot = len(df_exec_motoristas) if not df_exec_motoristas.empty else 0
+exec_vinculo_vei = int(df_exec_motoristas['tem_veiculo'].sum()) if not df_exec_motoristas.empty else 0
+exec_vinculo_sem = exec_vinculo_mot - exec_vinculo_vei
 
 # Histórico mensal de operação para os gráficos do Executivo.
 # Esses dados vêm agregados do banco; não dependem do detalhe embutido no HTML.
@@ -1689,35 +1734,44 @@ def html_exec_off_inicial():
     if not a: return '<tr><td colspan="5">Nenhum município com não executadas no período atual.</td></tr>'
     return ''.join(_html_tr([f'<b>#{i+1}</b>',htmlmod.escape(k),f"{v['total']:,}",f"{v['nao']:,}",f"{(v['ok']/v['total']*100 if v['total'] else 0):.1f}%"]) for i,(k,v) in enumerate(a[:40]))
 
+def _is_real_occurrence(obs):
+    txt = ' '.join(str(obs or '').split()).strip()
+    if not txt:
+        return False
+    # Ignora identificadores técnicos gerados automaticamente que chegam na
+    # observação e não representam uma ocorrência operacional.
+    up = txt.upper()
+    if 'ROTA_EXTRA_ID_LOCAL' in up or up.startswith('ROTA_') and 'ID_LOCAL:' in up:
+        return False
+    return True
+
 def html_exec_ocorr_inicial():
     m = {}
     for r in _exec_cur:
         obs = str(r.get('o') or '').strip()
-        if not obs: continue
+        if not _is_real_occurrence(obs):
+            continue
         k=(r.get('f') or 'SEM FISCAL')+'||'+(r.get('g') or 'SEM GRE')
-        if k not in m: m[k]={'f':r.get('f') or 'SEM FISCAL','g':r.get('g') or 'SEM GRE','n':0,'motivos':[]}
+        if k not in m:
+            m[k]={'f':r.get('f') or 'SEM FISCAL','g':r.get('g') or 'SEM GRE','n':0,'motivos':[]}
         m[k]['n'] += 1
-        if len(m[k]['motivos']) < 3: m[k]['motivos'].append(' '.join(obs.split())[:140])
+        if len(m[k]['motivos']) < 3:
+            m[k]['motivos'].append(' '.join(obs.split())[:180])
     a=sorted(m.values(), key=lambda x:x['n'], reverse=True)
-    if not a: return '<tr><td colspan="4">Sem ocorrências com observação preenchida no período.</td></tr>'
+    if not a:
+        return '<tr><td colspan="4">Sem ocorrências operacionais com observação válida no período.</td></tr>'
     return ''.join(_html_tr([htmlmod.escape(o['f']),htmlmod.escape(o['g']),str(o['n']),htmlmod.escape(' · '.join(o['motivos']))]) for o in a[:40])
 
 def html_exec_tec_inicial():
-    m={}
-    for r in _exec_cur:
-        mot=r.get('m')
-        if not mot or mot=='SEM MOTORISTA': continue
-        k=(r.get('f') or 'SEM FISCAL')+'||'+(r.get('g') or 'SEM GRE')+'||'+(r.get('c') or 'SEM CIDADE')
-        if k not in m: m[k]={'f':r.get('f') or 'SEM FISCAL','g':r.get('g') or 'SEM GRE','c':r.get('c') or 'SEM CIDADE','tot':set(),'ok':set(),'app':set(),'outro':set()}
-        o=m[k]; o['tot'].add(mot)
-        if r.get('i'): o['ok'].add(mot); (o['app'] if r.get('a') is True else o['outro']).add(mot)
-    a=[]
-    for o in m.values():
-        total=len(o['tot']); ok=len(o['ok']); app=len(o['app']); outro=len(o['outro'])
-        a.append((ok/max(total,1)*100, o['f'],o['g'],o['c'],total,ok,app,outro,app/max(ok,1)*100,ok/max(total,1)*100))
-    a.sort(key=lambda x:(x[0],x[4]), reverse=True)
-    if not a: return '<tr><td colspan="9">Sem dados de tecnologia para o período.</td></tr>'
-    return ''.join(_html_tr([htmlmod.escape(x[1]),htmlmod.escape(x[2]),htmlmod.escape(x[3]),str(x[4]),str(x[5]),str(x[6]),str(x[7]),f"{x[8]:.1f}%",f"{x[9]:.1f}%"]) for x in a[:100])
+    rows = [r for r in _exec_cur if str(r.get('f') or '').strip().upper() not in _TEC_EXCL_FISCAIS]
+    if not rows:
+        return '<tr><td colspan="7">Sem dados de tecnologia para o período.</td></tr>'
+    # Tabela inicial agora apresenta a estrutura hierárquica; o conteúdo é
+    # renderizado novamente no navegador para permitir expandir/recolher.
+    return '<tr><td colspan="9">Abra os níveis Fiscal → GRE → Cidade → Motorista.</td></tr>'
+
+def _exec_tec_rows_filtered():
+    return [r for r in _exec_cur if str(r.get('f') or '').strip().upper() not in _TEC_EXCL_FISCAIS]
 
 # ─── COMBUSTÍVEL ────────────────────────────────────────────────────────────
 MESES_COMB = ['2026-02','2026-03','2026-04','2026-05','2026-06','2026-07','2026-08']
@@ -2760,6 +2814,9 @@ tr:hover{{background:var(--s2)}}
 .info{{background:rgba(56,189,248,.07);border:1px solid rgba(56,189,248,.2);
   border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#7dd3fc;line-height:1.6}}
 canvas{{max-height:270px}}
+.tech-toggle{{background:none;border:0;color:var(--ac);cursor:pointer;font-size:11px;width:18px;padding:0;margin-right:2px}}
+.tech-leaf{{display:inline-block;width:18px;text-align:center;color:#64748b}}
+#t_exec_tec td{{vertical-align:middle}}
 
 .gc-payment-card summary{{list-style:none;cursor:pointer}}
 .gc-payment-card summary::-webkit-details-marker{{display:none}}
@@ -2977,14 +3034,15 @@ canvas{{max-height:270px}}
     <div class="card"><h3>🏆 Performance — Assiduidade: Top 5 Fiscais</h3><p class="desc">Top 5 por assiduidade entre responsáveis com pelo menos 20 registros no período selecionado.</p><canvas id="c_exec_topfiscal"></canvas></div>
   </div>
 
-  <div class="card"><h3>👥 Motoristas — Vínculo com Veículo</h3>
+  <div class="card"><h3>👥 Motoristas Ativos em Escala — Vínculo com Veículo</h3>
+    <p class="desc">Base: <b>motoristas com status A</b> que possuem pelo menos uma escala no mês atual. Exclui <b>LOGISTICA CAPITAL</b>, <b>LOGISTICA INTERIOR</b> e <b>ADMINISTRATIVO</b>. Cada motorista aparece uma única vez conforme sua GRE de cadastro.</p>
     <div class="g3" style="margin-bottom:12px">
-      <div class="kpi"><label>Mot.</label><div class="v v-ac" id="x_mot">0</div></div>
-      <div class="kpi"><label>Vei.</label><div class="v v-ok" id="x_mot_vei">0</div></div>
-      <div class="kpi"><label>Sem Vei.</label><div class="v v-wn" id="x_mot_sem">0</div></div>
+      <div class="kpi"><label>Mot. Ativos em Escala</label><div class="v v-ac" id="x_mot">{exec_vinculo_mot:,}</div></div>
+      <div class="kpi"><label>Com Veículo</label><div class="v v-ok" id="x_mot_vei">{exec_vinculo_vei:,}</div></div>
+      <div class="kpi"><label>Sem Veículo</label><div class="v v-wn" id="x_mot_sem">{exec_vinculo_sem:,}</div></div>
     </div>
-    <div class="tw"><table id="t_exec_vinculo"><thead><tr><th>Regional (GRE)</th><th>Mot.</th><th>Com V.</th><th>Sem V.</th></tr></thead><tbody></tbody></table></div>
-    <div class="info" style="margin-top:10px" id="x_multi_gre">✅ Nenhum motorista em mais de uma GRE.</div>
+    <div class="tw"><table id="t_exec_vinculo"><thead><tr><th>Regional (GRE)</th><th>Mot.</th><th>Com V.</th><th>Sem V.</th></tr></thead><tbody>{html_exec_vinculo_inicial()}</tbody></table></div>
+    <div class="info" style="margin-top:10px">✅ Contagem sem sobreposição: Com Veículo + Sem Veículo = Motoristas Ativos em Escala.</div>
   </div>
 
   <div class="g2">
@@ -3010,10 +3068,10 @@ canvas{{max-height:270px}}
 
   <div class="card"><h3>📝 Ocorrências por Fiscal</h3><p class="desc">Lê diretamente a coluna <b>observacao</b> de <b>rotas_escalarota</b> no período selecionado. Mostra quantidade e exemplos dos principais registros de ocorrência por fiscal/GRE.</p><div class="tw"><table id="t_exec_ocorr"><thead><tr><th>Fiscal</th><th>GRE</th><th>Ocorrências</th><th>Principais registros</th></tr></thead><tbody>{html_exec_ocorr_inicial()}</tbody></table></div></div>
 
-  <div class="card"><h3>📱 Tecnologia — Usabilidade do Sistema</h3><p class="desc">Acompanha mês a mês quantos motoristas foram escalados e quantos efetivamente iniciaram uma execução no sistema. <b>% Usabilidade geral</b> = motoristas que executaram ÷ motoristas escalados. O detalhamento abaixo segue <b>Fiscal › GRE › Cidade</b>; Via App e Link/Outro mostram a origem das execuções.</p>
+  <div class="card"><h3>📱 Tecnologia — Usabilidade do Sistema</h3><p class="desc">Acompanha mês a mês quantos motoristas foram escalados e quantos efetivamente iniciaram uma execução no sistema. <b>% Usabilidade geral</b> = motoristas que executaram ÷ motoristas escalados. Foram retirados da análise os fiscais <b>AYSLAN DE SOUSA COSTA</b> e <b>JOSE MAYLSON ALVES MACEDO</b>. O detalhamento segue <b>Fiscal → GRE → Cidade → Motorista</b>.</p>
     <div class="g2" style="margin-bottom:12px"><div class="kpi"><label>Motoristas Escalados — Mês Atual</label><div class="v v-ac">{exec_motoristas_escalados:,}</div></div><div class="kpi"><label>Motoristas que Executaram</label><div class="v v-ok">{exec_motoristas_executaram:,}</div><div class="sub">Usabilidade {exec_tec_usabilidade}%</div></div></div>
     <div style="height:280px;margin-bottom:12px"><canvas id="c_exec_tec_hist"></canvas></div>
-    <div class="tw"><table id="t_exec_tec"><thead><tr><th>Fiscal</th><th>GRE</th><th>Cidade</th><th>Mot. Esc.</th><th>Mot. Exec.</th><th>Via App</th><th>Link/Outro</th><th>% App</th><th>% Usabilidade</th></tr></thead><tbody>{html_exec_tec_inicial()}</tbody></table></div>
+    <div class="tw"><table id="t_exec_tec"><thead><tr><th>Hierarquia</th><th>Mot. Esc.</th><th>Mot. Exec.</th><th>Via App</th><th>Link/Outro</th><th>% App</th><th>% Usabilidade</th></tr></thead><tbody>{html_exec_tec_inicial()}</tbody></table></div>
   </div>
 </div>
 
@@ -3858,33 +3916,59 @@ function exRenderOcorr(rows){{
   const m=new Map();
   rows.forEach(r=>{{
     const obs=String(r.o||'').trim(); if(!obs)return;
+    const up=obs.toUpperCase();
+    // Ignora identificadores técnicos gerados automaticamente na observação.
+    if(up.includes('ROTA_EXTRA_ID_LOCAL') || (up.startsWith('ROTA_') && up.includes('ID_LOCAL:'))) return;
     const k=(r.f||'SEM FISCAL')+'||'+(r.g||'SEM GRE');
     if(!m.has(k))m.set(k,{{f:r.f,g:r.g,n:0,motivos:[]}});
-    const o=m.get(k); o.n++; if(o.motivos.length<3)o.motivos.push(obs.replace(/\s+/g,' ').slice(0,140));
+    const o=m.get(k); o.n++; if(o.motivos.length<3)o.motivos.push(obs.replace(/\s+/g,' ').slice(0,180));
   }});
   const a=[...m.values()].sort((x,y)=>y.n-x.n);
   exTable('t_exec_ocorr',a.slice(0,40).map(o=>exTr([exEsc(o.f),exEsc(o.g),exNum(o.n),exEsc(o.motivos.join(' · '))])).join(''),4);
 }}
 function exRenderTec(rows){{
-  const m=new Map();
-  rows.forEach(r=>{{
-    const key=[r.f,r.g,r.c].join('||');
-    if(!m.has(key))m.set(key,{{f:r.f,g:r.g,c:r.c,mot:new Set(),ok:new Set(),app:new Set(),outro:new Set()}});
-    const o=m.get(key);
-    if(r.m && r.m!=='SEM MOTORISTA')o.mot.add(r.m);
-    if(r.i && r.m && r.m!=='SEM MOTORISTA')o.ok.add(r.m);
-    if(r.i && r.a===true && r.m && r.m!=='SEM MOTORISTA')o.app.add(r.m);
-    if(r.i && r.a!==true && r.m && r.m!=='SEM MOTORISTA')o.outro.add(r.m);
+  const EXCL={jd(list(_TEC_EXCL_FISCAIS))};
+  const src=rows.filter(r=>!EXCL.includes(String(r.f||'').trim().toUpperCase()));
+  const tree=new Map();
+  const addNode=(parent,key,label,level)=>{{
+    if(!parent.has(key)) parent.set(key,{{label,level,children:new Map(),esc:new Set(),exec:new Set(),app:new Set(),outro:new Set()}});
+    return parent.get(key);
+  }};
+  src.forEach(r=>{{
+    const id=r.mid||r.m||('row_'+Math.random());
+    const f=addNode(tree,'F:'+r.f,r.f||'SEM FISCAL',0);
+    const g=addNode(f.children,'G:'+r.g,r.g||'SEM GRE',1);
+    const c=addNode(g.children,'C:'+r.c,r.c||'SEM CIDADE',2);
+    const m=addNode(c.children,'M:'+id,r.m||'SEM MOTORISTA',3);
+    [f,g,c,m].forEach(n=>{{n.esc.add(id);}});
+    if(r.i){{[f,g,c,m].forEach(n=>n.exec.add(id));}}
+    if(r.i && r.a===true){{[f,g,c,m].forEach(n=>n.app.add(id));}}
+    if(r.i && r.a!==true){{[f,g,c,m].forEach(n=>n.outro.add(id));}}
   }});
-  const a=[...m.values()].map(o=>({{...o,total:o.mot.size,executaram:o.ok.size,app:o.app.size,outro:o.outro.size,usab:o.mot.size?o.ok.size/o.mot.size*100:0,pctApp:o.ok.size?o.app.size/o.ok.size*100:0}})).sort((x,y)=>y.usab-x.usab||y.total-x.total);
-  const h=[];
-  let lastF='',lastG='',lastC='';
-  a.forEach(o=>{{
-    const indentF=o.f!==lastF; const indentG=o.g!==lastG;
-    h.push(exTr([indentF?'<b>'+exEsc(o.f)+'</b>':'',indentG?'<b>'+exEsc(o.g)+'</b>':'', '<b>'+exEsc(o.c)+'</b>', exNum(o.total), exNum(o.executaram), exNum(o.app), exNum(o.outro), exPct(o.pctApp), exPct(o.usab)]));
-    lastF=o.f; lastG=o.g; lastC=o.c;
-  }});
-  exTable('t_exec_tec',h.join(''),9);
+  const nodeRows=[]; let seq=0;
+  function walk(children,parentId){{
+    const arr=[...children.values()].sort((a,b)=>b.esc.size-a.esc.size||String(a.label).localeCompare(String(b.label),'pt-BR'));
+    arr.forEach(n=>{{
+      const id='tech_'+(seq++); n._id=id; n._parent=parentId||''; nodeRows.push(n); walk(n.children,id);
+    }});
+  }}
+  walk(tree,'');
+  const html=nodeRows.map(n=>{{
+    const has=n.children.size>0;
+    const indent='&nbsp;'.repeat(n.level*4);
+    const icon=has?`<button class="tech-toggle" data-id="${{n._id}}" onclick="toggleTech('${{n._id}}')">▶</button>`:'<span class="tech-leaf">•</span>';
+    const weight=n.level===0?'font-weight:700':(n.level===1?'font-weight:600':'');
+    const color=n.level===0?'color:var(--ac)':(n.level===1?'color:#cbd5e1':'color:#94a3b8');
+    const pctApp=n.exec.size?n.app.size/n.exec.size*100:0;
+    const usab=n.esc.size?n.exec.size/n.esc.size*100:0;
+    const disp=n.level===0||!n._parent?'':'none';
+    return `<tr data-id="${{n._id}}" data-parent="${{n._parent}}" style="display:${{disp}}">`+
+      `<td style="${{weight}};${{color}}">${{indent}}${{icon}}${{exEsc(n.label)}}</td>`+
+      `<td>${{exNum(n.esc.size)}}</td><td>${{exNum(n.exec.size)}}</td><td>${{exNum(n.app.size)}}</td><td>${{exNum(n.outro.size)}}</td>`+
+      `<td>${{exPct(pctApp)}}</td><td style="font-weight:700;">${{exPct(usab)}}</td></tr>`;
+  }}).join('');
+  exTable('t_exec_tec',html,7);
+
   const ch=document.getElementById('c_exec_tec_hist');
   if(ch){{
     if(window._tecHistChart){{try{{window._tecHistChart.destroy()}}catch(e){{}}}}
@@ -3897,25 +3981,37 @@ function exRenderTec(rows){{
     ]}},options:{{responsive:true,scales:{{y:{{beginAtZero:true}},y1:{{beginAtZero:true,max:100,position:'right'}}}}}}}});
   }}
 }}
-function exRenderVinculo(rows){{
-  const mm=new Map(), gps=new Map(), allMot=new Set(), allV=new Set(), allS=new Set();
-  rows.forEach(r=>{{
-    const g=r.g||'SEM GRE', mot=r.m||'SEM MOTORISTA';
-    if(!mm.has(g))mm.set(g,{{mot:new Set(),vei:new Set(),sem:new Set()}});
-    const o=mm.get(g);o.mot.add(mot);
-    if(r.v && r.v!=='SEM PLACA')o.vei.add(mot);else o.sem.add(mot);
-    allMot.add(mot); if(r.v&&r.v!=='SEM PLACA')allV.add(mot);else allS.add(mot);
-    if(!gps.has(mot))gps.set(mot,new Set());gps.get(mot).add(g);
+function toggleTech(id){{
+  const btn=document.querySelector('.tech-toggle[data-id="'+id+'"]');
+  const open=btn && btn.textContent.trim()==='▶';
+  if(btn)btn.textContent=open?'▼':'▶';
+  document.querySelectorAll('#t_exec_tec tbody tr[data-parent="'+id+'"]').forEach(row=>{{
+    row.style.display=open?'':'none';
+    if(!open) hideTechDescendants(row.dataset.id);
   }});
-  document.getElementById('x_mot').textContent=exNum(allMot.size);
-  document.getElementById('x_mot_vei').textContent=exNum(allV.size);
-  document.getElementById('x_mot_sem').textContent=exNum(allS.size);
-  const a=[...mm.entries()].sort((x,y)=>y[1].mot.size-x[1].mot.size);
-  exTable('t_exec_vinculo',a.map(([g,o])=>exTr([exEsc(g),exNum(o.mot.size),exNum(o.vei.size),exNum(o.sem.size)])).join(''),4);
-  const multi=[...gps.entries()].filter(([_,s])=>s.size>1);
-  const el=document.getElementById('x_multi_gre');
-  if(multi.length){{el.className='alerta';el.innerHTML='<b>⚠️ Motoristas em mais de uma GRE:</b> '+multi.slice(0,10).map(([m,s])=>exEsc(m)+' ('+[...s].map(exEsc).join(', ')+')').join(' · ');}}
-  else{{el.className='info';el.innerHTML='✅ Nenhum motorista em mais de uma GRE.';}}
+}}
+function hideTechDescendants(parentId){{
+  document.querySelectorAll('#t_exec_tec tbody tr[data-parent="'+parentId+'"]').forEach(row=>{{
+    row.style.display='none';
+    const b=row.querySelector('.tech-toggle'); if(b)b.textContent='▶';
+    hideTechDescendants(row.dataset.id);
+  }});
+}}
+function exRenderVinculo(rows){{
+  // O bloco de vínculo usa a tabela mestre de motoristas ativos em escala,
+  // e não o conjunto bruto das execuções, evitando contagens duplicadas.
+  document.getElementById('x_mot').textContent=exNum({exec_vinculo_mot});
+  document.getElementById('x_mot_vei').textContent=exNum({exec_vinculo_vei});
+  document.getElementById('x_mot_sem').textContent=exNum({exec_vinculo_sem});
+  const base={jd(df_exec_motoristas[['id','motorista','gre','tem_veiculo']].to_dict('records') if not df_exec_motoristas.empty else [])};
+  const m=new Map();
+  base.forEach(r=>{{
+    const g=r.gre||'SEM GRE';
+    if(!m.has(g))m.set(g,{{mot:0,vei:0,sem:0}});
+    const o=m.get(g);o.mot++;if(r.tem_veiculo)o.vei++;else o.sem++;
+  }});
+  const a=[...m.entries()].sort((x,y)=>y[1].mot-x[1].mot);
+  exTable('t_exec_vinculo',a.map(([g,o])=>exTr([exEsc(g),exNum(o.mot),exNum(o.vei),exNum(o.sem)])).join(''),4);
 }}
 function exRenderCharts(rows){{
   exDestroy();
