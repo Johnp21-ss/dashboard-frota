@@ -3253,6 +3253,24 @@ canvas{{max-height:270px}}
   <button onclick="tab('t12',this)">📡 Rastreamento</button>
 </div>
 
+<script>
+window.switchStrategyPillar = function(p, btn){{
+  const nav = document.getElementById('strategyNav');
+  if(!nav) return;
+  nav.querySelectorAll('button').forEach(function(b){{ b.classList.toggle('active', b === btn); }});
+  document.querySelectorAll('.strategy-pillar').forEach(function(sec){{
+    sec.classList.toggle('active', sec.dataset.pillar === p);
+  }});
+  if(window.Chart){{
+    setTimeout(function(){{
+      document.querySelectorAll('.strategy-pillar.active canvas').forEach(function(c){{
+        try{{ const chart = Chart.getChart(c); if(chart) chart.resize(); }}catch(e){{}}
+      }});
+    }}, 50);
+  }}
+}};
+</script>
+
 <!-- ABA 1: PAINEL EXECUTIVO -->
 <div id="t1" class="tab active">
   <div class="strategy-hero">
@@ -3265,16 +3283,16 @@ canvas{{max-height:270px}}
   </div>
 
   <div class="strategy-nav" id="strategyNav">
-    <button class="active" data-pillar="overview">🎯 Visão Geral</button>
-    <button data-pillar="rotas">🛣️ Rotas</button>
-    <button data-pillar="motoristas">👤 Motoristas</button>
-    <button data-pillar="frota">🚌 Frota</button>
-    <button data-pillar="contratos">📑 Contratos</button>
-    <button data-pillar="combustivel">⛽ Combustível</button>
-    <button data-pillar="gestao">👮 Gestão</button>
-    <button data-pillar="fornecedores">🏢 Fornecedores</button>
-    <button data-pillar="tecnologia">📡 Tecnologia</button>
-    <button data-pillar="acoes">🚨 Ações</button>
+    <button class="active" type="button" onclick="switchStrategyPillar('overview',this)">🎯 Visão Geral</button>
+    <button type="button" onclick="switchStrategyPillar('rotas',this)">🛣️ Rotas</button>
+    <button type="button" onclick="switchStrategyPillar('motoristas',this)">👤 Motoristas</button>
+    <button type="button" onclick="switchStrategyPillar('frota',this)">🚌 Frota</button>
+    <button type="button" onclick="switchStrategyPillar('contratos',this)">📑 Contratos</button>
+    <button type="button" onclick="switchStrategyPillar('combustivel',this)">⛽ Combustível</button>
+    <button type="button" onclick="switchStrategyPillar('gestao',this)">👮 Gestão</button>
+    <button type="button" onclick="switchStrategyPillar('fornecedores',this)">🏢 Fornecedores</button>
+    <button type="button" onclick="switchStrategyPillar('tecnologia',this)">📡 Tecnologia</button>
+    <button type="button" onclick="switchStrategyPillar('acoes',this)">🚨 Ações</button>
   </div>
 
   <section class="strategy-pillar active" data-pillar="overview">
