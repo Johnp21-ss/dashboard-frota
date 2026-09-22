@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 import psycopg2
 import pandas as pd
 import json
@@ -30,7 +32,11 @@ ADMIN_GRES = {
 }
 
 try:
-    conn = psycopg2.connect(host=HOST, port=PORT, database=DATABASE, user=USER, password=PASSWORD)
+    conn = psycopg2.connect(host=HOST, port=PORT, database=DATABASE, user=USER, password=PASSWORD, sslmode="require", connect_timeout=15)
+    conn.set_session(readonly=True)
+    with conn.cursor() as _cur:
+        _cur.execute("SET TIME ZONE 'America/Sao_Paulo'")
+        _cur.execute("SET statement_timeout = '120s'")
     print("✅ Conectado.")
 except Exception as e:
     print(f"❌ Erro: {e}"); raise e
@@ -39,7 +45,7 @@ def safe_read(query, default=None):
     try: return pd.read_sql(query, conn)
     except Exception as err:
         print(f"⚠️ Query falhou: {err}")
-        return pd.DataFrame() if default is None else default
+        raise RuntimeError("Falha na consulta: publicação interrompida para não exibir zeros incorretos.") from err
 
 def jd(obj): return json.dumps(obj, ensure_ascii=False, default=str)
 def n(v, d=0):
@@ -1387,141 +1393,196 @@ ORDER BY total_escalas DESC
 """)
 
 
-# 14) CALENDÁRIO FINANCEIRO — EXECUÇÃO REAL DAS DIÁRIAS E MENSALIDADES
-# Regra validada:
-#   DIÁRIA = 1 pagamento por DATA + CONTRATO ROTA, desde que exista
-#            pelo menos uma execução real (inicio_execucao preenchido) e não anulada.
-#   MENSAL = 1 pagamento por MÊS + CONTRATO ROTA, desde que exista
-#            pelo menos uma execução real no mês.
-# Portanto, várias viagens/rotas/escalas do mesmo Contrato Rota no mesmo período NÃO duplicam o valor.
-df_gc_pagamento_diario = safe_read("""
-WITH base AS (
-    SELECT
-        e.data::date AS data,
-        ci.id AS contrato_rota_id,
-        ci.contrato_id AS contrato_id,
-        ci.valor_unitario,
-        COALESCE(fc.nome, fv.nome, 'SEM FORNECEDOR') AS fornecedor,
-        COALESCE(vx.placa, vc.placa) AS placa,
-        COALESCE(m.nome, 'SEM MOTORISTA') AS motorista,
-        COALESCE(g.nome, gr.nome, 'SEM GRE') AS gre,
-        COALESCE(r.nome, 'ROTA #' || COALESCE(e.rota_id::text,'')) AS rota_nome,
-        e.id AS escala_id
-    FROM airbyte.rotas_escalarota e
-    JOIN airbyte.contratos_itemcontrato ci
-      ON ci.id = e.contrato_rota_id
-     AND ci.status = 'ATIVO'
-     AND ci.modalidade_pagamento = 'DIARIA'
-    JOIN airbyte.contratos_contrato c
-      ON c.id = ci.contrato_id
-     AND c.status = 'A'
-    LEFT JOIN airbyte.veiculos_veiculo vx ON vx.id = e.veiculo_execucao_id
-    LEFT JOIN airbyte.veiculos_veiculo vc ON vc.id = ci.veiculo_id
-    LEFT JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id
-    LEFT JOIN airbyte.motoristas_fornecedor fc ON fc.id = c.fornecedor_id
-    LEFT JOIN airbyte.motoristas_fornecedor fv ON fv.id = COALESCE(vx.fornecedor_id, vc.fornecedor_id)
-    LEFT JOIN airbyte.rotas_rota r ON r.id = e.rota_id
-    LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
-    LEFT JOIN airbyte.escolas_gre gr ON gr.id = r.gre_id
-    WHERE e.data >= DATE '2026-01-01'
-      AND e.data <= CURRENT_DATE
-      AND e.anulada = false
-      AND e.inicio_execucao IS NOT NULL
-      AND e.contrato_rota_id IS NOT NULL
-), unicas AS (
-    SELECT DISTINCT ON (data, contrato_rota_id)
-        data, contrato_rota_id, contrato_id, valor_unitario
-    FROM base
-    ORDER BY data, contrato_rota_id, escala_id
-)
-SELECT
-    data,
-    COUNT(*) AS contratos_rota_diaria,
-    COALESCE(SUM(valor_unitario),0) AS valor_diarias
-FROM unicas
-GROUP BY data
-ORDER BY data
-""", pd.DataFrame())
+"""Componente financeiro incorporado ao gerador; somente consultas de leitura."""
+import json
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
-df_gc_pagamento_mensal = safe_read("""
-WITH unicos AS (
-    SELECT DISTINCT
-        DATE_TRUNC('month', e.data)::date AS mes,
-        ci.id AS contrato_rota_id,
-        ci.valor_unitario
-    FROM airbyte.rotas_escalarota e
-    JOIN airbyte.contratos_itemcontrato ci
-      ON ci.id = e.contrato_rota_id
-     AND ci.status = 'ATIVO'
-     AND ci.modalidade_pagamento = 'MENSAL'
-    JOIN airbyte.contratos_contrato c
-      ON c.id = ci.contrato_id
-     AND c.status = 'A'
-    WHERE e.data >= DATE '2026-01-01'
-      AND e.data <= CURRENT_DATE
-      AND e.anulada = false
-      AND e.inicio_execucao IS NOT NULL
-      AND e.contrato_rota_id IS NOT NULL
-)
-SELECT
-    mes,
-    COUNT(*) AS contratos_mensais_executados,
-    COALESCE(SUM(valor_unitario),0) AS valor_mensal
-FROM unicos
-GROUP BY mes
-ORDER BY mes
-""", pd.DataFrame())
 
-df_gc_pagamento_detalhe = safe_read("""
-WITH base AS (
-    SELECT
-        e.data::date AS data,
-        ci.id AS contrato_rota_id,
-        ci.contrato_id AS contrato_id,
-        ci.valor_unitario,
-        COALESCE(fc.nome, fv.nome, 'SEM FORNECEDOR') AS fornecedor,
-        COALESCE(vx.placa, vc.placa, 'SEM PLACA') AS placa,
-        COALESCE(m.nome, 'SEM MOTORISTA') AS motorista,
-        COALESCE(g.nome, gr.nome, 'SEM GRE') AS gre,
-        COALESCE(r.nome, 'ROTA #' || COALESCE(e.rota_id::text,'')) AS rota_nome,
-        e.id AS escala_id
-    FROM airbyte.rotas_escalarota e
-    JOIN airbyte.contratos_itemcontrato ci
-      ON ci.id = e.contrato_rota_id
-     AND ci.status = 'ATIVO'
-     AND ci.modalidade_pagamento = 'DIARIA'
-    JOIN airbyte.contratos_contrato c
-      ON c.id = ci.contrato_id
-     AND c.status = 'A'
-    LEFT JOIN airbyte.veiculos_veiculo vx ON vx.id = e.veiculo_execucao_id
-    LEFT JOIN airbyte.veiculos_veiculo vc ON vc.id = ci.veiculo_id
-    LEFT JOIN airbyte.motoristas_motorista m ON m.id = e.motorista_id
-    LEFT JOIN airbyte.motoristas_fornecedor fc ON fc.id = c.fornecedor_id
-    LEFT JOIN airbyte.motoristas_fornecedor fv ON fv.id = COALESCE(vx.fornecedor_id, vc.fornecedor_id)
-    LEFT JOIN airbyte.rotas_rota r ON r.id = e.rota_id
-    LEFT JOIN airbyte.escolas_gre g ON g.id = ci.gre_id
-    LEFT JOIN airbyte.escolas_gre gr ON gr.id = r.gre_id
-    WHERE e.data >= DATE '2026-01-01'
-      AND e.data <= CURRENT_DATE
-      AND e.anulada = false
-      AND e.inicio_execucao IS NOT NULL
-      AND e.contrato_rota_id IS NOT NULL
-)
-SELECT
-    data,
-    contrato_rota_id,
-    contrato_id,
-    COALESCE(MAX(fornecedor),'SEM FORNECEDOR') AS fornecedor,
-    COALESCE(MAX(gre),'SEM GRE') AS gre,
-    STRING_AGG(DISTINCT motorista, ' | ' ORDER BY motorista) AS motoristas,
-    STRING_AGG(DISTINCT placa, ' | ' ORDER BY placa) AS placas,
-    STRING_AGG(DISTINCT rota_nome, ' | ' ORDER BY rota_nome) AS rotas,
-    COUNT(DISTINCT escala_id) AS execucoes,
-    MAX(valor_unitario) AS valor_diaria
-FROM base
-GROUP BY data, contrato_rota_id, contrato_id
-ORDER BY data, valor_diaria DESC, contrato_rota_id
-""", pd.DataFrame())
+def carregar_centro(conn, inicio):
+    from psycopg2.extras import RealDictCursor
+    consultas = {
+        'contratos': '''SELECT c.id, c.status, c.data_inicio, c.data_fim,
+            COALESCE(f.nome,'SEM PRESTADOR') AS prestador
+            FROM airbyte.contratos_contrato c
+            LEFT JOIN airbyte.motoristas_fornecedor f ON f.id=c.fornecedor_id
+            WHERE c.data_inicio <= CURRENT_DATE
+              AND (c.data_fim IS NULL OR c.data_fim >= %s::date)
+              AND c.status IN ('A','I')''',
+        'itens': '''SELECT id, contrato_id, status, modalidade_pagamento,
+            valor_unitario, veiculo_id FROM airbyte.contratos_itemcontrato''',
+        'escalas': '''SELECT e.id, e.data::date AS data, e.tipo_rota,
+            e.contrato_rota_id, e.veiculo_execucao_id,
+            e.inicio_execucao IS NOT NULL AS iniciou,
+            e.fim_execucao IS NOT NULL AS terminou,
+            e.km_executado, e.observacao,
+            COALESCE(r.nome,'SEM ROTA') AS rota,
+            COALESCE(v.placa,'SEM VEÍCULO REGISTRADO') AS placa,
+            COALESCE(m.nome,'SEM MOTORISTA') AS motorista
+            FROM airbyte.rotas_escalarota e
+            LEFT JOIN airbyte.rotas_rota r ON r.id=e.rota_id
+            LEFT JOIN airbyte.veiculos_veiculo v ON v.id=e.veiculo_execucao_id
+            LEFT JOIN airbyte.motoristas_motorista m ON m.id=e.motorista_id
+            WHERE e.data >= %s::date AND e.data < CURRENT_DATE + INTERVAL '1 day'
+              AND e.anulada=false''',
+        # Inclui contratos antigos para identificar conflitos fora da janela de vigência.
+        'vinculos': '''SELECT c.id, c.status, c.data_inicio, c.data_fim,
+            COALESCE(f.nome,'SEM PRESTADOR') AS prestador
+            FROM airbyte.contratos_contrato c
+            LEFT JOIN airbyte.motoristas_fornecedor f ON f.id=c.fornecedor_id''',
+    }
+    dados = {}
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        for nome, sql in consultas.items():
+            cur.execute(sql, (inicio,) if '%s' in sql else None)
+            dados[nome] = [dict(r) for r in cur.fetchall()]
+    dados['inicio'] = inicio
+    dados['hoje'] = datetime.now(ZoneInfo('America/Sao_Paulo')).date().isoformat()
+    dados['atualizado'] = datetime.now(ZoneInfo('America/Sao_Paulo')).isoformat(timespec='seconds')
+    return dados
+
+
+def preparar_financeiro(dados):
+    """Dias elegíveis por contrato; composição não verificável fica sem valor automático."""
+    contratos = {str(c['id']): c for c in dados['vinculos']}
+    itens = {str(i['id']): i for i in dados['itens']}
+    grupos = {}
+    for i in dados['itens']:
+        grupos.setdefault(str(i['contrato_id']), []).append(i)
+    for c in dados['vinculos']:
+        membros = grupos.get(str(c['id']), [])
+        # Encerramento de itens não tem vigência própria disponível.
+        # Nunca presumir que todos os itens encerrados eram simultaneamente devidos.
+        c['composicao_pendente'] = (not membros or any(
+            i['status'] != 'ATIVO' or i['valor_unitario'] is None
+            or i['modalidade_pagamento'] not in ('DIARIA', 'MENSAL')
+            for i in membros))
+        c['diaria'] = sum(float(i['valor_unitario'] or 0) for i in membros
+                          if i['modalidade_pagamento'] == 'DIARIA' and i['status'] == 'ATIVO')
+        c['mensal'] = sum(float(i['valor_unitario'] or 0) for i in membros
+                          if i['modalidade_pagamento'] == 'MENSAL' and i['status'] == 'ATIVO')
+        c['tem_diaria'] = any(i['modalidade_pagamento'] == 'DIARIA' for i in membros)
+        c['tem_mensal'] = any(i['modalidade_pagamento'] == 'MENSAL' for i in membros)
+    dias = {}
+    for e in dados['escalas']:
+        i = itens.get(str(e['contrato_rota_id']))
+        c = contratos.get(str(i['contrato_id'])) if i else None
+        e['contrato_id'] = c['id'] if c else None
+        d = str(e['data'])[:10]
+        # Extras seguem fila de lançamento manual e não liberam diária automática.
+        if not (c and e['tipo_rota'] == 'RR' and e['iniciou'] and e['terminou']):
+            continue
+        if not c['data_inicio'] or d < str(c['data_inicio'])[:10]:
+            continue
+        if c['data_fim'] and d > str(c['data_fim'])[:10]:
+            continue
+        if c['status'] not in ('A','I') or not c['tem_diaria']:
+            continue
+        chave = (str(c['id']), d)
+        dias[chave] = {'data': d, 'contrato_id': c['id'],
+                       'valor': None if c['composicao_pendente'] else c['diaria']}
+    dados['diarias'] = list(dias.values())
+    # Usa os mesmos objetos enriquecidos.
+    dados['contratos'] = [contratos[str(c['id'])] for c in dados['contratos']]
+    return dados
+
+
+def componente(dados):
+    payload = json.dumps(dados, ensure_ascii=False, default=str, allow_nan=False)
+    payload = payload.replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
+    return TEMPLATE.replace('__DADOS__', payload)
+
+
+TEMPLATE = r'''
+<style>
+#ct{--bg:#091522;--panel:#122432;--line:#2a4357;--ink:#eaf3fa;--muted:#9bb1c2;color:var(--ink);background:var(--bg);padding:26px;font:14px system-ui,sans-serif;border-bottom:4px solid #22ba9b}
+#ct *{box-sizing:border-box}#ct h1{margin:0;font-size:26px}#ct h2{font-size:15px;text-transform:uppercase;margin:0 0 16px}#ct p{color:var(--muted);line-height:1.6}#ct .ct-head,#ct .ct-filters{display:flex;gap:16px;flex-wrap:wrap;align-items:end;justify-content:space-between}#ct .ct-filters{justify-content:start;margin:20px 0}#ct label{display:grid;gap:6px;color:var(--muted);font-size:12px}#ct input,#ct select,#ct button{background:#183144;color:var(--ink);border:1px solid #476275;padding:10px;border-radius:7px;font:inherit}#ct button{cursor:pointer;background:#087e73}#ct button:focus-visible,#ct input:focus-visible,#ct select:focus-visible{outline:3px solid #47bfff;outline-offset:2px}#ct .ct-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px}#ct .ct-card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:18px;min-width:0}#ct .ct-kpi strong{display:block;font-size:clamp(22px,2.5vw,36px);font-weight:500;margin:12px 0;overflow-wrap:anywhere}#ct .ct-kpi span{font-size:12px;color:var(--muted)}#ct .ct-kpi:nth-child(4){background:#123e3d;border-color:#239a86}#ct .ct-main{display:grid;grid-template-columns:3fr 1fr;gap:14px;margin-top:16px}#ct .ct-bottom{display:grid;grid-template-columns:2fr 1.3fr 1fr;gap:14px;margin-top:16px}#ct .ct-scroll{overflow:auto;max-height:430px}#ct table{border-collapse:collapse;width:100%;white-space:nowrap;font-size:12px}#ct th,#ct td{padding:11px 10px;border-bottom:1px solid var(--line);text-align:left}#ct th{color:#c6d9e7;background:#183043;position:sticky;top:0}#ct .ct-badge{display:inline-block;padding:4px 8px;border-radius:5px;background:#1b6759}#ct .ct-warn{background:#725326}#ct .ct-alert{padding:12px;background:#53282e;border:1px solid #94505b;border-radius:8px;margin-bottom:10px;line-height:1.6}#ct .ct-note{font-size:12px}#ct .ct-bar{margin:12px 0}#ct .ct-bar label{display:flex;justify-content:space-between;margin-bottom:5px}#ct .ct-bar i{display:block;height:12px;background:#18a6e5;border-radius:4px}#ct .ct-plot{width:100%;height:180px}#ct details{margin-top:16px}#ct summary{cursor:pointer;font-weight:600;padding:10px 0}#ct [hidden]{display:none!important}#ct .ct-error{color:#ffb9b9}#ct .ct-status{font-size:12px;color:#76dcca}#ct .ct-tabs{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap}#ct .ct-muted{color:var(--muted)}@media(max-width:1000px){#ct .ct-kpis{grid-template-columns:repeat(2,1fr)}#ct .ct-main,#ct .ct-bottom{grid-template-columns:1fr}}@media(max-width:600px){#ct{padding:14px}#ct .ct-kpis{grid-template-columns:1fr}#ct h1{font-size:22px}}
+</style>
+<section id="ct" aria-label="Control Tower financeiro">
+<div class="ct-head"><div><div class="ct-status">LOG-PI / CONTROL TOWER</div><h1>Contratos e demandas extras</h1></div><div id="ct-update" class="ct-muted"></div></div>
+<div class="ct-filters"><label>Consulta<select id="ct-mode"><option value="month">Mês e ano</option><option value="range">Período personalizado</option></select></label><label id="ct-month-wrap">Mês<input id="ct-month" type="month"></label><label id="ct-start-wrap" hidden>Data inicial<input id="ct-start" type="date"></label><label id="ct-end-wrap" hidden>Data final<input id="ct-end" type="date"></label><button id="ct-apply" type="button">Aplicar período</button></div>
+<p id="ct-period" role="status"></p><p id="ct-error" class="ct-error" role="alert"></p>
+<div class="ct-kpis" id="ct-kpis"></div>
+<div class="ct-main"><article class="ct-card"><h2>Rotas e diárias — últimos 3 dias do período</h2><div class="ct-scroll" id="ct-recent"></div></article><aside class="ct-card"><h2>Alertas de operação</h2><div id="ct-alerts"></div></aside></div>
+<div class="ct-bottom"><article class="ct-card"><h2>Diárias acumuladas no período</h2><div id="ct-trend"></div><p class="ct-note">Mensalidades são integrais por competência e aparecem separadas abaixo. Orçamento não informado.</p></article><article class="ct-card"><h2>Valor apurado por prestador</h2><div id="ct-suppliers"></div></article><article class="ct-card"><h2>Veículos com registro no período</h2><div id="ct-fleet"></div><p class="ct-note">Não representa disponibilidade ou estado de manutenção.</p></article></div>
+<p class="ct-note">Valores apurados com o cadastro disponível, não comprovam pagamento. Contratos com itens encerrados, suspensos ou incompletos ficam pendentes de conferência da composição, sem valor automático. Histórico de alterações dos valores não disponível.</p>
+<details open class="ct-card"><summary>Composição financeira — diárias e mensalidades</summary><div id="ct-finance" class="ct-scroll"></div></details>
+<details open class="ct-card"><summary>Conflitos de execução após encerramento</summary><div id="ct-conflicts" class="ct-scroll"></div></details>
+<details open class="ct-card"><summary>Demandas extras — EX, AB, AP e SA</summary><p id="ct-extra-summary"></p><p class="ct-note">Tipo informado pelo motorista. Início registrado conta como concluída para controle de extras. Valores aguardam lançamento pelo coordenador e não entram automaticamente na apuração.</p><div id="ct-extras" class="ct-scroll"></div></details>
+<p class="ct-note">Os filtros acima controlam esta seção. As análises anteriores, abaixo, mantêm suas janelas e filtros próprios.</p>
+</section>
+<script type="application/json" id="ct-data">__DADOS__</script>
+<script>
+(()=>{'use strict';
+const D=JSON.parse(document.getElementById('ct-data').textContent),$=id=>document.getElementById(id), money=v=>v===null?'A conferir':Number(v).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}),esc=v=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),day=v=>String(v||'').slice(0,10),br=v=>v?day(v).split('-').reverse().join('/'):'—';
+const C=new Map(D.vinculos.map(c=>[String(c.id),c])),I=new Map(D.itens.map(i=>[String(i.id),i])), vehicleContracts=new Map();
+D.itens.forEach(i=>{if(i.veiculo_id!=null){const k=String(i.veiculo_id);if(!vehicleContracts.has(k))vehicleContracts.set(k,new Set());vehicleContracts.get(k).add(String(i.contrato_id));}});
+const overlap=(c,a,b)=>c.data_inicio&&day(c.data_inicio)<=b&&(!c.data_fim||day(c.data_fim)>=a),valid=(c,d)=>overlap(c,d,d),extra=e=>['EX','AB','AP','SA'].includes(e.tipo_rota),sum=a=>a.reduce((s,x)=>s+Number(x||0),0), table=(id,heads,rows)=>{$(id).innerHTML='<table><thead><tr>'+heads.map(h=>'<th>'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+(rows.length?rows.map(r=>'<tr>'+r.map(v=>'<td>'+esc(v)+'</td>').join('')+'</tr>').join(''):'<tr><td colspan="'+heads.length+'">Nenhum registro no período.</td></tr>')+'</tbody></table>';};
+function months(a,b){const out=[];let m=a.slice(0,7);while(m<=b.slice(0,7)){out.push(m);const [y,n]=m.split('-').map(Number);m=n===12?`${y+1}-01`:`${y}-${String(n+1).padStart(2,'0')}`;}return out;}
+function last(m){const [y,n]=m.split('-').map(Number);return m+'-'+new Date(Date.UTC(y,n,0)).getUTCDate();}
+function render(){let a,b;if($('ct-mode').value==='month'){const m=$('ct-month').value;if(!m){$('ct-error').textContent='Selecione um mês.';return;}a=m+'-01';b=last(m);}else{a=$('ct-start').value;b=$('ct-end').value;}
+if(!a||!b||a>b||a<D.inicio||b>D.hoje||a>D.hoje){if($('ct-mode').value==='month'&&a>=D.inicio&&a<=D.hoje&&b>D.hoje)b=D.hoje;else{$('ct-error').textContent='Escolha um intervalo válido entre '+br(D.inicio)+' e '+br(D.hoje)+'.';return;}}
+$('ct-error').textContent='';$('ct-period').textContent='Período: '+br(a)+' a '+br(b)+'. Dados carregados até '+br(D.hoje)+'. Trocar datas não consulta o banco novamente.';
+const rows=D.escalas.filter(e=>day(e.data)>=a&&day(e.data)<=b),regular=rows.filter(e=>e.tipo_rota==='RR'),extras=rows.filter(e=>extra(e)&&e.iniciou),ds=D.diarias.filter(d=>d.data>=a&&d.data<=b),active=D.contratos.filter(c=>overlap(c,a,b));
+const ms=[];for(const m of months(a,b))for(const c of D.contratos){if(c.tem_mensal&&overlap(c,m+'-01',last(m)))ms.push({mes:m,c,valor:c.composicao_pendente?null:c.mensal});}
+const dv=sum(ds.map(d=>d.valor)),mv=sum(ms.map(m=>m.valor)),pending=ds.filter(d=>d.valor===null).length+ms.filter(m=>m.valor===null).length;
+const cards=[['CONTRATOS COM VIGÊNCIA',active.length,'No intervalo selecionado'],['ROTAS RR SEM / COM CONCLUSÃO',regular.filter(e=>!(e.iniciou&&e.terminou)).length+' / '+regular.filter(e=>e.iniciou&&e.terminou).length,'Sem conclusão inclui ausência de registro'],['DIÁRIAS ELEGÍVEIS',ds.length,'Uma por contrato e data'],['VALOR APURADO'+(pending?' · PARCIAL':''),money(dv+mv),pending+' parcelas aguardando conferência'],['PREVISÃO DO FECHAMENTO','A definir','Calendário futuro de atendimento não informado']];
+$('ct-kpis').innerHTML=cards.map(c=>'<article class="ct-card ct-kpi"><span>'+esc(c[0])+'</span><strong>'+esc(c[1])+'</strong><span>'+esc(c[2])+'</span></article>').join('');
+const cutoff=new Date(b+'T12:00:00Z');cutoff.setUTCDate(cutoff.getUTCDate()-2);const low=cutoff.toISOString().slice(0,10);const dailyKeys=new Map(ds.map(d=>[String(d.contrato_id)+'|'+d.data,d]));
+table('ct-recent',['Prestador / contrato','Rota','Data','Placa','Motorista','Registro','Diária do contrato'],rows.filter(e=>e.tipo_rota==='RR'&&day(e.data)>=low).map(e=>{const c=C.get(String(e.contrato_id)),d=dailyKeys.get(String(e.contrato_id)+'|'+day(e.data));return[c?c.prestador+' / #'+c.id:'Sem contrato',e.rota,br(e.data),e.placa,e.motorista,e.iniciou?(e.terminou?'Concluída':'Sem encerramento'):'Sem início',d?'Elegível — ver composição':'Sem diária apurada'];}));
+const conflicts=new Map();rows.filter(e=>e.iniciou).forEach(e=>{const c=C.get(String(e.contrato_id));if(!c?.data_fim||day(e.data)<=day(c.data_fim))return;const k=String(c.id);if(!conflicts.has(k))conflicts.set(k,{c,days:new Set(),n:0,done:0,first:day(e.data),last:day(e.data)});const x=conflicts.get(k);x.days.add(day(e.data));x.n++;x.done+=e.terminou?1:0;x.first=x.first<day(e.data)?x.first:day(e.data);x.last=x.last>day(e.data)?x.last:day(e.data);});
+const cf=[...conflicts.values()].sort((x,y)=>y.days.size-x.days.size),gap=x=>Math.round((Date.parse(x.last)-Date.parse(day(x.c.data_fim)))/86400000);
+table('ct-conflicts',['Contrato','Prestador','Encerramento','Primeira no período','Última no período','Dias com execução','Dias após encerramento','Iniciadas','Com início e fim'],cf.map(x=>[x.c.id,x.c.prestador,br(x.c.data_fim),br(x.first),br(x.last),x.days.size,gap(x),x.n,x.done]));
+$('ct-alerts').innerHTML=(cf.slice(0,3).map(x=>'<div class="ct-alert"><b>Contrato #'+esc(x.c.id)+'</b><br>'+x.days.size+' dias com execução após encerramento.<br>Última: '+gap(x)+' dias depois.</div>').join('')||'<p>Sem conflito de encerramento registrado no período.</p>')+'<p>'+extras.length+' extras aguardam valor.</p><p>'+pending+' parcelas têm composição a conferir.</p>';
+const byContract=new Map();ds.forEach(d=>{const c=C.get(String(d.contrato_id));const k=String(c.id);if(!byContract.has(k))byContract.set(k,{c,days:0,total:0,pending:false});const o=byContract.get(k);o.days++;o.pending||=d.valor===null;o.total+=d.valor||0;});
+table('ct-finance',['Contrato','Prestador','Modalidade','Dias / competência','Valor apurado','Base'],[...[...byContract.values()].map(x=>[x.c.id,x.c.prestador,'DIÁRIA',x.days+' dias',money(x.pending?null:x.total),x.pending?'Composição histórica a conferir':'Cadastro disponível']),...ms.map(x=>[x.c.id,x.c.prestador,'MENSAL',x.mes,money(x.valor),x.valor===null?'Composição histórica a conferir':'Integral, sem depender de execução'])]);
+const names={EX:'Extracurricular',AB:'Abastecimento',AP:'Apoio',SA:'Saída antecipada'};
+table('ct-extras',['Data','ID','Placa','Motorista','Tipo informado','Contratos pelo veículo','Sinalização','Encerramento','KM registrado','Observação','Valor'],extras.map(e=>{const candidates=[...(vehicleContracts.get(String(e.veiculo_execucao_id))||[])].map(id=>C.get(id)).filter(Boolean),v=candidates.filter(c=>valid(c,day(e.data))),old=candidates.filter(c=>c.data_fim&&day(c.data_fim)<day(e.data));return[br(e.data),e.id,e.placa,e.motorista,names[e.tipo_rota],(v.length?v:old).map(c=>'#'+c.id).join(', ')||'—',!e.veiculo_execucao_id?'Sem veículo utilizado':v.length>1?'Associação ambígua':v.length===1?'Associação cadastral, conferir item':old.length?'Contrato encerrado':'Sem contrato vigente identificado',e.terminou?'Registrado':'Sem encerramento registrado',e.km_executado,e.observacao,'Aguardando lançamento'];}));
+$('ct-extra-summary').textContent=extras.length+' extras consideradas concluídas. '+Object.entries(names).map(([k,n])=>n+': '+extras.filter(e=>e.tipo_rota===k).length).join(' · ')+'. Valor potencial ainda não informado.';
+const dates=[...new Set(ds.map(d=>d.data))].sort();let acc=0;const points=dates.map(d=>{acc+=sum(ds.filter(x=>x.data===d).map(x=>x.valor));return acc;});const max=Math.max(...points,1);$('ct-trend').innerHTML=points.length?'<svg class="ct-plot" viewBox="0 0 600 180" role="img" aria-label="Evolução das diárias acumuladas"><polyline fill="none" stroke="#21b8eb" stroke-width="3" points="'+points.map((v,i)=>(20+(points.length===1?0:i/(points.length-1))*560)+','+(160-v/max*140)).join(' ')+'"/>'+points.map((v,i)=>'<circle cx="'+(20+(points.length===1?0:i/(points.length-1))*560)+'" cy="'+(160-v/max*140)+'" r="4" fill="#21b8eb"/>').join('')+'</svg><p>'+br(dates[0])+' → '+br(dates.at(-1))+' · '+money(dv)+'</p>':'<p>Sem diárias com valor apurado.</p>';
+const suppliers=new Map();const add=(c,v)=>{if(v!==null)suppliers.set(c.prestador,(suppliers.get(c.prestador)||0)+v);};ds.forEach(d=>add(C.get(String(d.contrato_id)),d.valor));ms.forEach(m=>add(m.c,m.valor));const sorted=[...suppliers].sort((x,y)=>y[1]-x[1]),smax=Math.max(...sorted.map(x=>x[1]),1);$('ct-suppliers').innerHTML=sorted.slice(0,6).map(([n,v])=>'<div class="ct-bar"><label><span>'+esc(n)+'</span><span>'+money(v)+'</span></label><i style="width:'+Math.max(0,v/smax*100)+'%"></i></div>').join('')||'<p>Sem valores apurados.</p>';
+const fleet=new Set(rows.filter(e=>e.iniciou&&e.veiculo_execucao_id).map(e=>String(e.veiculo_execucao_id))),extraFleet=new Set(extras.filter(e=>e.veiculo_execucao_id).map(e=>String(e.veiculo_execucao_id)));$('ct-fleet').innerHTML='<p><b>'+fleet.size+'</b> com início registrado</p><p><b>'+extraFleet.size+'</b> com demandas extras</p><p><b>'+extras.filter(e=>!e.veiculo_execucao_id).length+'</b> extras sem veículo utilizado</p>';
+}
+$('ct-update').textContent='Atualizado em '+new Date(D.atualizado).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'});$('ct-month').value=D.hoje.slice(0,7);$('ct-month').min=D.inicio.slice(0,7);$('ct-month').max=D.hoje.slice(0,7);$('ct-start').value=D.hoje.slice(0,7)+'-01';$('ct-end').value=D.hoje;for(const id of ['ct-start','ct-end']){$(id).min=D.inicio;$(id).max=D.hoje;}$('ct-mode').addEventListener('change',()=>{const range=$('ct-mode').value==='range';$('ct-month-wrap').hidden=range;$('ct-start-wrap').hidden=!range;$('ct-end-wrap').hidden=!range;});$('ct-apply').addEventListener('click',render);render();
+})();
+</script>
+'''
+
+
+# 14) Apuração por contrato, separada das demandas extras.
+_ct_dados = preparar_financeiro(carregar_centro(conn, '2026-01-01'))
+_ct_contratos = {str(c['id']): c for c in _ct_dados['vinculos']}
+_ct_detalhes = []
+for _d in _ct_dados['diarias']:
+    if _d['valor'] is None:
+        continue  # pendência exibida no novo painel, sem inventar composição histórica
+    _c = _ct_contratos[str(_d['contrato_id'])]
+    _ct_detalhes.append(dict(data=_d['data'], contrato_rota_id=_c['id'],
+        contrato_id=_c['id'], fornecedor=_c['prestador'], gre='Ver detalhe operacional',
+        motoristas='Ver detalhe operacional', placas='Ver detalhe operacional',
+        rotas='Apuração consolidada por contrato', execucoes=1, valor_diaria=_d['valor']))
+df_gc_pagamento_detalhe = pd.DataFrame(_ct_detalhes, columns=['data','contrato_rota_id',
+    'contrato_id','fornecedor','gre','motoristas','placas','rotas','execucoes','valor_diaria'])
+_ct_diarios = {}
+for _d in _ct_dados['diarias']:
+    if _d['valor'] is None: continue
+    _row = _ct_diarios.setdefault(_d['data'], dict(data=_d['data'], contratos_rota_diaria=0, valor_diarias=0))
+    _row['contratos_rota_diaria'] += 1
+    _row['valor_diarias'] += _d['valor']
+df_gc_pagamento_diario = pd.DataFrame(list(_ct_diarios.values()), columns=['data','contratos_rota_diaria','valor_diarias'])
+_ct_meses = []
+_ct_mes = date(2026, 1, 1)
+_ct_hoje = date.fromisoformat(_ct_dados['hoje'])
+while _ct_mes <= _ct_hoje:
+    _ct_fim = date(_ct_mes.year, _ct_mes.month, calendar.monthrange(_ct_mes.year,_ct_mes.month)[1])
+    _ct_cs = [c for c in _ct_dados['contratos'] if c['tem_mensal']
+        and not c['composicao_pendente'] and c['data_inicio']
+        and str(c['data_inicio'])[:10] <= _ct_fim.isoformat()
+        and (not c['data_fim'] or str(c['data_fim'])[:10] >= _ct_mes.isoformat())]
+    _ct_meses.append(dict(mes=_ct_mes.isoformat(), contratos_mensais_executados=len(_ct_cs),
+                         valor_mensal=sum(c['mensal'] for c in _ct_cs)))
+    _ct_mes = date(_ct_mes.year+1,1,1) if _ct_mes.month==12 else date(_ct_mes.year,_ct_mes.month+1,1)
+df_gc_pagamento_mensal = pd.DataFrame(_ct_meses)
 
 # 15) CONSOLIDADO OPERACIONAL DIÁRIO — EXECUÇÃO REAL
 # Executada = não anulada + início de execução registrado.
@@ -2607,7 +2668,7 @@ def html_gc_pagamento_calendario():
               <div class='gc-mini'><label>Contratos Rota executados</label><b>{mes['contratos_rota_executados']:,}</b><span>distintos no mês</span></div>
               <div class='gc-mini'><label>Diárias computadas</label><b>R$ {fmt(mes['valor_diarias'])}</b><span>{mes['contratos_rota_diaria']:,} Contratos Rota-dia</span></div>
               <div class='gc-mini'><label>Mensalidades computadas</label><b>R$ {fmt(mes['valor_mensal'])}</b><span>{mes['contratos_mensais']:,} Contratos Rota com execução</span></div>
-              <div class='gc-mini gc-mini-total'><label>Já computado a pagar</label><b>R$ {fmt(mes['total_previsto'])}</b><span>execução real registrada no mês</span></div>
+              <div class='gc-mini gc-mini-total'><label>Apurado — cadastro disponível</label><b>R$ {fmt(mes['total_previsto'])}</b><span>execução real registrada no mês</span></div>
             </div>
             <div class='gc-day-list'>
         """
@@ -3388,7 +3449,7 @@ document.addEventListener('DOMContentLoaded', function(){{
       <div class="kpi"><label>RR Planejadas</label><div class="v v-ac" id="strat_kpi_plan">{_strat_cur_plan:,}</div><div class="sub">base regular</div></div>
       <div class="kpi"><label>RR Executadas</label><div class="v v-ok" id="strat_kpi_exec">{_strat_cur_ini:,}</div><div class="sub" id="strat_kpi_exec_sub">{_strat_cur_conc:,} concluídas</div></div>
       <div class="kpi"><label>% Execução</label><div class="v v-ok" id="strat_kpi_exec_pct">{round(_strat_cur_ini*100/max(_strat_cur_plan,1),1)}%</div><div class="sub">executadas / planejadas</div></div>
-      <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac" id="strat_kpi_pay">R$ {fmt(gc_pag_atual_total)}</div><div class="sub">execução real</div></div>
+      <div class="kpi"><label>Apurado — cadastro disponível</label><div class="v v-ac" id="strat_kpi_pay">R$ {fmt(gc_pag_atual_total)}</div><div class="sub">execução real</div></div>
       <div class="kpi"><label>Frota Ativa</label><div class="v v-ok">{gc_frota_ativa:,}</div><div class="sub">status A</div></div>
       <div class="kpi"><label>Terceirizados</label><div class="v v-wn">{gc_frota_terc:,}</div><div class="sub">{_strat_pct_terc}% da frota ativa</div></div>
     </div>
@@ -3954,7 +4015,7 @@ document.addEventListener('DOMContentLoaded', function(){{
     <div class="kpi"><label>Contratos Mestres Ativos</label><div class="v v-ac">{gc_total:,}</div><div class="sub">carteira ativa</div></div>
     <div class="kpi"><label>Contratos Rota Ativos</label><div class="v v-ac">{gc_itens_ativos:,}</div><div class="sub">unidades contratuais</div></div>
     <div class="kpi"><label>Contratos Rota c/ Execução</label><div class="v v-ok">{gc_exec_contratos_mes:,}</div><div class="sub">no mês atual</div></div>
-    <div class="kpi"><label>Já Computado a Pagar</label><div class="v v-ac">R$ {fmt(gc_pag_atual_total)}</div><div class="sub">execução real até hoje</div></div>
+    <div class="kpi"><label>Apurado — cadastro disponível</label><div class="v v-ac">R$ {fmt(gc_pag_atual_total)}</div><div class="sub">execução real até hoje</div></div>
     <div class="kpi"><label>Previsão de Fechamento</label><div class="v v-ac">R$ {fmt(gc_previsao_fechamento)}</div><div class="sub">estimativa do mês</div></div>
     <div class="kpi"><label>Frota Total Ativa</label><div class="v v-ok">{gc_frota_ativa:,}</div><div class="sub">status A no cadastro</div></div>
     <div class="kpi"><label>Frota em Operação</label><div class="v v-ok">{gc_frota_operando:,}</div><div class="sub">execução real nos últimos 30 dias</div></div>
@@ -4005,7 +4066,7 @@ document.addEventListener('DOMContentLoaded', function(){{
 
     <div class="card">
       <h3>💰 Compromisso Financeiro dos Terceirizados</h3>
-      <p class="desc">Os valores abaixo consideram somente <b>contratos rota ATIVOS</b>, dentro de <b>contratos mestres ATIVOS</b>, e somente veículos classificados como <b>FROTA_TERCEIRIZADA</b>. O valor de diária é uma referência contratual; o <b>Já Computado a Pagar</b> usa exclusivamente execução real.</p>
+      <p class="desc">Os valores abaixo consideram somente <b>contratos rota ATIVOS</b>, dentro de <b>contratos mestres ATIVOS</b>, e somente veículos classificados como <b>FROTA_TERCEIRIZADA</b>. O valor de diária é uma referência contratual; o <b>Apurado — cadastro disponível</b> usa exclusivamente execução real.</p>
       <table>
         <thead><tr><th>Modalidade</th><th style="text-align:center">Contratos Rota</th><th style="text-align:right">Valor</th><th>Referência</th></tr></thead>
         <tbody>
@@ -4570,7 +4631,7 @@ if(document.getElementById('c_strat_fiscal2') && stratFiscal.length) C.bar('c_st
 if(document.getElementById('c_strat_gre_perf') && stratGrePerf.length) C.bar('c_strat_gre_perf',stratGrePerf.map(x=>x.gre),[{{label:'Conclusão RR %',data:stratGrePerf.map(x=>x.pct_conc)}}]);
 if(document.getElementById('c_strat_gre_perf2') && stratGrePerf.length) C.bar('c_strat_gre_perf2',stratGrePerf.map(x=>x.gre),[{{label:'Conclusão RR %',data:stratGrePerf.map(x=>x.pct_conc)}}]);
 if(document.getElementById('c_strat_mix')) C.pie('c_strat_mix',strat_extra_labels.concat(['RR']),strat_extra_vals.concat([stratRRExec[stratRRExec.length-1]||0]),['#f97316','#f59e0b','#a78bfa','#38bdf8','#22c55e']);
-if(document.getElementById('c_strat_pay')) C.bar('c_strat_pay',stratLabels,[{{label:'Já computado a pagar (R$)',data:stratPay}}]);
+if(document.getElementById('c_strat_pay')) C.bar('c_strat_pay',stratLabels,[{{label:'Apurado — cadastro disponível (R$)',data:stratPay}}]);
 if(document.getElementById('c_strat_frota')) C.pie('c_strat_frota',stratFleetLabels,stratFleetData,['#f59e0b','#22c55e','#38bdf8','#a78bfa']);
 if(document.getElementById('c_strat_dep')) C.bar('c_strat_dep',stratDepLabels,[{{label:'% Terceirizada da frota ativa',data:stratDepData}}]);
 if(document.getElementById('c_strat_daily')) C.line('c_strat_daily',stratDailyPayLabels,[{{label:'Valor computado por dia (R$)',data:stratDailyPayVals,tension:.25}}]);
@@ -4660,6 +4721,8 @@ C.line('c_gc_hist', histM, [
 </body>
 </html>"""
 
-with open("index.html","w",encoding="utf-8") as f:
+html = html.replace('<body>', '<body>' + componente(_ct_dados), 1)
+Path('public').mkdir(exist_ok=True)
+with open("public/index.html","w",encoding="utf-8") as f:
     f.write(html)
-print(f"✅ index.html gerado — {len(html):,} bytes")
+print(f"✅ public/index.html gerado — {len(html):,} bytes")
