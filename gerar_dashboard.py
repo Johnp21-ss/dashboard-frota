@@ -832,65 +832,39 @@ HAVING COUNT(DISTINCT c.id) >= 5 ORDER BY custo_total DESC NULLS LAST, chamados 
 # 2) FROTA GERAL — ATIVA, OPERAÇÃO REAL, OCIOSA COM CONTRATO, DISPONÍVEL E INATIVA COM CONTRATO
 # Operação considera somente escala não anulada com início de execução registrado.
 df_gc_frota_geral = safe_read("""
+WITH operacao AS (
+    SELECT DISTINCT veiculo_execucao_id AS veiculo_id
+    FROM airbyte.rotas_escalarota
+    WHERE data >= CURRENT_DATE - INTERVAL '30 days'
+      AND anulada = false
+      AND inicio_execucao IS NOT NULL
+      AND veiculo_execucao_id IS NOT NULL
+), contratos AS (
+    SELECT DISTINCT ci.veiculo_id
+    FROM airbyte.contratos_itemcontrato ci
+    JOIN airbyte.contratos_contrato c ON c.id = ci.contrato_id
+    WHERE ci.status = 'ATIVO'
+      AND c.status = 'A'
+      AND ci.veiculo_id IS NOT NULL
+)
 SELECT
     COUNT(DISTINCT v.id) AS frota_total,
     COUNT(DISTINCT v.id) FILTER (WHERE v.status = 'A') AS frota_ativa,
-
     COUNT(DISTINCT v.id) FILTER (
-        WHERE v.status = 'A'
-          AND EXISTS (
-              SELECT 1 FROM airbyte.rotas_escalarota e
-              WHERE e.veiculo_execucao_id = v.id
-                AND e.data >= CURRENT_DATE - INTERVAL '30 days'
-                AND e.anulada = false
-                AND e.inicio_execucao IS NOT NULL
-          )
+        WHERE v.status = 'A' AND o.veiculo_id IS NOT NULL
     ) AS em_operacao,
-
     COUNT(DISTINCT v.id) FILTER (
-        WHERE v.status = 'A'
-          AND EXISTS (
-              SELECT 1
-              FROM airbyte.contratos_itemcontrato ci2
-              JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
-              WHERE ci2.veiculo_id = v.id
-                AND ci2.status = 'ATIVO'
-                AND c2.status = 'A'
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM airbyte.rotas_escalarota e
-              WHERE e.veiculo_execucao_id = v.id
-                AND e.data >= CURRENT_DATE - INTERVAL '30 days'
-                AND e.anulada = false
-                AND e.inicio_execucao IS NOT NULL
-          )
+        WHERE v.status = 'A' AND c.veiculo_id IS NOT NULL
+          AND o.veiculo_id IS NULL
     ) AS ociosa_com_contrato,
-
     COUNT(DISTINCT v.id) FILTER (
         WHERE v.status = 'A'
           AND v.tipo_contrato_locacao IN ('FROTA_TERCEIRIZADA','FROTA_LOCADA')
-          AND NOT EXISTS (
-              SELECT 1
-              FROM airbyte.contratos_itemcontrato ci2
-              JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
-              WHERE ci2.veiculo_id = v.id
-                AND ci2.status = 'ATIVO'
-                AND c2.status = 'A'
-          )
+          AND c.veiculo_id IS NULL
     ) AS disponivel_sem_contrato,
-
     COUNT(DISTINCT v.id) FILTER (
-        WHERE v.status <> 'A'
-          AND EXISTS (
-              SELECT 1
-              FROM airbyte.contratos_itemcontrato ci2
-              JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
-              WHERE ci2.veiculo_id = v.id
-                AND ci2.status = 'ATIVO'
-                AND c2.status = 'A'
-          )
+        WHERE v.status <> 'A' AND c.veiculo_id IS NOT NULL
     ) AS inativos_com_contrato,
-
     COUNT(DISTINCT v.id) FILTER (
         WHERE v.status = 'A' AND v.tipo_contrato_locacao = 'FROTA_PROPRIA'
     ) AS ativa_propria,
@@ -903,27 +877,18 @@ SELECT
     COUNT(DISTINCT v.id) FILTER (
         WHERE v.status = 'A' AND v.tipo_contrato_locacao = 'FROTA_LOCADA'
     ) AS ativa_locada,
-
     COUNT(DISTINCT v.id) FILTER (
-        WHERE v.status = 'A'
-          AND v.tipo_contrato_locacao = 'FROTA_PROPRIA'
-          AND EXISTS (
-              SELECT 1 FROM airbyte.contratos_itemcontrato ci2
-              JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
-              WHERE ci2.veiculo_id = v.id AND ci2.status = 'ATIVO' AND c2.status = 'A'
-          )
+        WHERE v.status = 'A' AND v.tipo_contrato_locacao = 'FROTA_PROPRIA'
+          AND c.veiculo_id IS NOT NULL
     ) AS propria_com_contrato,
-
     COUNT(DISTINCT v.id) FILTER (
-        WHERE v.status = 'A'
-          AND v.tipo_contrato_locacao = 'FROTA_PROPRIA'
-          AND NOT EXISTS (
-              SELECT 1 FROM airbyte.contratos_itemcontrato ci2
-              JOIN airbyte.contratos_contrato c2 ON c2.id = ci2.contrato_id
-              WHERE ci2.veiculo_id = v.id AND ci2.status = 'ATIVO' AND c2.status = 'A'
-          )
+        WHERE v.status = 'A' AND v.tipo_contrato_locacao = 'FROTA_PROPRIA'
+          AND c.veiculo_id IS NULL
     ) AS propria_sem_contrato
 FROM airbyte.veiculos_veiculo v
+LEFT JOIN operacao o ON o.veiculo_id = v.id
+LEFT JOIN contratos c ON c.veiculo_id = v.id
+
 """, pd.DataFrame([{
     'frota_total':0,'frota_ativa':0,'em_operacao':0,'ociosa_com_contrato':0,'disponivel_sem_contrato':0,
     'inativos_com_contrato':0,'ativa_propria':0,'ativa_terceirizada':0,'ativa_parceiro':0,'ativa_locada':0,
