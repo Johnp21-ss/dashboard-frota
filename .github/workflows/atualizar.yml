@@ -30,11 +30,11 @@ jobs:
 
       - name: Executar script de geração
         env:
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_PORT: ${{ secrets.DB_PORT }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_HOST: ${{ aws-0-sa-east-1.pooler.supabase.com }}
+          DB_PORT: ${{ 5432 }}
+          DB_NAME: ${{ postgres }}
+          DB_USER: ${{ analista_bi.cuofycgznnbtpotybpuu }}
+          DB_PASSWORD: ${{ marvao#37m }}
         run: python gerar_dashboard.py
 
       - name: Fazer deploy para o GitHub Pages
