@@ -31,7 +31,7 @@ jobs:
       - name: Executar script de geração
         env:
           DB_HOST: ${{ aws-0-sa-east-1.pooler.supabase.com }}
-          DB_PORT: ${{ 5432 }}
+          DB_HOST: ${{ 5432 }}
           DB_NAME: ${{ postgres }}
           DB_USER: ${{ analista_bi.cuofycgznnbtpotybpuu }}
           DB_PASSWORD: ${{ marvao#37m }}
