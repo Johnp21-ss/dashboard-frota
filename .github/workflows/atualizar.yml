@@ -2,18 +2,26 @@ name: Atualizar Dashboard
 
 on:
   schedule:
-    - cron: '0 */2 * * *' # Roda automaticamente a cada 2 horas
-  workflow_dispatch: # Permite rodar manualmente a qualquer momento
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: atualizar-dashboard
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout repositório
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Configurar Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
@@ -21,10 +29,16 @@ jobs:
         run: pip install psycopg2-binary pandas
 
       - name: Executar script de geração
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: python gerar_dashboard.py
 
-      - name: Fazer Deploy para o GitHub Pages
+      - name: Fazer deploy para o GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./
+          publish_dir: ./public
