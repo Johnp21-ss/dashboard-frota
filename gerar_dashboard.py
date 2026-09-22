@@ -4688,6 +4688,62 @@ C.line('c_gc_hist', histM, [
 
 html = html.replace('<body>', '<body>' + componente(_ct_dados), 1)
 Path('public').mkdir(exist_ok=True)
-with open("public/index.html","w",encoding="utf-8") as f:
-    f.write(html)
+"""Empacota o HTML em blocos gzip pequenos, sem reduzir o histórico."""
+import gzip
+import hashlib
+import json
+from pathlib import Path
+
+
+def publicar_compacto(html, destino='public', tamanho_bloco=8 * 1024 * 1024):
+    pasta = Path(destino)
+    pasta.mkdir(parents=True, exist_ok=True)
+    assets = pasta / 'dados'
+    assets.mkdir(exist_ok=True)
+    bruto = html.encode('utf-8')
+    arquivos = []
+    total = 0
+    for pos in range(0, len(bruto), tamanho_bloco):
+        bloco = gzip.compress(bruto[pos:pos+tamanho_bloco], compresslevel=6, mtime=0)
+        nome = hashlib.sha256(bloco).hexdigest()[:24] + '.gz'
+        (assets / nome).write_bytes(bloco)
+        arquivos.append('dados/' + nome)
+        total += len(bloco)
+    pagina = LOADER.replace('__ARQUIVOS__', json.dumps(arquivos))
+    (pasta / 'index.html').write_text(pagina, encoding='utf-8')
+    if (pasta / 'index.html').stat().st_size > 10 * 1024 * 1024:
+        raise RuntimeError('Índice inesperadamente grande; publicação interrompida.')
+    print(f'Painel: {len(bruto):,} bytes originais; {total:,} bytes comprimidos; '
+          f'{len(arquivos)} blocos. Nenhum dado foi removido.')
+
+
+LOADER = '''<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Control Tower Log-PI</title>
+<style>body{margin:0;background:#091522;color:#eaf3fa;font:16px system-ui;display:grid;min-height:100vh;place-items:center}main{max-width:600px;padding:32px}progress{width:100%;accent-color:#22ba9b}button{padding:12px;background:#087e73;color:white;border:0;border-radius:6px;cursor:pointer}</style></head>
+<body><main><h1>Control Tower Log-PI</h1><p id="estado" role="status">Carregando o histórico do painel…</p><progress id="progresso"></progress><button id="tentar" hidden onclick="location.reload()">Tentar novamente</button><noscript>Ative JavaScript para abrir o painel.</noscript></main>
+<script>
+(async()=>{
+  const arquivos=__ARQUIVOS__,estado=document.getElementById('estado'),barra=document.getElementById('progresso');
+  try {
+    if(typeof DecompressionStream==='undefined')throw Error('Abra o painel em uma versão atual do Chrome, Edge, Firefox ou Safari.');
+    barra.max=arquivos.length;barra.value=0;
+    const partes=[],decoder=new TextDecoder('utf-8',{fatal:true});
+    for(let i=0;i<arquivos.length;i++){
+      const resposta=await fetch(new URL(arquivos[i],location.href));
+      if(!resposta.ok)throw Error('Não foi possível carregar um bloco do painel (HTTP '+resposta.status+').');
+      const stream=resposta.body.pipeThrough(new DecompressionStream('gzip'));
+      const bytes=await new Response(stream).arrayBuffer();
+      partes.push(decoder.decode(bytes,{stream:true}));
+      barra.value=i+1;estado.textContent='Carregando histórico: '+(i+1)+' de '+arquivos.length+' blocos.';
+    }
+    partes.push(decoder.decode());
+    const pagina=partes.join('');
+    document.open();document.write(pagina);document.close();
+  }catch(erro){estado.textContent='Falha ao abrir o painel. '+erro.message;barra.hidden=true;document.getElementById('tentar').hidden=false;}
+})();
+</script></body></html>'''
+
+publicar_compacto(html)
 print(f"✅ public/index.html gerado — {len(html):,} bytes")
