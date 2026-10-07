@@ -3,29 +3,28 @@ from datetime import datetime, timezone
 
 
 def preparar_frota(veiculos, equipamentos, agora):
-    """Uma linha por veículo; melhor evidência de atualização entre equipamentos A."""
+    """Uma linha por veículo; melhor evidência de atualização entre equipamentos vinculados ao veículo."""
+    ids = {v["id"] for v in veiculos}
+    equipamentos = [e for e in equipamentos if e["veiculo_id"] is not None and e["veiculo_id"] in ids]
     por_veiculo = {}
     for e in equipamentos:
         por_veiculo.setdefault(e['veiculo_id'], []).append(e)
     for v in veiculos:
         vinculados = por_veiculo.get(v['id'], [])
-        ativos = [e for e in vinculados if e['status'] == 'A']
         v['equipamentos'] = len(vinculados)
-        v['ativos'] = len(ativos)
         v['status_equipamentos'] = ', '.join(sorted({str(e['status'] or '?') for e in vinculados}))
         v['recente'] = False
         v['online_recente'] = False
         v['ultima'] = None
         v['horas'] = None
-        if not ativos:
-            v['situacao'] = 'Sem rastreador ativo'
-            v['motivo'] = 'Sem equipamento cadastrado' if not vinculados else 'Somente equipamentos não ativos'
-            v['situacao'] = 'Sem rastreador cadastrado' if not vinculados else 'Com rastreador, nenhum ativo'
+        if not vinculados:
+            v['situacao'] = 'Sem rastreador'
+            v['motivo'] = 'Nenhum rastreador vinculado ao veículo no cadastro'
             continue
-        datados = [e for e in ativos if e['ultima_atualizacao'] is not None]
+        datados = [e for e in vinculados if e['ultima_atualizacao'] is not None]
         if not datados:
             v['situacao'] = 'Inoperante — sem histórico'
-            v['motivo'] = 'Rastreador ativo sem data de atualização'
+            v['motivo'] = 'Rastreador sem histórico de comunicação'
             continue
         ultimo = max(datados, key=lambda e: e['ultima_atualizacao'])
         horas = (agora - ultimo['ultima_atualizacao']).total_seconds() / 3600
@@ -46,8 +45,8 @@ def preparar_frota(veiculos, equipamentos, agora):
             else:
                 v['situacao'] = 'Atualizado — online não informado'
         else:
-            v['situacao'] = 'Inconsistente — online sem atualizar' if any(e['online'] is True for e in ativos) else 'Sem comunicação há mais de 48h'
-        v['motivo'] = 'Mais de um rastreador ativo: conferir vínculos' if len(ativos)>1 else ''
+            v['situacao'] = 'Sem comunicação há mais de 48h'
+        v['motivo'] = 'Mais de um rastreador vinculado: conferir vínculos' if len(vinculados)>1 else ''
     return {'veiculos': veiculos, 'equipamentos': equipamentos, 'atualizado': agora.isoformat()}
 
 
@@ -77,46 +76,47 @@ HTML = r'''<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta n
 </style></head><body><main><header><div><div class="badge">LOG-PI / MONITORAMENTO</div><h1>Frota e Rastreamento</h1><div class="note" id="updated"></div></div><nav><a href="../">Contratos</a> · <a href="../abastecimento/">Abastecimento</a></nav></header>
 <div class="filters"><label>Status do veículo<select id="status"><option value="A">Ativos</option><option value="I">Inativos</option><option value="">Todos</option><option value="outros">Outros / não informado</option></select></label><label>Categoria<select id="category"></select></label><label>GRE<select id="gre"></select></label><label>Cidade<select id="city"></select></label><button id="reset">Limpar filtros</button></div>
 <p id="scope" role="status"></p><div class="cards" id="kpis"></div>
-<p class="warning note">Cobertura de instalação usa veículos com pelo menos um rastreador A. Atualização em até 48h inclui online e offline recente. A análise usa o campo ultima_atualizacao; sua equivalência ao último sinal de telemetria ainda precisa ser validada. Não é uma confirmação de defeito ou de veículo em movimento.</p>
-<section class="card section"><h2>Cobertura por categoria da frota</h2><div class="scroll" id="category-table"></div><p class="note">Sem rastreador ativo = sem cadastro + com equipamento cadastrado, porém nenhum A. As duas últimas colunas detalham esse total, sem duplicar veículos.</p></section>
-<div class="grid section"><section class="card"><h2>Comunicação — somente veículos com rastreador ativo</h2><div id="communication"></div><p class="note">Sem equipamento e equipamentos não ativos ficam fora deste bloco.</p></section><section class="card"><h2>Rastreadores inativos (I) — frota selecionada</h2><p id="inactive-summary"></p><div class="scroll" id="inactive-trackers"></div><p class="note">Equipamentos I. O veículo pode também possuir outro rastreador A; nesse caso sua cobertura permanece ativa.</p></section></div>
+<p class="warning note">Cobertura = veículos com rastreador vinculado ÷ total de veículos do recorte, independentemente do status cadastral do equipamento. Atualização em até 48h inclui online e offline recente. A análise usa o campo ultima_atualizacao; sua equivalência ao último sinal de telemetria ainda precisa ser validada. Não é uma confirmação de defeito ou de veículo em movimento.</p>
+<section class="card section"><h2>Cobertura por categoria da frota</h2><div class="scroll" id="category-table"></div><p class="note">Com rastreador: veículo com equipamento vinculado no cadastro. Sem rastreador: nenhum equipamento vinculado. Cada veículo é contado uma vez; cobertura não significa comunicação em dia.</p></section>
+<section class="card section"><h2>Comunicação dos veículos com rastreador</h2><div id="communication"></div><p class="note">Online ou offline recente: atualização em até 48h. Mais de 48h sem atualização: sem comunicação, mesmo se o campo online estiver marcado. Sem data: inoperante — sem histórico.</p></section>
 <section class="card section"><h2>Veículos inativos — cobertura por categoria</h2><div class="scroll" id="inactive-fleet"></div><p class="note">Este bloco usa veículos I, mantendo categoria, GRE e cidade selecionadas. Não depende do filtro de status do veículo no topo.</p></section>
-<section class="card section"><h2>Frota e cobertura por cidade</h2><div class="scroll" id="cities"></div></section>
-<section class="card section"><h2>Cobertura por categoria e cidade</h2><div class="scroll" id="matrix"></div></section>
-<section class="card section"><h2>Placas e pendências de monitoramento</h2><div class="filters"><label>Buscar placa<input id="plate" placeholder="Digite a placa"></label><label>Situação<select id="situation"></select></label></div><div class="scroll" id="details"></div><p class="note">Busca de placa e situação filtram apenas esta lista. Veículos com vários rastreadores ativos são contados uma vez; prevalece a evidência recente de comunicação. Os equipamentos permanecem detalhados no bloco abaixo.</p></section>
-<section class="card section"><h2>Equipamentos A / I / M / E — vinculados à frota selecionada</h2><div class="scroll" id="equipment-summary"></div><p class="note">Aqui contamos equipamentos, não veículos. A = ativo; I = inativo; M = manutenção; E = estoque.</p><div class="scroll" id="equipment-details"></div></section>
-<section class="card section"><h2>Equipamentos sem veículo identificado — inventário geral</h2><div class="scroll" id="unlinked"></div><p class="note">Não entram na cobertura e não são filtrados por cidade/GRE, pois não possuem veículo identificado no cadastro. Estoque não representa equipamento instalado.</p></section>
+<section class="card section"><h2>Frota por cidade</h2><label>Buscar cidade neste bloco<input id="search-cities" placeholder="Ex.: Teresina"></label><p class="note">Clique no título de uma coluna para ordenar em ordem crescente ou decrescente.</p><div class="scroll" id="cities"></div></section>
+<section class="card section"><h2>Cobertura por categoria e cidade</h2><label>Buscar cidade neste bloco<input id="search-matrix" placeholder="Ex.: Teresina"></label><p class="note">Clique no título de uma coluna para ordenar. As buscas de cidade afetam somente o respectivo bloco.</p><div class="scroll" id="matrix"></div></section>
+<section class="card section"><h2>Placas e pendências de monitoramento</h2><div class="filters"><label>Buscar placa<input id="plate" placeholder="Digite a placa"></label><label>Situação<select id="situation"></select></label></div><div class="scroll" id="details"></div><p class="note">Busca de placa e situação filtram apenas esta lista. Veículos com vários rastreadores são contados uma vez; prevalece a evidência recente de comunicação.</p></section>
 </main><script id="data" type="application/json">__DATA__</script><script>
 (()=>{'use strict';const D=JSON.parse(document.getElementById('data').textContent),$=id=>document.getElementById(id),esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),pct=(n,t)=>t?(n/t*100).toLocaleString('pt-BR',{maximumFractionDigits:1})+'%':'—';
-const cats={FROTA_PROPRIA:'Próprios',FROTA_LOCADA:'Locados',FROTA_PARCEIRO:'Parceiros',FROTA_TERCEIRIZADA:'Terceirizados'},eqStatus={A:'Ativo',I:'Inativo',M:'Manutenção',E:'Estoque'},V=D.veiculos,byId=new Map(V.map(v=>[String(v.id),v]));
+const cats={FROTA_PROPRIA:'Próprios',FROTA_LOCADA:'Locados',FROTA_PARCEIRO:'Parceiros',FROTA_TERCEIRIZADA:'Terceirizados'},V=D.veiculos;
 const category=v=>cats[v.categoria]||'Outros / não informado';
 function options(id,values,label){$(id).innerHTML='<option value="">'+label+'</option>'+values.map(v=>'<option value="'+esc(v)+'">'+esc(v)+'</option>').join('');}
 const unique=a=>[...new Set(a)].sort((a,b)=>a.localeCompare(b,'pt-BR'));
 options('category',unique(V.map(category)),'Todas as categorias');options('gre',unique(V.map(v=>v.gre)),'Todas as GREs');
 function cities(){options('city',unique(V.filter(v=>!$('gre').value||v.gre===$('gre').value).map(v=>v.cidade)),'Todas as cidades');}cities();options('situation',unique(V.map(v=>v.situacao)),'Todas as situações');
-function table(id,heads,rows){$(id).innerHTML='<table><thead><tr>'+heads.map(h=>'<th>'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+(rows.length?rows.map(r=>'<tr>'+r.map(c=>'<td>'+esc(c)+'</td>').join('')+'</tr>').join(''):'<tr><td colspan="'+heads.length+'">Nenhum registro.</td></tr>')+'</tbody></table>';}
-const summary=vs=>({total:vs.length,with:vs.filter(v=>v.ativos>0).length,recent:vs.filter(v=>v.recente).length,online:vs.filter(v=>v.online_recente).length});
-function bars(id,rows,max){$(id).innerHTML=rows.map(([label,n,suffix])=>'<div class="bar"><div><span>'+esc(label)+'</span><b>'+esc(n)+(suffix?' · '+esc(suffix):'')+'</b></div><i style="width:'+n/Math.max(max,1)*100+'%"></i></div>').join('')||'<p>Sem dados.</p>';}
-function render(){const vs=V.filter(v=>(!$('status').value||($('status').value==='outros'?!['A','I'].includes(v.status):v.status===$('status').value))&&(!$('category').value||category(v)===$('category').value)&&(!$('gre').value||v.gre===$('gre').value)&&(!$('city').value||v.cidade===$('city').value)),s=summary(vs),ids=new Set(vs.map(v=>String(v.id))),eq=D.equipamentos.filter(e=>e.veiculo_id!=null&&ids.has(String(e.veiculo_id)));
-$('scope').textContent=[$('status').selectedOptions[0].textContent,$('category').value||'Todas as categorias',$('gre').value||'Todas as GREs',$('city').value||'Todas as cidades'].join(' · ');
-$('kpis').innerHTML=[['VEÍCULOS',s.total,'Frota no recorte'],['COM RASTREADOR ATIVO',s.with,pct(s.with,s.total)+' de cobertura de instalação'],['SEM RASTREADOR CADASTRADO',vs.filter(v=>v.equipamentos===0).length,'Nenhum equipamento vinculado no cadastro'],['COM RASTREADOR, NENHUM ATIVO',vs.filter(v=>v.equipamentos>0&&v.ativos===0).length,'Somente equipamentos I, M, E ou outros'],['ATUALIZAÇÃO EM ATÉ 48H',s.recent,pct(s.recent,s.total)+' da frota selecionada'],['ONLINE E ATUALIZADOS',s.online,pct(s.online,s.total)+' da frota selecionada']].map(([l,n,d])=>'<article class="card"><span>'+l+'</span><strong>'+n+'</strong><span>'+d+'</span></article>').join('');
-const groups=Object.values(cats).concat(['Outros / não informado']);
-const categoryRows=rows=>groups.map(c=>{const r=rows.filter(v=>category(v)===c),x=summary(r);return[c,x.total,x.with,x.total-x.with,pct(x.with,x.total),r.filter(v=>v.equipamentos===0).length,r.filter(v=>v.equipamentos>0&&v.ativos===0).length];});
-table('category-table',['Categoria da frota',$('status').value==='A'?'Veículos ativos':'Veículos do recorte','Com rastreador ativo','Sem rastreador ativo','Cobertura','Sem rastreador cadastrado','Com rastreador, nenhum ativo'],categoryRows(vs));
-const tracked=vs.filter(v=>v.ativos>0),states=unique(tracked.map(v=>v.situacao));bars('communication',states.map(st=>[st,tracked.filter(v=>v.situacao===st).length,pct(tracked.filter(v=>v.situacao===st).length,tracked.length)]),tracked.length);
-const inactive=eq.filter(e=>e.status==='I');$('inactive-summary').textContent=inactive.length+' equipamentos inativos em '+new Set(inactive.map(e=>String(e.veiculo_id))).size+' veículos do recorte.';
-table('inactive-trackers',['Placa','Categoria','Equipamento ID','Possui outro rastreador ativo?'],inactive.map(e=>{const v=byId.get(String(e.veiculo_id));return[v.placa,category(v),e.id,v.ativos>0?'Sim':'Não'];}));
-const inactiveVehicles=V.filter(v=>v.status==='I'&&(!$('category').value||category(v)===$('category').value)&&(!$('gre').value||v.gre===$('gre').value)&&(!$('city').value||v.cidade===$('city').value));
-table('inactive-fleet',['Categoria','Veículos inativos','Com rastreador ativo','Sem rastreador ativo','Cobertura','Sem cadastro','Com rastreador, nenhum ativo'],categoryRows(inactiveVehicles));
-table('cities',['Cidade',...groups,'Total','Com A','Sem A','Cobertura','Atualizados ≤48h'],unique(vs.map(v=>v.cidade)).map(c=>{const rows=vs.filter(v=>v.cidade===c),x=summary(rows);return[c,...groups.map(g=>rows.filter(v=>category(v)===g).length),x.total,x.with,x.total-x.with,pct(x.with,x.total),x.recent];}));
-const combos=unique(vs.map(v=>JSON.stringify([v.cidade,category(v)])));table('matrix',['Cidade','Categoria','Veículos','Com A','Sem A','Cobertura','Online atualizados'],combos.map(k=>{const [c,g]=JSON.parse(k),x=summary(vs.filter(v=>v.cidade===c&&category(v)===g));return[c,g,x.total,x.with,x.total-x.with,pct(x.with,x.total),x.online];}));
-const dt=x=>x?new Date(x).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'Sem data',hours=v=>v.horas===null?'—':v.horas<0?'Data futura':v.horas>=48?(v.horas/24).toFixed(1)+' dias':v.horas.toFixed(1)+' h';
-table('details',['Placa','Categoria','Cidade','GRE','Status veículo','Rastreadores A','Situação','Última atualização','Tempo','Observação'],vs.filter(v=>(!$('plate').value||String(v.placa||'').toUpperCase().includes($('plate').value.toUpperCase()))&&(!$('situation').value||v.situacao===$('situation').value)).sort((a,b)=>(b.horas??1e9)-(a.horas??1e9)).map(v=>[v.placa,category(v),v.cidade,v.gre,v.status,v.ativos,v.situacao,dt(v.ultima),hours(v),v.motivo]));
-const statuses=unique(['A','I','M','E',...eq.map(e=>e.status||'?')]);table('equipment-summary',['Status','Equipamentos','Veículos distintos'],statuses.map(st=>{const rows=eq.filter(e=>(e.status||'?')===st);return[st+' — '+(eqStatus[st]||'Não identificado'),rows.length,new Set(rows.map(e=>String(e.veiculo_id))).size];}));
-table('equipment-details',['Equipamento ID','Placa','Status cadastral','Online informado','Última atualização'],eq.map(e=>[e.id,byId.get(String(e.veiculo_id))?.placa,eqStatus[e.status]||e.status,e.online===true?'Sim':e.online===false?'Não':'Não informado',dt(e.ultima_atualizacao)]));
+const normalize=x=>String(x||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
+const sorting={};
+function table(id,heads,rows){
+const sortable=['cities','matrix'].includes(id),state=sorting[id];let ordered=[...rows];
+const value=x=>typeof x==='number'?x:typeof x==='string'&&x.endsWith('%')?Number(x.replace('%','').replace(',','.')):x;
+if(state)ordered.sort((a,b)=>{const x=value(a[state.col]),y=value(b[state.col]);if(x==='—')return y==='—'?0:1;if(y==='—')return -1;return state.dir*(typeof x==='number'&&typeof y==='number'?x-y:String(x).localeCompare(String(y),'pt-BR',{numeric:true}));});
+$(id).innerHTML='<table><thead><tr>'+heads.map((h,i)=>'<th'+(sortable?' aria-sort="'+(state?.col===i?(state.dir===1?'ascending':'descending'):'none')+'"':'')+'>'+(sortable?'<button type="button" data-col="'+i+'" style="background:transparent;border:0;padding:0;min-height:32px;text-align:left;font-weight:650">'+esc(h)+(state?.col===i?(state.dir===1?' ↑':' ↓'):' ↕')+'</button>':esc(h))+'</th>').join('')+'</tr></thead><tbody>'+(ordered.length?ordered.map(r=>'<tr>'+r.map(c=>'<td>'+esc(c)+'</td>').join('')+'</tr>').join(''):'<tr><td colspan="'+heads.length+'">Nenhum registro.</td></tr>')+'</tbody></table>';
+if(sortable)$(id).querySelectorAll('button[data-col]').forEach(btn=>btn.addEventListener('click',()=>{const col=Number(btn.dataset.col);sorting[id]={col,dir:state?.col===col?-state.dir:1};table(id,heads,rows);}));
 }
-const orphan=D.equipamentos.filter(e=>e.veiculo_id==null||!byId.has(String(e.veiculo_id)));table('unlinked',['Status','Sem veículo vinculado','Vínculo sem cadastro do veículo'],unique(['A','I','M','E',...orphan.map(e=>e.status||'?')]).map(st=>[st+' — '+(eqStatus[st]||'Não identificado'),orphan.filter(e=>(e.status||'?')===st&&e.veiculo_id==null).length,orphan.filter(e=>(e.status||'?')===st&&e.veiculo_id!=null).length]));
-$('updated').textContent='Atualizado em '+new Date(D.atualizado).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})+' · limite de 48 horas';$('gre').addEventListener('change',()=>{cities();render();});['status','category','city','situation'].forEach(id=>$(id).addEventListener('change',render));$('plate').addEventListener('input',render);$('reset').addEventListener('click',()=>{$('status').value='A';['category','gre','situation','plate'].forEach(id=>$(id).value='');cities();render();});render();
+const summary=vs=>({total:vs.length,with:vs.filter(v=>v.equipamentos>0).length,recent:vs.filter(v=>v.recente).length,online:vs.filter(v=>v.online_recente).length});
+function bars(id,rows,max){$(id).innerHTML=rows.map(([label,n,suffix])=>'<div class="bar"><div><span>'+esc(label)+'</span><b>'+esc(n)+(suffix?' · '+esc(suffix):'')+'</b></div><i style="width:'+n/Math.max(max,1)*100+'%"></i></div>').join('')||'<p>Sem dados.</p>';}
+function render(){const vs=V.filter(v=>(!$('status').value||($('status').value==='outros'?!['A','I'].includes(v.status):v.status===$('status').value))&&(!$('category').value||category(v)===$('category').value)&&(!$('gre').value||v.gre===$('gre').value)&&(!$('city').value||v.cidade===$('city').value)),s=summary(vs);
+$('scope').textContent=[$('status').selectedOptions[0].textContent,$('category').value||'Todas as categorias',$('gre').value||'Todas as GREs',$('city').value||'Todas as cidades'].join(' · ');
+$('kpis').innerHTML=[['VEÍCULOS',s.total,'Frota no recorte'],['COM RASTREADOR',s.with,pct(s.with,s.total)+' de cobertura cadastral'],['SEM RASTREADOR',vs.filter(v=>v.equipamentos===0).length,'Nenhum equipamento vinculado no cadastro'],['ATUALIZAÇÃO EM ATÉ 48H',s.recent,pct(s.recent,s.total)+' da frota selecionada'],['ONLINE E ATUALIZADOS',s.online,pct(s.online,s.total)+' da frota selecionada']].map(([l,n,d])=>'<article class="card"><span>'+l+'</span><strong>'+n+'</strong><span>'+d+'</span></article>').join('');
+const groups=Object.values(cats).concat(['Outros / não informado']);
+const categoryRows=rows=>groups.map(c=>{const r=rows.filter(v=>category(v)===c),x=summary(r);return[c,x.total,x.with,x.total-x.with,pct(x.with,x.total)];});
+table('category-table',['Categoria da frota',$('status').value==='A'?'Veículos ativos':'Veículos do recorte','Com rastreador','Sem rastreador','Cobertura'],categoryRows(vs));
+const tracked=vs.filter(v=>v.equipamentos>0),states=unique(tracked.map(v=>v.situacao));bars('communication',states.map(st=>[st,tracked.filter(v=>v.situacao===st).length,pct(tracked.filter(v=>v.situacao===st).length,tracked.length)]),tracked.length);
+const inactiveVehicles=V.filter(v=>v.status==='I'&&(!$('category').value||category(v)===$('category').value)&&(!$('gre').value||v.gre===$('gre').value)&&(!$('city').value||v.cidade===$('city').value));
+table('inactive-fleet',['Categoria','Veículos inativos','Com rastreador','Sem rastreador','Cobertura'],categoryRows(inactiveVehicles));
+table('cities',['Cidade',...groups,'Total','Com rastreador','Sem rastreador','Atualizados em até 48h','Cobertura'],unique(vs.map(v=>v.cidade)).filter(c=>normalize(c).includes(normalize($('search-cities').value))).map(c=>{const rows=vs.filter(v=>v.cidade===c),x=summary(rows);return[c,...groups.map(g=>rows.filter(v=>category(v)===g).length),x.total,x.with,x.total-x.with,x.recent,pct(x.with,x.total)];}));
+const combos=unique(vs.map(v=>JSON.stringify([v.cidade,category(v)])));table('matrix',['Cidade','Categoria','Veículos','Com rastreador','Sem rastreador','Online e atualizados','Cobertura'],combos.filter(k=>normalize(JSON.parse(k)[0]).includes(normalize($('search-matrix').value))).map(k=>{const [c,g]=JSON.parse(k),x=summary(vs.filter(v=>v.cidade===c&&category(v)===g));return[c,g,x.total,x.with,x.total-x.with,x.online,pct(x.with,x.total)];}));
+const dt=x=>x?new Date(x).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'Sem data',hours=v=>v.horas===null?'—':v.horas<0?'Data futura':v.horas>=48?(v.horas/24).toFixed(1)+' dias':v.horas.toFixed(1)+' h';
+table('details',['Placa','Categoria','Cidade','GRE','Status veículo','Rastreadores vinculados','Situação','Última atualização','Tempo','Observação'],vs.filter(v=>(!$('plate').value||String(v.placa||'').toUpperCase().includes($('plate').value.toUpperCase()))&&(!$('situation').value||v.situacao===$('situation').value)).sort((a,b)=>(b.horas??1e9)-(a.horas??1e9)).map(v=>[v.placa,category(v),v.cidade,v.gre,v.status,v.equipamentos,v.situacao,dt(v.ultima),hours(v),v.motivo]));
+}
+$('updated').textContent='Atualizado em '+new Date(D.atualizado).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})+' · limite de 48 horas';$('gre').addEventListener('change',()=>{cities();render();});['status','category','city','situation'].forEach(id=>$(id).addEventListener('change',render));['plate','search-cities','search-matrix'].forEach(id=>$(id).addEventListener('input',render));$('reset').addEventListener('click',()=>{$('status').value='A';['category','gre','situation','plate','search-cities','search-matrix'].forEach(id=>$(id).value='');cities();render();});render();
 })();
 </script></body></html>'''
 
