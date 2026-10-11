@@ -55,6 +55,15 @@ jobs:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: python gerar_rastreamento.py
 
+      - name: Gerar painel de manutenção
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: python gerar_manutencao.py
+
       - name: Fazer deploy para o GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
