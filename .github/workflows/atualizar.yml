@@ -64,6 +64,9 @@ jobs:
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: python gerar_manutencao.py
 
+      - name: Gerar central de painéis
+        run: python gerar_central.py
+
       - name: Fazer deploy para o GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
