@@ -6,7 +6,7 @@
 <body><main><h1>Control Tower Log-PI</h1><p id="estado" role="status">Carregando o histórico do painel…</p><progress id="progresso"></progress><button id="tentar" hidden onclick="location.reload()">Tentar novamente</button><noscript>Ative JavaScript para abrir o painel.</noscript></main>
 <script>
 (async()=>{
-  const arquivos=["dados/37fb29470343911dbc703494.gz", "dados/8a2a31cf5a4f02e01555ced8.gz", "dados/4383b41351fadd71f4e7eed5.gz", "dados/276f26fb2d56304c03434e8f.gz", "dados/45580f5e27c0d72f85420d74.gz", "dados/d32781db368b57a8ba8a0e7a.gz"],estado=document.getElementById('estado'),barra=document.getElementById('progresso');
+  const arquivos=["dados/9a8f7b0ee0e5a01c4fc4a40c.gz", "dados/bc1c919e30359409a65e5fd4.gz", "dados/063387982563653d3685d194.gz", "dados/8b972e6c2ba1b4b2081ce72c.gz", "dados/a9fe900e35f377c770fcacf1.gz", "dados/ba77c30913fbc997854c179a.gz"],estado=document.getElementById('estado'),barra=document.getElementById('progresso');
   try {
     if(typeof DecompressionStream==='undefined')throw Error('Abra o painel em uma versão atual do Chrome, Edge, Firefox ou Safari.');
     barra.max=arquivos.length;barra.value=0;
