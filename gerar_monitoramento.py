@@ -141,7 +141,24 @@ function renderReport(){
 window.addEventListener('beforeprint',()=>{if($('report-action'))reportAction=$('report-action').value;renderReport();});
 
 for(const g of D.gres.slice().sort((a,b)=>a.nome.localeCompare(b.nome)))$('gre').add(new Option(g.nome,String(g.id)));for(const c of [...new Set([...D.veiculos,...D.rotas,...D.motoristas].map(r=>r.cidade).filter(Boolean))].sort())$('city').add(new Option(c,c));for(const [k,v] of Object.entries(cats))$('category').add(new Option(v,k));
-const tabs=[['frota','Frota e manutenção'],['rotas','Rotas planejadas'],['planejamento','Escalas por dia'],['motoristas','Motoristas'],['rastreamento','Rastreamento'],['relatorio','Relatório / PDF']];$('sections').innerHTML=tabs.map(([k])=>'<section id="'+k+'" hidden></section>').join('');$('tabs').innerHTML=tabs.map(([k,l])=>'<button data-tab="'+k+'" aria-pressed="false">'+l+'</button>').join('');function show(k){tabs.forEach(([id])=>$(id).hidden=id!==k);$('tabs').querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.tab===k)));}document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>show(b.dataset.tab));
+const tabs=[['frota','Frota e manutenção'],['rotas','Rotas planejadas'],['planejamento','Escalas por dia'],['motoristas','Motoristas'],['rastreamento','Rastreamento'],['relatorio','Relatório / PDF'],['diario','Diário de bordo']];$('sections').innerHTML=tabs.map(([k])=>'<section id="'+k+'" hidden></section>').join('');$('tabs').innerHTML=tabs.map(([k,l])=>'<button data-tab="'+k+'" aria-pressed="false">'+l+'</button>').join('');function show(k){tabs.forEach(([id])=>$(id).hidden=id!==k);$('tabs').querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.tab===k)));}document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>show(b.dataset.tab));
+
+/* Diário: registros em base autenticada separada da atualização do painel. */
+const diarioSection=$('diario');
+diarioSection.innerHTML='<h2>Diário de bordo e ações</h2><p>Registre análises, períodos analisado e reportado, encaminhamentos ao fiscal/supervisor e resultados. O diário possui gráficos, relatório e fluxograma editável.</p><div class="alert">A base do diário é separada dos dados de consulta e permanece preservada nas atualizações do Log-PI. Primeiro acesso: conecte o endereço autenticado do diário abaixo.</div><details id="diario-config"><summary>Conectar a base do diário</summary><label>Endereço do aplicativo do diário<input id="diario-url" type="url" placeholder="https://script.google.com/macros/s/.../exec"></label><button id="diario-connect">Conectar diário</button><p class="note">Este navegador guarda somente o endereço de conexão. Os registros e o histórico ficam no Sheets. Nenhuma senha é necessária neste campo.</p></details><p id="diario-status" role="status"></p><p><a id="diario-open" target="_blank" rel="noopener" hidden>Abrir diário autenticado em outra aba</a></p><p class="note">Se a conta Google não abrir dentro do painel, use o acesso em outra aba. Os filtros do diário são próprios e não herdam os filtros cadastrais desta página.</p><iframe id="diario-frame" title="Diário de bordo Log-PI" hidden style="border:1px solid #355367;border-radius:8px;width:100%;height:85vh;min-height:650px;background:#091824"></iframe>';
+let diarioURL='';
+function diarioValidURL(value){try{const u=new URL(value);return u.protocol==='https:'&&u.hostname==='script.google.com'&&/^\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(u.pathname)&&!u.search&&!u.hash?u.href:'';}catch{return '';}}
+try{diarioURL=diarioValidURL(localStorage.getItem('logpi.diario.url.v1')||'');}catch{}
+$('diario-url').value=diarioURL;
+function diarioAbrir(){
+ if(!diarioURL){$('diario-status').textContent='Base ainda não conectada. Configure o aplicativo para começar a registrar.';$('diario-config').open=true;return;}
+ $('diario-open').href=diarioURL;$('diario-open').hidden=false;
+ if($('diario-frame').getAttribute('src')!==diarioURL)$('diario-frame').src=diarioURL;
+ $('diario-frame').hidden=false;$('diario-status').textContent='Base configurada. A conta Google controla o acesso aos registros.';
+}
+$('diario-connect').onclick=()=>{const url=diarioValidURL($('diario-url').value.trim());if(!url){$('diario-status').textContent='Informe um endereço válido do aplicativo Google, terminado em /exec, sem parâmetros.';return;}diarioURL=url;try{localStorage.setItem('logpi.diario.url.v1',url);}catch{}diarioAbrir();};
+const originalShow=show;show=function(k){originalShow(k);if(k==='diario')diarioAbrir();};
+
 $('updated').textContent='Gerado em '+date(D.agora)+' · Última extração de chamados: '+date(source)+' · Frota: '+date(latest(D.veiculos))+' · Rotas: '+date(latest(D.rotas))+' · Escalas: '+date(latest(D.escalas))+'. Datas de extração não comprovam sincronização completa.';
 ['region','gre','city','category'].forEach(k=>$(k).onchange=render);$('plate').oninput=render;$('reset').onclick=()=>{driverStatus='';['region','gre','city','category','plate'].forEach(k=>$(k).value='');render();};render();show('frota');
 </script></main></body></html>'''
