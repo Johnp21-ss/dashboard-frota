@@ -6,7 +6,7 @@
 <body><main><h1>Control Tower Log-PI</h1><p id="estado" role="status">Carregando o histórico do painel…</p><progress id="progresso"></progress><button id="tentar" hidden onclick="location.reload()">Tentar novamente</button><noscript>Ative JavaScript para abrir o painel.</noscript></main>
 <script>
 (async()=>{
-  const arquivos=["dados/19bef31dbfdc2d52336dad04.gz", "dados/dda0eb9c548a50c502511e15.gz", "dados/b4248bd11d77da67dbc5185a.gz", "dados/20fd813f128e8453fd904531.gz", "dados/bc9a0cbca985f907310bb3e8.gz", "dados/fcb721fed5d833fb12484914.gz", "dados/478416bb6ecb4b11034766a0.gz"],estado=document.getElementById('estado'),barra=document.getElementById('progresso');
+  const arquivos=["dados/94fc2db423d642354f6e7fe0.gz", "dados/b5009628632a855c50807e22.gz", "dados/9db8f21e51a000fa4d1e76f5.gz", "dados/56e47aef825b6a85e86aadb2.gz", "dados/052e33036a7dc581bacfa28c.gz", "dados/843d70dcaa918425b5723046.gz", "dados/3f98ced541813d4888fcfd5d.gz"],estado=document.getElementById('estado'),barra=document.getElementById('progresso');
   try {
     if(typeof DecompressionStream==='undefined')throw Error('Abra o painel em uma versão atual do Chrome, Edge, Firefox ou Safari.');
     barra.max=arquivos.length;barra.value=0;
