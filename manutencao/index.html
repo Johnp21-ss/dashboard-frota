@@ -6,7 +6,7 @@
 <body><main><h1>Control Tower Log-PI</h1><p id="estado" role="status">Carregando o histórico do painel…</p><progress id="progresso"></progress><button id="tentar" hidden onclick="location.reload()">Tentar novamente</button><noscript>Ative JavaScript para abrir o painel.</noscript></main>
 <script>
 (async()=>{
-  const arquivos=["dados/6d44ac17c104170e84d091e8.gz", "dados/69838ed0159ebefa3da88a20.gz", "dados/0c95f863e22ad471e4600c76.gz", "dados/c4427a7a95a54f432d8f6ad9.gz"],estado=document.getElementById('estado'),barra=document.getElementById('progresso');
+  const arquivos=["dados/c0fedb92a5b5a503f28fe4ec.gz", "dados/69838ed0159ebefa3da88a20.gz", "dados/0c95f863e22ad471e4600c76.gz", "dados/c4427a7a95a54f432d8f6ad9.gz"],estado=document.getElementById('estado'),barra=document.getElementById('progresso');
   try {
     if(typeof DecompressionStream==='undefined')throw Error('Abra o painel em uma versão atual do Chrome, Edge, Firefox ou Safari.');
     barra.max=arquivos.length;barra.value=0;
